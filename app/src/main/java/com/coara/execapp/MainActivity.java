@@ -127,7 +127,10 @@ public class MainActivity extends Activity {
     }
 
     private void updateShizukuStatus() {
-        if (Shizuku.pingBinder() && !Shizuku.isPreV11()) {
+        boolean binderAlive = Shizuku.pingBinder();
+        boolean preV11 = Shizuku.isPreV11();
+
+        if (binderAlive && !preV11) {
             shizukuGranted = Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
             if (!shizukuGranted) {
                 Shizuku.requestPermission(SHIZUKU_REQUEST_CODE);
@@ -135,6 +138,12 @@ public class MainActivity extends Activity {
         } else {
             shizukuGranted = false;
         }
+
+        // デバッグ用：Shizuku状態を即座に表示（原因特定用）
+        runOnUiThread(() -> {
+            String status = "Shizuku状態: binderAlive=" + binderAlive + " preV11=" + preV11 + " granted=" + shizukuGranted;
+            Toast.makeText(this, status, Toast.LENGTH_LONG).show();
+        });
     }
 
     private void handleWriteSettingsPermission() {
