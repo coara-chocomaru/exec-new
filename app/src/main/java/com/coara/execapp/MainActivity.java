@@ -241,33 +241,32 @@ public class MainActivity extends Activity {
         if (trimmed.startsWith("settings ")) {
             String[] parts = trimmed.split("\\s+");
 
-            // 短縮形対応: settings global adb_enable 0 → put扱い
             String action;
             String category;
             String key;
             String value = null;
 
             if (parts.length >= 4 && ("put".equals(parts[1]) || "get".equals(parts[1]))) {
-                // 完全形
                 action = parts[1];
                 category = parts[2];
                 key = parts[3];
                 if ("put".equals(action) && parts.length >= 5) {
                     StringBuilder sb = new StringBuilder();
                     for (int i = 4; i < parts.length; i++) {
-                        sb.append(parts[i]).append(i < parts.length - 1 ? " " : "");
+                        sb.append(parts[i]);
+                        if (i < parts.length - 1) sb.append(" ");
                     }
                     value = sb.toString();
                 }
             } else if (parts.length >= 3) {
-                // 短縮形（putを省略）
                 action = "put";
                 category = parts[1];
                 key = parts[2];
                 if (parts.length >= 4) {
                     StringBuilder sb = new StringBuilder();
                     for (int i = 3; i < parts.length; i++) {
-                        sb.append(parts[i]).append(i < parts.length - 1 ? " " : "");
+                        sb.append(parts[i]);
+                        if (i < parts.length - 1) sb.append(" ");
                     }
                     value = sb.toString();
                 }
@@ -279,8 +278,7 @@ public class MainActivity extends Activity {
             DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
             ComponentName admin = new ComponentName(this, AppDeviceAdminReceiver.class);
 
-            boolean success = false;
-            String resultText = "";
+            String resultText;
 
             if ("put".equals(action) && value != null) {
                 try {
@@ -289,9 +287,9 @@ public class MainActivity extends Activity {
                         else if ("secure".equals(category)) dpm.setSecureSetting(admin, key, value);
                         else if ("system".equals(category)) dpm.setSystemSetting(admin, key, value);
                         resultText = "Device Ownerで設定変更完了: " + category + " " + key + " = " + value;
-                        success = true;
                     } else {
                         ContentResolver cr = getContentResolver();
+                        boolean success = false;
                         if ("system".equals(category)) success = Settings.System.putString(cr, key, value);
                         else if ("global".equals(category)) success = Settings.Global.putString(cr, key, value);
                         else if ("secure".equals(category)) success = Settings.Secure.putString(cr, key, value);
@@ -309,7 +307,6 @@ public class MainActivity extends Activity {
                     else if ("global".equals(category)) val = Settings.Global.getString(cr, key);
                     else if ("secure".equals(category)) val = Settings.Secure.getString(cr, key);
                     resultText = "取得結果: " + category + " " + key + " = " + (val != null ? val : "(null)");
-                    success = true;
                 } catch (Exception e) {
                     resultText = "ERROR: " + e.getMessage();
                 }
@@ -317,12 +314,11 @@ public class MainActivity extends Activity {
                 resultText = "ERROR: 未対応のsettingsコマンドです";
             }
 
-            runOnUiThread(() -> resultView.append(resultText + "\n"));
+            resultView.append(resultText + "\n");
             saveLogToFile(command, resultText);
             return;
         }
 
-        // 通常コマンド（Shizuku or shell）
         try {
             Process process;
             if (shizukuGranted) {
@@ -331,7 +327,7 @@ public class MainActivity extends Activity {
                     java.lang.reflect.Method method = clazz.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
                     method.setAccessible(true);
                     process = (Process) method.invoke(null, new String[]{"/system/bin/sh", "-c", command}, null, null);
-                    runOnUiThread(() -> resultView.append("INFO: Shizukuで実行（shell/root権限）\n"));
+                    resultView.append("INFO: Shizukuで実行（shell/root権限）\n");
                 } catch (Exception reflectionEx) {
                     ProcessBuilder pb = new ProcessBuilder("/system/bin/sh", "-c", command);
                     process = pb.start();
