@@ -1,5 +1,3 @@
-java
-
 package com.coara.execapp;
 
 import android.Manifest;
