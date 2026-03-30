@@ -23,22 +23,22 @@
         </activity>
         
         <receiver
-            android:name=".DeviceOwnerReceiver"
+            android:name=".DeviceAdminReceiver"
             android:permission="android.permission.BIND_DEVICE_ADMIN"
             android:exported="true">
+        <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
         <meta-data
             android:name="android.app.device_admin"
-            android:resource="@xml/device_owner_receiver" />
-        <intent-filter>
-            <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
-            <action android:name="android.app.action.PROFILE_PROVISIONING_COMPLETE" />
-        </intent-filter>
+            android:resource="@xml/device_admin" />
         </receiver>
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="com.coara.execapp.shizuku"
-            android:exported="false" />
+            android:exported="false"
+            android:permission="moe.shizuku.api.permission.SHIZUKU" />
         
         <provider
             android:name="androidx.core.content.FileProvider"
