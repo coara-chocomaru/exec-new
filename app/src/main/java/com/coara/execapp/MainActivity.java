@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
+import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -82,7 +83,6 @@ public class MainActivity extends Activity {
         }
 
         // ====================== 起動時にシステム設定変更許可確認 ======================
-        // settingsコマンドでContentResolverを使う場合に必須（Device Ownerでも念のため確認）
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (!Settings.System.canWrite(this)) {
                 AlertDialog.Builder builder = new AlertDialog.Builder(this);
@@ -90,7 +90,7 @@ public class MainActivity extends Activity {
                 builder.setMessage("settings put/get コマンドでシステム設定を変更するには\n" +
                         "WRITE_SETTINGS権限が必要です。\n\n" +
                         "今すぐ許可しますか？\n" +
-                        "（許可しない場合、Shizukuが必要です）");
+                        "（許可しない場合、ShizukuまたはDevice Ownerが必要です）");
                 builder.setPositiveButton("許可する", (dialog, which) -> {
                     Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
                     intent.setData(Uri.parse("package:" + getPackageName()));
@@ -238,7 +238,6 @@ public class MainActivity extends Activity {
     private void executeCommand(String command, @NonNull TextView resultView) {
         resultView.setText("");
 
-        // ====================== settingsコマンドの最適化処理 ======================
         if (command.trim().startsWith("settings ")) {
             String[] parts = command.trim().split("\\s+");
             if (parts.length < 4) {
@@ -293,23 +292,13 @@ public class MainActivity extends Activity {
             } else if ("get".equals(action)) {
                 String value = null;
                 try {
-                    if (isDeviceOwner && dpm != null) {
-                        if ("global".equals(category)) {
-                            value = dpm.getGlobalSetting(admin, key);
-                        } else if ("secure".equals(category)) {
-                            value = dpm.getSecureSetting(admin, key);
-                        } else if ("system".equals(category)) {
-                            value = dpm.getSystemSetting(admin, key);
-                        }
-                    } else {
-                        ContentResolver cr = getContentResolver();
-                        if ("system".equals(category)) {
-                            value = Settings.System.getString(cr, key);
-                        } else if ("global".equals(category)) {
-                            value = Settings.Global.getString(cr, key);
-                        } else if ("secure".equals(category)) {
-                            value = Settings.Secure.getString(cr, key);
-                        }
+                    ContentResolver cr = getContentResolver();
+                    if ("system".equals(category)) {
+                        value = Settings.System.getString(cr, key);
+                    } else if ("global".equals(category)) {
+                        value = Settings.Global.getString(cr, key);
+                    } else if ("secure".equals(category)) {
+                        value = Settings.Secure.getString(cr, key);
                     }
                     resultText = "取得結果: " + category + " " + key + " = " + (value != null ? value : "(null)");
                     success = true;
@@ -325,7 +314,6 @@ public class MainActivity extends Activity {
             return;
         }
 
-        // ====================== 通常コマンド（Shizuku or 通常shell） ======================
         try {
             Process process;
             if (shizukuGranted) {
