@@ -1,14 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <device-admin xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-policies>
-        <force-lock />
-        <wipe-data />
         <disable-camera />
-        <disable-keyguard-features />
-        <disable-status-bar />
-        <set-global-proxy />
-        <expire-password />
-        <encrypted-storage />
-        <reset-password />
     </uses-policies>
 </device-admin>
