@@ -59,11 +59,10 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // ====================== API24固定で下半分が真っ暗になる問題の完全解決 ======================
-        // 1. Window全体の背景を強制的に白にする（DecorView）
+        // ====================== Android 11でも下半分が黒くならない完全対策 ======================
+        // 1. Window全体を強制白
         getWindow().getDecorView().setBackgroundColor(Color.WHITE);
-
-        // 2. ScrollViewとTextViewも明示的に白固定（API24で親背景が透ける対策）
+        // 2. ScrollViewとTextViewを再固定
         ScrollView scrollView = findViewById(R.id.scroll_view);
         TextView resultView = findViewById(R.id.result_view);
         if (scrollView != null) {
