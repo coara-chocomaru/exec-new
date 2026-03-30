@@ -3,11 +3,13 @@ package com.coara.execapp;
 import android.Manifest;
 import android.app.Activity;
 import android.app.admin.DevicePolicyManager;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
+import android.provider.Settings;
 import android.view.inputmethod.InputMethodManager;
 import android.database.Cursor;
 import android.widget.Button;
@@ -212,6 +214,100 @@ public class MainActivity extends Activity {
 
     private void executeCommand(String command, @NonNull TextView resultView) {
         resultView.setText("");
+
+        // ====================== settingsコマンドの最適化処理 ======================
+        // Device Owner + ContentResolver のハイブリッド（Shizukuはshellのため不要）
+        // DPMなしでもContentResolverで動作（WRITE_SETTINGS権限があれば最大限活用）
+        if (command.trim().startsWith("settings ")) {
+            String[] parts = command.trim().split("\\s+");
+            if (parts.length < 4) {
+                resultView.append("ERROR: settingsコマンドの形式が不正です (例: settings put global key value)\n");
+                return;
+            }
+
+            String action = parts[1];
+            String category = parts[2];   // system / global / secure
+            String key = parts[3];
+
+            DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+            ComponentName admin = new ComponentName(this, AppDeviceAdminReceiver.class);
+
+            boolean success = false;
+            String resultText = "";
+
+            if ("put".equals(action) && parts.length >= 5) {
+                // 値の構築（スペース対応）
+                StringBuilder valueBuilder = new StringBuilder();
+                for (int i = 4; i < parts.length; i++) {
+                    valueBuilder.append(parts[i]);
+                    if (i < parts.length - 1) valueBuilder.append(" ");
+                }
+                String value = valueBuilder.toString();
+
+                try {
+                    if (isDeviceOwner && dpm != null) {
+                        // Device Owner優先（最も強力）
+                        if ("global".equals(category)) {
+                            dpm.setGlobalSetting(admin, key, value);
+                        } else if ("secure".equals(category)) {
+                            dpm.setSecureSetting(admin, key, value);
+                        } else if ("system".equals(category)) {
+                            dpm.setSystemSetting(admin, key, value);
+                        }
+                        resultText = "Device Ownerで設定変更完了: " + category + " " + key + " = " + value;
+                        success = true;
+                    } else {
+                        // Device Ownerなし → ContentResolverで実行
+                        ContentResolver cr = getContentResolver();
+                        if ("system".equals(category)) {
+                            success = Settings.System.putString(cr, key, value);
+                        } else if ("global".equals(category)) {
+                            success = Settings.Global.putString(cr, key, value);
+                        } else if ("secure".equals(category)) {
+                            success = Settings.Secure.putString(cr, key, value);
+                        }
+                        resultText = success ? "ContentResolverで設定変更完了: " + category + " " + key + " = " + value
+                                             : "変更失敗（権限不足の可能性あり）";
+                    }
+                } catch (Exception e) {
+                    resultText = "ERROR: " + e.getMessage();
+                }
+            } else if ("get".equals(action)) {
+                String value = null;
+                try {
+                    if (isDeviceOwner && dpm != null) {
+                        if ("global".equals(category)) {
+                            value = dpm.getGlobalSetting(admin, key);
+                        } else if ("secure".equals(category)) {
+                            value = dpm.getSecureSetting(admin, key);
+                        } else if ("system".equals(category)) {
+                            value = dpm.getSystemSetting(admin, key);
+                        }
+                    } else {
+                        ContentResolver cr = getContentResolver();
+                        if ("system".equals(category)) {
+                            value = Settings.System.getString(cr, key);
+                        } else if ("global".equals(category)) {
+                            value = Settings.Global.getString(cr, key);
+                        } else if ("secure".equals(category)) {
+                            value = Settings.Secure.getString(cr, key);
+                        }
+                    }
+                    resultText = "取得結果: " + category + " " + key + " = " + (value != null ? value : "(null)");
+                    success = true;
+                } catch (Exception e) {
+                    resultText = "ERROR: " + e.getMessage();
+                }
+            } else {
+                resultText = "ERROR: 未対応のsettingsコマンドです";
+            }
+
+            runOnUiThread(() -> resultView.append(resultText + "\n"));
+            saveLogToFile(command, resultText);
+            return;   // settingsコマンドはshell実行をスキップ（最適化）
+        }
+
+        // ====================== 通常コマンド（Shizuku or 通常shell） ======================
         try {
             Process process;
             if (shizukuGranted) {
@@ -272,7 +368,7 @@ public class MainActivity extends Activity {
                 }
             });
 
-        } catch (IOException e) {
+        } catch (Exception e) {
             resultView.setText("ERROR: " + e.getMessage());
         }
     }
