@@ -1,16 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="@android:color/white"
-    android:padding="16dp">
+    android:padding="16dp"
+    android:background="@android:color/white">
 
+    <!-- コマンド入力エリア（layout_gravity="bottom"は完全に削除） -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal">
 
-        <!-- コマンド入力フィールド -->
         <EditText
             android:id="@+id/command_input"
             android:layout_width="0dp"
@@ -22,7 +23,6 @@
             android:inputType="text"
             android:padding="8dp" />
 
-        <!-- 実行ボタン -->
         <Button
             android:id="@+id/execute_button"
             android:layout_width="wrap_content"
@@ -38,12 +38,12 @@
         android:layout_marginBottom="8dp"
         android:text="Keyboard" />
 
+    <!-- バイナリ選択エリア -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal">
 
-        <!-- バイナリ選択ボタン -->
         <Button
             android:id="@+id/pick_binary_button"
             android:layout_width="wrap_content"
@@ -52,7 +52,6 @@
             android:layout_marginBottom="8dp"
             android:text="Pick Binary" />
 
-        <!-- バイナリ解除ボタン -->
         <Button
             android:id="@+id/clear_binary_button"
             android:layout_width="wrap_content"
@@ -69,13 +68,14 @@
         android:layout_marginBottom="8dp"
         android:text="Stop" />
 
-    <!-- 結果表示用スクロールビュー -->
+    <!-- 結果表示エリア（Android 11でも確実に白固定） -->
     <ScrollView
         android:id="@+id/scroll_view"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="8dp">
+        android:layout_marginTop="8dp"
+        android:background="@android:color/white">
 
         <TextView
             android:id="@+id/result_view"
@@ -85,7 +85,8 @@
             android:padding="10dp"
             android:scrollbars="vertical"
             android:text="Result will be displayed here"
-            android:textIsSelectable="true" />
+            android:textIsSelectable="true"
+            android:textColor="@android:color/black" />
     </ScrollView>
 
 </LinearLayout>
