@@ -40,8 +40,11 @@
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="com.coara.execapp.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
             android:exported="true"
-            android:permission="moe.shizuku.api.permission.SHIZUKU" />
+            android:permission="moe.shizuku.api.permission.SHIZUKU"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
         
         <provider
             android:name="androidx.core.content.FileProvider"
