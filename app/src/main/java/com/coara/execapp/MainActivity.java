@@ -215,9 +215,10 @@ public class MainActivity extends Activity {
         try {
             Process process;
             if (shizukuGranted) {
-                process = Shizuku.exec("/system/bin/sh", "-c", command);
-                runOnUiThread(() -> resultView.append("INFO: Shizukuで実行\n"));
+                process = Shizuku.newProcess(new String[]{"/system/bin/sh", "-c", command}, null, null);
+                runOnUiThread(() -> resultView.append("INFO: Shizukuで実行（shell/root権限）\n"));
             } else {
+                // Shizukuなし → 通常のアプリ権限で実行
                 ProcessBuilder processBuilder = new ProcessBuilder("/system/bin/sh", "-c", command);
                 process = processBuilder.start();
             }
@@ -302,4 +303,3 @@ public class MainActivity extends Activity {
         }
     }
 }
-
