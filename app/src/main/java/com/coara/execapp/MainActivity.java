@@ -68,18 +68,31 @@ public class MainActivity extends Activity {
 
         checkPermissions();
 
+        // Device Owner（任意機能・安全化）
         dpm = (DevicePolicyManager) getSystemService(Context.DEVICE_POLICY_SERVICE);
-        if (dpm.isDeviceOwnerApp(getPackageName())) {
-            Toast.makeText(this, "Device Ownerモード有効", Toast.LENGTH_SHORT).show();
+        if (dpm != null) {
+            try {
+                if (dpm.isDeviceOwnerApp(getPackageName())) {
+                    Toast.makeText(this, "Device Ownerモード有効", Toast.LENGTH_SHORT).show();
+                }
+            } catch (Exception ignored) {
+                // Device Owner機能が使えない端末でもクラッシュしない
+            }
         }
 
-        Shizuku.addRequestPermissionResultListener((requestCode, grantResult) -> {
-            if (requestCode == SHIZUKU_PERMISSION_REQUEST_CODE) {
-                Toast.makeText(this, grantResult == PackageManager.PERMISSION_GRANTED ? "Shizuku権限付与" : "Shizuku権限拒否", Toast.LENGTH_SHORT).show();
+        // Shizuku（任意機能・完全に安全化）
+        try {
+            Shizuku.addRequestPermissionResultListener((requestCode, grantResult) -> {
+                if (requestCode == SHIZUKU_PERMISSION_REQUEST_CODE) {
+                    Toast.makeText(this, grantResult == PackageManager.PERMISSION_GRANTED ? "Shizuku権限付与" : "Shizuku権限拒否", Toast.LENGTH_SHORT).show();
+                }
+            });
+
+            if (Shizuku.pingBinder() && Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                Shizuku.requestPermission(SHIZUKU_PERMISSION_REQUEST_CODE);
             }
-        });
-        if (Shizuku.pingBinder() && Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-            Shizuku.requestPermission(SHIZUKU_PERMISSION_REQUEST_CODE);
+        } catch (Exception ignored) {
+            // Shizukuがインストールされていない端末でもクラッシュしない
         }
 
         pickBinaryButton.setOnClickListener(view -> launchFilePicker());
