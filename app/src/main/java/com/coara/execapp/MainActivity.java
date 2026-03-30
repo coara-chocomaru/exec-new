@@ -82,7 +82,6 @@ public class MainActivity extends Activity {
             }
         }
 
-        // ====================== 起動時にシステム設定変更許可確認 ======================
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (!Settings.System.canWrite(this)) {
                 AlertDialog.Builder builder = new AlertDialog.Builder(this);
@@ -238,16 +237,44 @@ public class MainActivity extends Activity {
     private void executeCommand(String command, @NonNull TextView resultView) {
         resultView.setText("");
 
-        if (command.trim().startsWith("settings ")) {
-            String[] parts = command.trim().split("\\s+");
-            if (parts.length < 4) {
-                resultView.append("ERROR: settingsコマンドの形式が不正です (例: settings put global key value)\n");
+        String trimmed = command.trim();
+        if (trimmed.startsWith("settings ")) {
+            String[] parts = trimmed.split("\\s+");
+
+            // 短縮形対応: settings global adb_enable 0 → put扱い
+            String action;
+            String category;
+            String key;
+            String value = null;
+
+            if (parts.length >= 4 && ("put".equals(parts[1]) || "get".equals(parts[1]))) {
+                // 完全形
+                action = parts[1];
+                category = parts[2];
+                key = parts[3];
+                if ("put".equals(action) && parts.length >= 5) {
+                    StringBuilder sb = new StringBuilder();
+                    for (int i = 4; i < parts.length; i++) {
+                        sb.append(parts[i]).append(i < parts.length - 1 ? " " : "");
+                    }
+                    value = sb.toString();
+                }
+            } else if (parts.length >= 3) {
+                // 短縮形（putを省略）
+                action = "put";
+                category = parts[1];
+                key = parts[2];
+                if (parts.length >= 4) {
+                    StringBuilder sb = new StringBuilder();
+                    for (int i = 3; i < parts.length; i++) {
+                        sb.append(parts[i]).append(i < parts.length - 1 ? " " : "");
+                    }
+                    value = sb.toString();
+                }
+            } else {
+                resultView.append("ERROR: settingsコマンドの形式が不正です\n");
                 return;
             }
-
-            String action = parts[1];
-            String category = parts[2];
-            String key = parts[3];
 
             DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
             ComponentName admin = new ComponentName(this, AppDeviceAdminReceiver.class);
@@ -255,34 +282,19 @@ public class MainActivity extends Activity {
             boolean success = false;
             String resultText = "";
 
-            if ("put".equals(action) && parts.length >= 5) {
-                StringBuilder valueBuilder = new StringBuilder();
-                for (int i = 4; i < parts.length; i++) {
-                    valueBuilder.append(parts[i]);
-                    if (i < parts.length - 1) valueBuilder.append(" ");
-                }
-                String value = valueBuilder.toString();
-
+            if ("put".equals(action) && value != null) {
                 try {
                     if (isDeviceOwner && dpm != null) {
-                        if ("global".equals(category)) {
-                            dpm.setGlobalSetting(admin, key, value);
-                        } else if ("secure".equals(category)) {
-                            dpm.setSecureSetting(admin, key, value);
-                        } else if ("system".equals(category)) {
-                            dpm.setSystemSetting(admin, key, value);
-                        }
+                        if ("global".equals(category)) dpm.setGlobalSetting(admin, key, value);
+                        else if ("secure".equals(category)) dpm.setSecureSetting(admin, key, value);
+                        else if ("system".equals(category)) dpm.setSystemSetting(admin, key, value);
                         resultText = "Device Ownerで設定変更完了: " + category + " " + key + " = " + value;
                         success = true;
                     } else {
                         ContentResolver cr = getContentResolver();
-                        if ("system".equals(category)) {
-                            success = Settings.System.putString(cr, key, value);
-                        } else if ("global".equals(category)) {
-                            success = Settings.Global.putString(cr, key, value);
-                        } else if ("secure".equals(category)) {
-                            success = Settings.Secure.putString(cr, key, value);
-                        }
+                        if ("system".equals(category)) success = Settings.System.putString(cr, key, value);
+                        else if ("global".equals(category)) success = Settings.Global.putString(cr, key, value);
+                        else if ("secure".equals(category)) success = Settings.Secure.putString(cr, key, value);
                         resultText = success ? "ContentResolverで設定変更完了: " + category + " " + key + " = " + value
                                              : "変更失敗（WRITE_SETTINGS権限が不足しています）";
                     }
@@ -290,17 +302,13 @@ public class MainActivity extends Activity {
                     resultText = "ERROR: " + e.getMessage();
                 }
             } else if ("get".equals(action)) {
-                String value = null;
+                String val = null;
                 try {
                     ContentResolver cr = getContentResolver();
-                    if ("system".equals(category)) {
-                        value = Settings.System.getString(cr, key);
-                    } else if ("global".equals(category)) {
-                        value = Settings.Global.getString(cr, key);
-                    } else if ("secure".equals(category)) {
-                        value = Settings.Secure.getString(cr, key);
-                    }
-                    resultText = "取得結果: " + category + " " + key + " = " + (value != null ? value : "(null)");
+                    if ("system".equals(category)) val = Settings.System.getString(cr, key);
+                    else if ("global".equals(category)) val = Settings.Global.getString(cr, key);
+                    else if ("secure".equals(category)) val = Settings.Secure.getString(cr, key);
+                    resultText = "取得結果: " + category + " " + key + " = " + (val != null ? val : "(null)");
                     success = true;
                 } catch (Exception e) {
                     resultText = "ERROR: " + e.getMessage();
@@ -314,6 +322,7 @@ public class MainActivity extends Activity {
             return;
         }
 
+        // 通常コマンド（Shizuku or shell）
         try {
             Process process;
             if (shizukuGranted) {
@@ -324,12 +333,12 @@ public class MainActivity extends Activity {
                     process = (Process) method.invoke(null, new String[]{"/system/bin/sh", "-c", command}, null, null);
                     runOnUiThread(() -> resultView.append("INFO: Shizukuで実行（shell/root権限）\n"));
                 } catch (Exception reflectionEx) {
-                    ProcessBuilder processBuilder = new ProcessBuilder("/system/bin/sh", "-c", command);
-                    process = processBuilder.start();
+                    ProcessBuilder pb = new ProcessBuilder("/system/bin/sh", "-c", command);
+                    process = pb.start();
                 }
             } else {
-                ProcessBuilder processBuilder = new ProcessBuilder("/system/bin/sh", "-c", command);
-                process = processBuilder.start();
+                ProcessBuilder pb = new ProcessBuilder("/system/bin/sh", "-c", command);
+                process = pb.start();
             }
             currentProcess = process;
 
