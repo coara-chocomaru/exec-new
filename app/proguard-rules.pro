@@ -23,8 +23,6 @@
 -keepattributes *Annotation*
 -keepattributes Exceptions, InnerClasses, Signature, Deprecated, EnclosingMethod
 
--classobfuscationdictionary obfuscation-dictionary.txt
-
 
 
 -allowaccessmodification
