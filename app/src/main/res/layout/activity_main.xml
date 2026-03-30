@@ -6,7 +6,7 @@
     android:padding="16dp"
     android:background="@android:color/white">
 
-    <!-- コマンド入力エリア（layout_gravity="bottom"は完全に削除） -->
+    <!-- コマンド入力エリア -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -68,14 +68,15 @@
         android:layout_marginBottom="8dp"
         android:text="Stop" />
 
-    <!-- 結果表示エリア（Android 11でも確実に白固定） -->
+    <!-- 結果表示エリア（Android 11 + API24でも完全に白固定） -->
     <ScrollView
         android:id="@+id/scroll_view"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
         android:layout_marginTop="8dp"
-        android:background="@android:color/white">
+        android:background="@android:color/white"
+        android:scrollbars="vertical">
 
         <TextView
             android:id="@+id/result_view"
@@ -83,7 +84,6 @@
             android:layout_height="wrap_content"
             android:background="@android:color/white"
             android:padding="10dp"
-            android:scrollbars="vertical"
             android:text="Result will be displayed here"
             android:textIsSelectable="true"
             android:textColor="@android:color/black" />
