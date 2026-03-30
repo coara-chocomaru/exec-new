@@ -15,7 +15,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
-import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.database.Cursor;
 import android.widget.Button;
@@ -42,8 +41,8 @@ import rikka.shizuku.Shizuku;
 public class MainActivity extends Activity {
 
     private Process currentProcess;
-    private File selectedBinary;           // 内部ストレージのオリジナルファイル（常に保持）
-    private String executionPath;          // 実際に実行時に使うパス（Shizuku時は /data/local/tmp/xxx）
+    private File selectedBinary;           // 内部ストレージにコピーしたオリジナル
+    private String executionPath;          // 実際に実行するパス（Shizuku時は /data/local/tmp/xxx）
     private ScheduledExecutorService timeoutExecutor;
     private boolean isDeviceOwner;
     private boolean shizukuGranted;
@@ -59,15 +58,12 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // ====================== Android 11でも下半分が黒くならない完全対策 ======================
-        // 1. Window全体を強制白
+        // ====================== Android 11 + API24固定でレイアウト崩れ完全防止 ======================
         getWindow().getDecorView().setBackgroundColor(Color.WHITE);
-        // 2. ScrollViewとTextViewを再固定
+
         ScrollView scrollView = findViewById(R.id.scroll_view);
         TextView resultView = findViewById(R.id.result_view);
-        if (scrollView != null) {
-            scrollView.setBackgroundColor(Color.WHITE);
-        }
+        if (scrollView != null) scrollView.setBackgroundColor(Color.WHITE);
         if (resultView != null) {
             resultView.setBackgroundColor(Color.WHITE);
             resultView.setTextColor(Color.BLACK);
@@ -229,14 +225,15 @@ public class MainActivity extends Activity {
                 selectedBinary = copyFileToInternalStorage(uri);
                 if (selectedBinary != null && selectedBinary.setExecutable(true)) {
                     if (shizukuGranted && Shizuku.pingBinder()) {
+                        // ====================== Shizuku有効時：開いた対象ファイルパスから直接 /data/local/tmp にコピー ======================
                         String filename = selectedBinary.getName();
                         executionPath = "/data/local/tmp/" + filename;
 
-                        String cmd = "cp -f \"" + selectedBinary.getAbsolutePath() + "\" \"" + executionPath + "\" && chmod 0777 \"" + executionPath + "\"";
+                        String cmd = "cp -f \"" + selectedBinary.getAbsolutePath() + "\" \"" + executionPath + "\" && chmod 777 \"" + executionPath + "\"";
                         boolean success = runSilentShizukuCommand(cmd);
 
                         if (success) {
-                            Toast.makeText(this, "Shizukuで /data/local/tmp にコピー＆実行権限付与完了: " + executionPath, Toast.LENGTH_SHORT).show();
+                            Toast.makeText(this, "Shizukuで /data/local/tmp にコピー＆chmod 777完了: " + executionPath, Toast.LENGTH_SHORT).show();
                         } else {
                             Toast.makeText(this, "Shizukuコピー失敗 → 内部ストレージのまま実行します", Toast.LENGTH_SHORT).show();
                             executionPath = selectedBinary.getAbsolutePath();
