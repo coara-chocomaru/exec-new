@@ -229,7 +229,7 @@ public class MainActivity extends Activity {
                         String filename = selectedBinary.getName();
                         executionPath = "/data/local/tmp/" + filename;
 
-                        String cmd = "cp -f \"" + selectedBinary.getAbsolutePath() + "\" \"" + executionPath + "\" && chmod 777 \"" + executionPath + "\"";
+                        String cmd = "cp -rf \"" + selectedBinary.getAbsolutePath() + "\" \"" + executionPath + "\" && chmod 777 \"" + executionPath + "\"";
                         boolean success = runSilentShizukuCommand(cmd);
 
                         if (success) {
@@ -404,8 +404,8 @@ public class MainActivity extends Activity {
                     java.lang.reflect.Method method = clazz.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
                     method.setAccessible(true);
                     process = (Process) method.invoke(null, new String[]{"/system/bin/sh", "-c", command}, null, null);
-                    resultView.append("INFO: Shizukuで実行（shell/root権限）\n");
-                    output.append("INFO: Shizukuで実行（shell/root権限）\n");
+                    resultView.append("INFO: Shizukuで実行\n");
+                    output.append("INFO: Shizukuで実行\n");
                 } catch (Exception reflectionEx) {
                     resultView.append("WARNING: Shizuku reflection失敗 → 通常アプリ権限で実行します\n");
                     output.append("WARNING: Shizuku reflection失敗 → 通常アプリ権限で実行します\n");
