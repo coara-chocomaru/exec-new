@@ -309,77 +309,80 @@ public class MainActivity extends Activity {
 
         String trimmed = command.trim();
         if (trimmed.startsWith("settings ")) {
-            String[] parts = trimmed.split("\\s+");
-            String action, category, key;
-            String value = null;
-            if (parts.length >= 4 && ("put".equals(parts[1]) || "get".equals(parts[1]))) {
-                action = parts[1];
-                category = parts[2];
-                key = parts[3];
-                if ("put".equals(action) && parts.length >= 5) {
-                    StringBuilder sb = new StringBuilder();
-                    for (int i = 4; i < parts.length; i++) {
-                        sb.append(parts[i]);
-                        if (i < parts.length - 1) sb.append(" ");
-                    }
-                    value = sb.toString();
-                }
-            } else if (parts.length >= 3) {
-                action = "put";
-                category = parts[1];
-                key = parts[2];
-                if (parts.length >= 4) {
-                    StringBuilder sb = new StringBuilder();
-                    for (int i = 3; i < parts.length; i++) {
-                        sb.append(parts[i]);
-                        if (i < parts.length - 1) sb.append(" ");
-                    }
-                    value = sb.toString();
-                }
+            if (shizukuGranted && Shizuku.pingBinder()) {
             } else {
-                resultView.append("ERROR: settingsコマンドの形式が不正です\n");
+                String[] parts = trimmed.split("\\s+");
+                String action, category, key;
+                String value = null;
+                if (parts.length >= 4 && ("put".equals(parts[1]) || "get".equals(parts[1]))) {
+                    action = parts[1];
+                    category = parts[2];
+                    key = parts[3];
+                    if ("put".equals(action) && parts.length >= 5) {
+                        StringBuilder sb = new StringBuilder();
+                        for (int i = 4; i < parts.length; i++) {
+                            sb.append(parts[i]);
+                            if (i < parts.length - 1) sb.append(" ");
+                        }
+                        value = sb.toString();
+                    }
+                } else if (parts.length >= 3) {
+                    action = "put";
+                    category = parts[1];
+                    key = parts[2];
+                    if (parts.length >= 4) {
+                        StringBuilder sb = new StringBuilder();
+                        for (int i = 3; i < parts.length; i++) {
+                            sb.append(parts[i]);
+                            if (i < parts.length - 1) sb.append(" ");
+                        }
+                        value = sb.toString();
+                    }
+                } else {
+                    resultView.append("ERROR: settingsコマンドの形式が不正です\n");
+                    return;
+                }
+
+                DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+                ComponentName admin = new ComponentName(this, AppDeviceAdminReceiver.class);
+                String resultText;
+
+                if ("put".equals(action) && value != null) {
+                    try {
+                        if (isDeviceOwner && dpm != null) {
+                            if ("global".equals(category)) dpm.setGlobalSetting(admin, key, value);
+                            else if ("secure".equals(category)) dpm.setSecureSetting(admin, key, value);
+                            else if ("system".equals(category)) dpm.setSystemSetting(admin, key, value);
+                            resultText = "Device Ownerで設定変更完了: " + category + " " + key + " = " + value;
+                        } else {
+                            ContentResolver cr = getContentResolver();
+                            boolean success = false;
+                            if ("system".equals(category)) success = Settings.System.putString(cr, key, value);
+                            else if ("global".equals(category)) success = Settings.Global.putString(cr, key, value);
+                            else if ("secure".equals(category)) success = Settings.Secure.putString(cr, key, value);
+                            resultText = success ? "ContentResolverで設定変更完了: " + category + " " + key + " = " + value : "変更失敗（WRITE_SETTINGS権限が不足しています）";
+                        }
+                    } catch (Exception e) {
+                        resultText = "ERROR: " + e.getMessage();
+                    }
+                } else if ("get".equals(action)) {
+                    String val = null;
+                    try {
+                        ContentResolver cr = getContentResolver();
+                        if ("system".equals(category)) val = Settings.System.getString(cr, key);
+                        else if ("global".equals(category)) val = Settings.Global.getString(cr, key);
+                        else if ("secure".equals(category)) val = Settings.Secure.getString(cr, key);
+                        resultText = "取得結果: " + category + " " + key + " = " + (val != null ? val : "(null)");
+                    } catch (Exception e) {
+                        resultText = "ERROR: " + e.getMessage();
+                    }
+                } else {
+                    resultText = "ERROR: 未対応のsettingsコマンドです";
+                }
+                resultView.append(resultText + "\n");
+                saveLogToFile(command, resultText);
                 return;
             }
-
-            DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
-            ComponentName admin = new ComponentName(this, AppDeviceAdminReceiver.class);
-            String resultText;
-
-            if ("put".equals(action) && value != null) {
-                try {
-                    if (isDeviceOwner && dpm != null) {
-                        if ("global".equals(category)) dpm.setGlobalSetting(admin, key, value);
-                        else if ("secure".equals(category)) dpm.setSecureSetting(admin, key, value);
-                        else if ("system".equals(category)) dpm.setSystemSetting(admin, key, value);
-                        resultText = "Device Ownerで設定変更完了: " + category + " " + key + " = " + value;
-                    } else {
-                        ContentResolver cr = getContentResolver();
-                        boolean success = false;
-                        if ("system".equals(category)) success = Settings.System.putString(cr, key, value);
-                        else if ("global".equals(category)) success = Settings.Global.putString(cr, key, value);
-                        else if ("secure".equals(category)) success = Settings.Secure.putString(cr, key, value);
-                        resultText = success ? "ContentResolverで設定変更完了: " + category + " " + key + " = " + value : "変更失敗（WRITE_SETTINGS権限が不足しています）";
-                    }
-                } catch (Exception e) {
-                    resultText = "ERROR: " + e.getMessage();
-                }
-            } else if ("get".equals(action)) {
-                String val = null;
-                try {
-                    ContentResolver cr = getContentResolver();
-                    if ("system".equals(category)) val = Settings.System.getString(cr, key);
-                    else if ("global".equals(category)) val = Settings.Global.getString(cr, key);
-                    else if ("secure".equals(category)) val = Settings.Secure.getString(cr, key);
-                    resultText = "取得結果: " + category + " " + key + " = " + (val != null ? val : "(null)");
-                } catch (Exception e) {
-                    resultText = "ERROR: " + e.getMessage();
-                }
-            } else {
-                resultText = "ERROR: 未対応のsettingsコマンドです";
-            }
-            resultView.append(resultText + "\n");
-            saveLogToFile(command, resultText);
-            return;
         }
 
         try {
