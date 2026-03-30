@@ -1,3 +1,5 @@
+java
+
 package com.coara.execapp;
 
 import android.Manifest;
@@ -36,6 +38,7 @@ public class MainActivity extends Activity {
     private File selectedBinary;
     private ScheduledExecutorService timeoutExecutor;
     private boolean isDeviceOwner;
+    private boolean shizukuGranted;
     private Shizuku.OnRequestPermissionResultListener requestPermissionResultListener;
     private static final int PERMISSION_REQUEST_CODE = 1001;
     private static final int FILE_PICKER_REQUEST_CODE = 1002;
@@ -59,13 +62,19 @@ public class MainActivity extends Activity {
         DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
         isDeviceOwner = dpm != null && dpm.isDeviceOwnerApp(getPackageName());
 
+        shizukuGranted = false;
         requestPermissionResultListener = (requestCode, grantResult) -> {
             if (requestCode == SHIZUKU_REQUEST_CODE && grantResult == PackageManager.PERMISSION_GRANTED) {
+                shizukuGranted = true;
+                runOnUiThread(() -> Toast.makeText(this, "Shizuku権限が付与されました（shell/rootで実行可能）", Toast.LENGTH_SHORT).show());
             }
         };
         Shizuku.addRequestPermissionResultListener(requestPermissionResultListener);
+
         if (Shizuku.pingBinder() && !Shizuku.isPreV11()) {
-            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                shizukuGranted = true;
+            } else {
                 Shizuku.requestPermission(SHIZUKU_REQUEST_CODE);
             }
         }
@@ -206,8 +215,15 @@ public class MainActivity extends Activity {
     private void executeCommand(String command, @NonNull TextView resultView) {
         resultView.setText("");
         try {
-            ProcessBuilder processBuilder = new ProcessBuilder("/system/bin/sh", "-c", command);
-            currentProcess = processBuilder.start();
+            Process process;
+            if (shizukuGranted) {
+                process = Shizuku.exec("/system/bin/sh", "-c", command);
+                runOnUiThread(() -> resultView.append("INFO: Shizukuで実行\n"));
+            } else {
+                ProcessBuilder processBuilder = new ProcessBuilder("/system/bin/sh", "-c", command);
+                process = processBuilder.start();
+            }
+            currentProcess = process;
 
             timeoutExecutor = Executors.newSingleThreadScheduledExecutor();
             long timeout = isDeviceOwner ? 0L : 180L;
@@ -288,3 +304,4 @@ public class MainActivity extends Activity {
         }
     }
 }
+
