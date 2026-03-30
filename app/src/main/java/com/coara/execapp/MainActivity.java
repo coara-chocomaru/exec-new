@@ -78,7 +78,7 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, grantResult == PackageManager.PERMISSION_GRANTED ? "Shizuku権限付与" : "Shizuku権限拒否", Toast.LENGTH_SHORT).show();
             }
         });
-        if (Shizuku.pingBinder() && !Shizuku.isPermissionGranted()) {
+        if (Shizuku.pingBinder() && Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
             Shizuku.requestPermission(SHIZUKU_PERMISSION_REQUEST_CODE);
         }
 
@@ -110,8 +110,12 @@ public class MainActivity extends Activity {
         keyboardButton.setOnClickListener(view -> {
             InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
             if (imm != null) {
-                imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
-                commandInput.requestFocus();
+                if (imm.isActive()) {
+                    imm.hideSoftInputFromWindow(commandInput.getWindowToken(), 0);
+                } else {
+                    commandInput.requestFocus();
+                    imm.showSoftInput(commandInput, InputMethodManager.SHOW_IMPLICIT);
+                }
             }
         });
     }
