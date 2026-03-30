@@ -57,4 +57,7 @@ tasks.withType(JavaCompile).configureEach {
 
 dependencies {
     implementation 'androidx.core:core:1.0.0'
+    implementation 'androidx.annotation:annotation:1.0.0'
+    implementation 'dev.rikka.shizuku:api:13.6.0'
+    implementation 'dev.rikka.shizuku:provider:13.6.0'
 }
