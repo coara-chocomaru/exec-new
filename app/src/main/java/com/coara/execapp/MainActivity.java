@@ -7,6 +7,7 @@ import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
@@ -46,6 +47,8 @@ public class MainActivity extends Activity {
     private static final int PERMISSION_REQUEST_CODE = 1001;
     private static final int FILE_PICKER_REQUEST_CODE = 1002;
     private static final int SHIZUKU_REQUEST_CODE = 1003;
+    private static final String PREF_NAME = "execapp_prefs";
+    private static final String KEY_SETTINGS_CHECKED = "write_settings_checked_once";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -74,34 +77,9 @@ public class MainActivity extends Activity {
         };
         Shizuku.addRequestPermissionResultListener(requestPermissionResultListener);
 
-        if (Shizuku.pingBinder() && !Shizuku.isPreV11()) {
-            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-                shizukuGranted = true;
-            } else {
-                Shizuku.requestPermission(SHIZUKU_REQUEST_CODE);
-            }
-        }
+        updateShizukuStatus();
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (!Settings.System.canWrite(this)) {
-                AlertDialog.Builder builder = new AlertDialog.Builder(this);
-                builder.setTitle("システム設定変更の許可");
-                builder.setMessage("settings put/get コマンドでシステム設定を変更するには\n" +
-                        "WRITE_SETTINGS権限が必要です。\n\n" +
-                        "今すぐ許可しますか？\n" +
-                        "（許可しない場合、ShizukuまたはDevice Ownerが必要です）");
-                builder.setPositiveButton("許可する", (dialog, which) -> {
-                    Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
-                    intent.setData(Uri.parse("package:" + getPackageName()));
-                    startActivity(intent);
-                });
-                builder.setNegativeButton("後で", null);
-                builder.setCancelable(true);
-                builder.show();
-            } else {
-                Toast.makeText(this, "WRITE_SETTINGS権限は許可済みです", Toast.LENGTH_SHORT).show();
-            }
-        }
+        handleWriteSettingsPermission();
 
         pickBinaryButton.setOnClickListener(view -> launchFilePicker());
 
@@ -140,6 +118,50 @@ public class MainActivity extends Activity {
                 commandInput.requestFocus();
             }
         });
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        updateShizukuStatus();
+    }
+
+    private void updateShizukuStatus() {
+        if (Shizuku.pingBinder() && !Shizuku.isPreV11()) {
+            shizukuGranted = Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+            if (!shizukuGranted) {
+                Shizuku.requestPermission(SHIZUKU_REQUEST_CODE);
+            }
+        } else {
+            shizukuGranted = false;
+        }
+    }
+
+    private void handleWriteSettingsPermission() {
+        SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+        boolean alreadyChecked = prefs.getBoolean(KEY_SETTINGS_CHECKED, false);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!Settings.System.canWrite(this)) {
+                if (!alreadyChecked) {
+                    AlertDialog.Builder builder = new AlertDialog.Builder(this);
+                    builder.setTitle("システム設定変更の許可");
+                    builder.setMessage("settings put/get コマンドでシステム設定を変更するには\n" +
+                            "WRITE_SETTINGS権限が必要です。\n\n" +
+                            "今すぐ許可しますか？\n" +
+                            "（許可しない場合、ShizukuまたはDevice Ownerが必要です）");
+                    builder.setPositiveButton("許可する", (dialog, which) -> {
+                        Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
+                        intent.setData(Uri.parse("package:" + getPackageName()));
+                        startActivity(intent);
+                        prefs.edit().putBoolean(KEY_SETTINGS_CHECKED, true).apply();
+                    });
+                    builder.setNegativeButton("後で", (dialog, which) -> prefs.edit().putBoolean(KEY_SETTINGS_CHECKED, true).apply());
+                    builder.setCancelable(true);
+                    builder.show();
+                }
+            }
+        }
     }
 
     private void checkPermissions() {
@@ -335,7 +357,9 @@ public class MainActivity extends Activity {
                     output.append("INFO: Shizukuで実行（shell/root権限）\n");
                 } catch (Exception reflectionEx) {
                     resultView.append("WARNING: Shizuku reflection失敗 → 通常アプリ権限で実行します\n");
+                    resultView.append("WARNING: 原因 → " + reflectionEx.getClass().getSimpleName() + ": " + reflectionEx.getMessage() + "\n");
                     output.append("WARNING: Shizuku reflection失敗 → 通常アプリ権限で実行します\n");
+                    output.append("WARNING: 原因 → " + reflectionEx.getClass().getSimpleName() + ": " + reflectionEx.getMessage() + "\n");
                     ProcessBuilder pb = new ProcessBuilder("/system/bin/sh", "-c", command);
                     process = pb.start();
                 }
