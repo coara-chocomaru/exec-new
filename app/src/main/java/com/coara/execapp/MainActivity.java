@@ -16,8 +16,10 @@ import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.inputmethod.InputMethodManager;
 import android.database.Cursor;
+import android.graphics.Color;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -39,7 +41,8 @@ import rikka.shizuku.Shizuku;
 public class MainActivity extends Activity {
 
     private Process currentProcess;
-    private File selectedBinary;
+    private File selectedBinary;           // 内部ストレージのオリジナルファイル（常に保持）
+    private String executionPath;          // 実際に実行時に使うパス（Shizuku時は /data/local/tmp/xxx）
     private ScheduledExecutorService timeoutExecutor;
     private boolean isDeviceOwner;
     private boolean shizukuGranted;
@@ -62,6 +65,16 @@ public class MainActivity extends Activity {
         Button stopButton = findViewById(R.id.stop_button);
         Button keyboardButton = findViewById(R.id.keyboard_button);
         TextView resultView = findViewById(R.id.result_view);
+        ScrollView scrollView = findViewById(R.id.scroll_view);
+
+        // API24固定で下半分が真っ暗になる問題の完全解決（背景色を明示的に白固定）
+        if (scrollView != null) {
+            scrollView.setBackgroundColor(Color.WHITE);
+        }
+        if (resultView != null) {
+            resultView.setBackgroundColor(Color.WHITE);
+            resultView.setTextColor(Color.BLACK);
+        }
 
         checkPermissions();
 
@@ -84,19 +97,24 @@ public class MainActivity extends Activity {
         pickBinaryButton.setOnClickListener(view -> launchFilePicker());
 
         clearBinaryButton.setOnClickListener(view -> {
+            if (shizukuGranted && executionPath != null && executionPath.startsWith("/data/local/tmp/")) {
+                // Shizuku有効時は /data/local/tmp からも削除
+                runSilentShizukuCommand("rm -f " + executionPath);
+            }
             selectedBinary = null;
+            executionPath = null;
             Toast.makeText(this, "バイナリが解除されました。", Toast.LENGTH_SHORT).show();
         });
 
         executeButton.setOnClickListener(view -> {
             String command = commandInput.getText().toString().trim();
-            if (command.isEmpty() && selectedBinary == null) {
+            if (command.isEmpty() && executionPath == null) {
                 Toast.makeText(this, "コマンドまたはバイナリを指定してください。", Toast.LENGTH_SHORT).show();
                 return;
             }
 
-            if (selectedBinary != null && selectedBinary.exists()) {
-                command = selectedBinary.getAbsolutePath() + " " + command;
+            if (executionPath != null) {
+                command = executionPath + " " + command;
             }
 
             executeCommand(command, resultView);
@@ -138,12 +156,6 @@ public class MainActivity extends Activity {
         } else {
             shizukuGranted = false;
         }
-
-        // デバッグ用：Shizuku状態を即座に表示（原因特定用）
-        runOnUiThread(() -> {
-            String status = "Shizuku状態: binderAlive=" + binderAlive + " preV11=" + preV11 + " granted=" + shizukuGranted;
-            Toast.makeText(this, status, Toast.LENGTH_LONG).show();
-        });
     }
 
     private void handleWriteSettingsPermission() {
@@ -158,7 +170,7 @@ public class MainActivity extends Activity {
                     builder.setMessage("settings put/get コマンドでシステム設定を変更するには\n" +
                             "WRITE_SETTINGS権限が必要です。\n\n" +
                             "今すぐ許可しますか？\n" +
-                            "（許可しない場合、ShizukuまたはDevice Ownerが必要です）");
+                            "（許可しない場合、Shizukuが必要です）");
                     builder.setPositiveButton("許可する", (dialog, which) -> {
                         Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
                         intent.setData(Uri.parse("package:" + getPackageName()));
@@ -213,7 +225,25 @@ public class MainActivity extends Activity {
             if (uri != null) {
                 selectedBinary = copyFileToInternalStorage(uri);
                 if (selectedBinary != null && selectedBinary.setExecutable(true)) {
-                    Toast.makeText(this, "バイナリが選択され、実行権限が付与されました: " + selectedBinary.getAbsolutePath(), Toast.LENGTH_SHORT).show();
+                    if (shizukuGranted && Shizuku.pingBinder()) {
+                        // Shizuku有効時は /data/local/tmp にコピー + chmod 0777
+                        String filename = selectedBinary.getName();
+                        executionPath = "/data/local/tmp/" + filename;
+
+                        String cmd = "cp -f \"" + selectedBinary.getAbsolutePath() + "\" \"" + executionPath + "\" && chmod 0777 \"" + executionPath + "\"";
+                        boolean success = runSilentShizukuCommand(cmd);
+
+                        if (success) {
+                            Toast.makeText(this, "Shizukuで /data/local/tmp にコピー＆実行権限付与完了: " + executionPath, Toast.LENGTH_SHORT).show();
+                        } else {
+                            Toast.makeText(this, "Shizukuコピー失敗 → 内部ストレージのまま実行します", Toast.LENGTH_SHORT).show();
+                            executionPath = selectedBinary.getAbsolutePath();
+                        }
+                    } else {
+                        // Shizuku無効時は通常の内部パス
+                        executionPath = selectedBinary.getAbsolutePath();
+                        Toast.makeText(this, "バイナリが選択され、実行権限が付与されました: " + executionPath, Toast.LENGTH_SHORT).show();
+                    }
                 } else {
                     Toast.makeText(this, "バイナリ選択または実行権限付与に失敗しました。", Toast.LENGTH_SHORT).show();
                 }
@@ -265,6 +295,20 @@ public class MainActivity extends Activity {
             }
         }
         return result;
+    }
+
+    private boolean runSilentShizukuCommand(String command) {
+        try {
+            Class<?> clazz = Class.forName("rikka.shizuku.Shizuku");
+            java.lang.reflect.Method method = clazz.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
+            method.setAccessible(true);
+            Process process = (Process) method.invoke(null, new String[]{"/system/bin/sh", "-c", command}, null, null);
+
+            int exitCode = process.waitFor();
+            return exitCode == 0;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private void executeCommand(String command, @NonNull TextView resultView) {
@@ -362,13 +406,11 @@ public class MainActivity extends Activity {
                     java.lang.reflect.Method method = clazz.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
                     method.setAccessible(true);
                     process = (Process) method.invoke(null, new String[]{"/system/bin/sh", "-c", command}, null, null);
-                    resultView.append("INFO: Shizukuで実行（shell/root権限）\n");
-                    output.append("INFO: Shizukuで実行（shell/root権限）\n");
+                    resultView.append("INFO: Shizukuで実行\n");
+                    output.append("INFO: Shizukuで実行\n");
                 } catch (Exception reflectionEx) {
                     resultView.append("WARNING: Shizuku reflection失敗 → 通常アプリ権限で実行します\n");
-                    resultView.append("WARNING: 原因 → " + reflectionEx.getClass().getSimpleName() + ": " + reflectionEx.getMessage() + "\n");
                     output.append("WARNING: Shizuku reflection失敗 → 通常アプリ権限で実行します\n");
-                    output.append("WARNING: 原因 → " + reflectionEx.getClass().getSimpleName() + ": " + reflectionEx.getMessage() + "\n");
                     ProcessBuilder pb = new ProcessBuilder("/system/bin/sh", "-c", command);
                     process = pb.start();
                 }
