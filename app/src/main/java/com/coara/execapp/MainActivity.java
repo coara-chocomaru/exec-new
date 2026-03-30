@@ -41,8 +41,8 @@ import rikka.shizuku.Shizuku;
 public class MainActivity extends Activity {
 
     private Process currentProcess;
-    private File selectedBinary;           // 外部ストレージにコピーしたオリジナル（shellから読める）
-    private String executionPath;          // 実際に実行するパス（Shizuku時は /data/local/tmp/xxx）
+    private File selectedBinary;
+    private String executionPath;
     private ScheduledExecutorService timeoutExecutor;
     private boolean isDeviceOwner;
     private boolean shizukuGranted;
@@ -83,7 +83,7 @@ public class MainActivity extends Activity {
         requestPermissionResultListener = (requestCode, grantResult) -> {
             if (requestCode == SHIZUKU_REQUEST_CODE && grantResult == PackageManager.PERMISSION_GRANTED) {
                 shizukuGranted = true;
-                runOnUiThread(() -> Toast.makeText(this, "Shizuku権限が付与されました（shell/rootで実行可能）", Toast.LENGTH_SHORT).show());
+                runOnUiThread(() -> Toast.makeText(this, "Shizuku権限が付与されました", Toast.LENGTH_SHORT).show());
             }
         };
         Shizuku.addRequestPermissionResultListener(requestPermissionResultListener);
@@ -158,7 +158,7 @@ public class MainActivity extends Activity {
             if (!Settings.System.canWrite(this) && !alreadyChecked) {
                 AlertDialog.Builder builder = new AlertDialog.Builder(this);
                 builder.setTitle("システム設定変更の許可");
-                builder.setMessage("settings put/get コマンドでシステム設定を変更するには\nWRITE_SETTINGS権限が必要です。\n\n今すぐ許可しますか？\n（許可しない場合、ShizukuまたはDevice Ownerが必要です）");
+                builder.setMessage("settings put/get コマンドでシステム設定を変更するには\nWRITE_SETTINGS権限が必要です。\n\n今すぐ許可しますか？\n（許可しない場合、Shizukuが必要です）");
                 builder.setPositiveButton("許可する", (dialog, which) -> {
                     Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
                     intent.setData(Uri.parse("package:" + getPackageName()));
@@ -217,7 +217,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ====================== Shizuku専用・完全に分離されたコピー処理 ======================
     private void handleShizukuBinaryCopy() {
         String filename = selectedBinary.getName();
         executionPath = "/data/local/tmp/" + filename;
@@ -226,16 +225,15 @@ public class MainActivity extends Activity {
         boolean success = runSilentShizukuCommand(cmd);
 
         if (success) {
-            Toast.makeText(this, "Shizukuで /data/local/tmp にコピー＆chmod 777完了: " + executionPath, Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "バイナリ選択完了: " + executionPath, Toast.LENGTH_SHORT).show();
         } else {
-            Toast.makeText(this, "Shizukuコピー失敗 → 内部ストレージのまま実行します", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "エラー", Toast.LENGTH_LONG).show();
             executionPath = selectedBinary.getAbsolutePath();
         }
     }
 
     @Nullable
     private File copyFileToInternalStorage(Uri uri) {
-        // 外部ストレージのアプリ専用領域に保存（shellから確実に読める）
         File directory = new File(getExternalFilesDir(null), "binaries");
         if (!directory.exists() && !directory.mkdirs()) {
             Toast.makeText(this, "ディレクトリ作成に失敗しました。", Toast.LENGTH_SHORT).show();
@@ -287,7 +285,6 @@ public class MainActivity extends Activity {
             method.setAccessible(true);
             Process process = (Process) method.invoke(null, new String[]{"/system/bin/sh", "-c", command}, null, null);
 
-            // stderrも取得してデバッグしやすく
             StringBuilder error = new StringBuilder();
             try (BufferedReader errReader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
                 String line;
@@ -312,7 +309,6 @@ public class MainActivity extends Activity {
 
         String trimmed = command.trim();
         if (trimmed.startsWith("settings ")) {
-            // settingsコマンド処理（変更なし）
             String[] parts = trimmed.split("\\s+");
             String action, category, key;
             String value = null;
