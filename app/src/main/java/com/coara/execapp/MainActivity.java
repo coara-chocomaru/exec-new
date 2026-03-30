@@ -225,19 +225,7 @@ public class MainActivity extends Activity {
                 selectedBinary = copyFileToInternalStorage(uri);
                 if (selectedBinary != null && selectedBinary.setExecutable(true)) {
                     if (shizukuGranted && Shizuku.pingBinder()) {
-                        // ====================== Shizuku有効時：開いた対象ファイルパスから直接 /data/local/tmp にコピー ======================
-                        String filename = selectedBinary.getName();
-                        executionPath = "/data/local/tmp/" + filename;
-
-                        String cmd = "cp -rf \"" + selectedBinary.getAbsolutePath() + "\" \"" + executionPath + "\" && chmod 777 \"" + executionPath + "\"";
-                        boolean success = runSilentShizukuCommand(cmd);
-
-                        if (success) {
-                            Toast.makeText(this, "Shizukuで /data/local/tmp にコピー＆chmod 777完了: " + executionPath, Toast.LENGTH_SHORT).show();
-                        } else {
-                            Toast.makeText(this, "Shizukuコピー失敗 → 内部ストレージのまま実行します", Toast.LENGTH_SHORT).show();
-                            executionPath = selectedBinary.getAbsolutePath();
-                        }
+                        handleShizukuBinaryCopy();
                     } else {
                         executionPath = selectedBinary.getAbsolutePath();
                         Toast.makeText(this, "バイナリが選択され、実行権限が付与されました: " + executionPath, Toast.LENGTH_SHORT).show();
@@ -246,6 +234,23 @@ public class MainActivity extends Activity {
                     Toast.makeText(this, "バイナリ選択または実行権限付与に失敗しました。", Toast.LENGTH_SHORT).show();
                 }
             }
+        }
+    }
+
+    // ====================== Shizuku有効時専用の別処理（明確に分離） ======================
+    private void handleShizukuBinaryCopy() {
+        String filename = selectedBinary.getName();
+        executionPath = "/data/local/tmp/" + filename;
+
+        // cpコマンド自体もShizuku権限（shell/root）で実行される
+        String cmd = "cp -f \"" + selectedBinary.getAbsolutePath() + "\" \"" + executionPath + "\" && chmod 777 \"" + executionPath + "\"";
+        boolean success = runSilentShizukuCommand(cmd);
+
+        if (success) {
+            Toast.makeText(this, "Shizukuで /data/local/tmp にコピー＆chmod 777完了: " + executionPath, Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, "Shizukuコピー失敗 → 内部ストレージのまま実行します", Toast.LENGTH_SHORT).show();
+            executionPath = selectedBinary.getAbsolutePath();
         }
     }
 
