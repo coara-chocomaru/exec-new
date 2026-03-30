@@ -36,7 +36,6 @@ public class MainActivity extends Activity {
     private File selectedBinary;
     private ScheduledExecutorService timeoutExecutor;
     private boolean isDeviceOwner;
-    private boolean shizukuGranted;
     private Shizuku.OnRequestPermissionResultListener requestPermissionResultListener;
     private static final int PERMISSION_REQUEST_CODE = 1001;
     private static final int FILE_PICKER_REQUEST_CODE = 1002;
@@ -62,7 +61,6 @@ public class MainActivity extends Activity {
 
         requestPermissionResultListener = (requestCode, grantResult) -> {
             if (requestCode == SHIZUKU_REQUEST_CODE && grantResult == PackageManager.PERMISSION_GRANTED) {
-                shizukuGranted = true;
             }
         };
         Shizuku.addRequestPermissionResultListener(requestPermissionResultListener);
