@@ -327,12 +327,15 @@ public class MainActivity extends Activity {
 
             if (shizukuGranted && Shizuku.pingBinder()) {
                 try {
-                    process = Shizuku.newProcess(new String[]{"/system/bin/sh", "-c", command}, null, null);
+                    Class<?> clazz = Class.forName("rikka.shizuku.Shizuku");
+                    java.lang.reflect.Method method = clazz.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
+                    method.setAccessible(true);
+                    process = (Process) method.invoke(null, new String[]{"/system/bin/sh", "-c", command}, null, null);
                     resultView.append("INFO: Shizukuで実行（shell/root権限）\n");
                     output.append("INFO: Shizukuで実行（shell/root権限）\n");
-                } catch (Exception e) {
-                    resultView.append("WARNING: Shizuku.newProcess失敗 → 通常アプリ権限で実行します\n");
-                    output.append("WARNING: Shizuku.newProcess失敗 → 通常アプリ権限で実行します\n");
+                } catch (Exception reflectionEx) {
+                    resultView.append("WARNING: Shizuku reflection失敗 → 通常アプリ権限で実行します\n");
+                    output.append("WARNING: Shizuku reflection失敗 → 通常アプリ権限で実行します\n");
                     ProcessBuilder pb = new ProcessBuilder("/system/bin/sh", "-c", command);
                     process = pb.start();
                 }
