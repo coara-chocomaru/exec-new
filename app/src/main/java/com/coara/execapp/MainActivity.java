@@ -215,10 +215,17 @@ public class MainActivity extends Activity {
         try {
             Process process;
             if (shizukuGranted) {
-                process = Shizuku.newProcess(new String[]{"/system/bin/sh", "-c", command}, null, null);
-                runOnUiThread(() -> resultView.append("INFO: Shizukuで実行（shell/root権限）\n"));
+                try {
+                    Class<?> clazz = Class.forName("rikka.shizuku.Shizuku");
+                    java.lang.reflect.Method method = clazz.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
+                    method.setAccessible(true);
+                    process = (Process) method.invoke(null, new String[]{"/system/bin/sh", "-c", command}, null, null);
+                    runOnUiThread(() -> resultView.append("INFO: Shizukuで実行（shell/root権限）\n"));
+                } catch (Exception reflectionEx) {
+                    ProcessBuilder processBuilder = new ProcessBuilder("/system/bin/sh", "-c", command);
+                    process = processBuilder.start();
+                }
             } else {
-                // Shizukuなし → 通常のアプリ権限で実行
                 ProcessBuilder processBuilder = new ProcessBuilder("/system/bin/sh", "-c", command);
                 process = processBuilder.start();
             }
