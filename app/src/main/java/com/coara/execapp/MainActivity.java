@@ -2,11 +2,13 @@ package com.coara.execapp;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
@@ -76,6 +78,27 @@ public class MainActivity extends Activity {
                 shizukuGranted = true;
             } else {
                 Shizuku.requestPermission(SHIZUKU_REQUEST_CODE);
+            }
+        }
+
+        // ====================== 起動時にシステム設定変更許可確認 ======================
+        // settingsコマンドでContentResolverを使う場合に必須（Device Ownerでも念のため確認）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!Settings.System.canWrite(this)) {
+                AlertDialog.Builder builder = new AlertDialog.Builder(this);
+                builder.setTitle("システム設定変更の許可");
+                builder.setMessage("settings put/get コマンドでシステム設定を変更するには\n" +
+                        "WRITE_SETTINGS権限が必要です。\n\n" +
+                        "今すぐ許可しますか？\n" +
+                        "（許可しない場合、Shizukuが必要です）");
+                builder.setPositiveButton("許可する", (dialog, which) -> {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                });
+                builder.setNegativeButton("後で", null);
+                builder.setCancelable(true);
+                builder.show();
             }
         }
 
@@ -216,8 +239,6 @@ public class MainActivity extends Activity {
         resultView.setText("");
 
         // ====================== settingsコマンドの最適化処理 ======================
-        // Device Owner + ContentResolver のハイブリッド（Shizukuはshellのため不要）
-        // DPMなしでもContentResolverで動作（WRITE_SETTINGS権限があれば最大限活用）
         if (command.trim().startsWith("settings ")) {
             String[] parts = command.trim().split("\\s+");
             if (parts.length < 4) {
@@ -226,7 +247,7 @@ public class MainActivity extends Activity {
             }
 
             String action = parts[1];
-            String category = parts[2];   // system / global / secure
+            String category = parts[2];
             String key = parts[3];
 
             DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
@@ -236,7 +257,6 @@ public class MainActivity extends Activity {
             String resultText = "";
 
             if ("put".equals(action) && parts.length >= 5) {
-                // 値の構築（スペース対応）
                 StringBuilder valueBuilder = new StringBuilder();
                 for (int i = 4; i < parts.length; i++) {
                     valueBuilder.append(parts[i]);
@@ -246,7 +266,6 @@ public class MainActivity extends Activity {
 
                 try {
                     if (isDeviceOwner && dpm != null) {
-                        // Device Owner優先（最も強力）
                         if ("global".equals(category)) {
                             dpm.setGlobalSetting(admin, key, value);
                         } else if ("secure".equals(category)) {
@@ -257,7 +276,6 @@ public class MainActivity extends Activity {
                         resultText = "Device Ownerで設定変更完了: " + category + " " + key + " = " + value;
                         success = true;
                     } else {
-                        // Device Ownerなし → ContentResolverで実行
                         ContentResolver cr = getContentResolver();
                         if ("system".equals(category)) {
                             success = Settings.System.putString(cr, key, value);
@@ -267,7 +285,7 @@ public class MainActivity extends Activity {
                             success = Settings.Secure.putString(cr, key, value);
                         }
                         resultText = success ? "ContentResolverで設定変更完了: " + category + " " + key + " = " + value
-                                             : "変更失敗（権限不足の可能性あり）";
+                                             : "変更失敗（WRITE_SETTINGS権限が不足しています）";
                     }
                 } catch (Exception e) {
                     resultText = "ERROR: " + e.getMessage();
@@ -304,7 +322,7 @@ public class MainActivity extends Activity {
 
             runOnUiThread(() -> resultView.append(resultText + "\n"));
             saveLogToFile(command, resultText);
-            return;   // settingsコマンドはshell実行をスキップ（最適化）
+            return;
         }
 
         // ====================== 通常コマンド（Shizuku or 通常shell） ======================
