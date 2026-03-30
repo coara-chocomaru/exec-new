@@ -37,7 +37,7 @@
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="com.coara.execapp.shizuku"
-            android:exported="false"
+            android:exported="true"
             android:permission="moe.shizuku.api.permission.SHIZUKU" />
         
         <provider
