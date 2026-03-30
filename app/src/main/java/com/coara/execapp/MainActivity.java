@@ -3,7 +3,6 @@ package com.coara.execapp;
 import android.Manifest;
 import android.app.Activity;
 import android.app.admin.DevicePolicyManager;
-import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -21,21 +20,10 @@ import androidx.annotation.Nullable;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.io.OutputStreamWriter;
+import java.io.*;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Date;
-import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -47,11 +35,12 @@ public class MainActivity extends Activity {
     private Process currentProcess;
     private File selectedBinary;
     private ScheduledExecutorService timeoutExecutor;
-    private DevicePolicyManager dpm;
-
+    private boolean isDeviceOwner;
+    private boolean shizukuGranted;
+    private Shizuku.OnRequestPermissionResultListener requestPermissionResultListener;
     private static final int PERMISSION_REQUEST_CODE = 1001;
     private static final int FILE_PICKER_REQUEST_CODE = 1002;
-    private static final int SHIZUKU_PERMISSION_REQUEST_CODE = 1003;
+    private static final int SHIZUKU_REQUEST_CODE = 1003;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -68,31 +57,19 @@ public class MainActivity extends Activity {
 
         checkPermissions();
 
-        // Device Owner（任意機能・安全化）
-        dpm = (DevicePolicyManager) getSystemService(Context.DEVICE_POLICY_SERVICE);
-        if (dpm != null) {
-            try {
-                if (dpm.isDeviceOwnerApp(getPackageName())) {
-                    Toast.makeText(this, "Device Ownerモード有効", Toast.LENGTH_SHORT).show();
-                }
-            } catch (Exception ignored) {
-                // Device Owner機能が使えない端末でもクラッシュしない
-            }
-        }
+        DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+        isDeviceOwner = dpm != null && dpm.isDeviceOwnerApp(getPackageName());
 
-        // Shizuku（任意機能・完全に安全化）
-        try {
-            Shizuku.addRequestPermissionResultListener((requestCode, grantResult) -> {
-                if (requestCode == SHIZUKU_PERMISSION_REQUEST_CODE) {
-                    Toast.makeText(this, grantResult == PackageManager.PERMISSION_GRANTED ? "Shizuku権限付与" : "Shizuku権限拒否", Toast.LENGTH_SHORT).show();
-                }
-            });
-
-            if (Shizuku.pingBinder() && Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-                Shizuku.requestPermission(SHIZUKU_PERMISSION_REQUEST_CODE);
+        requestPermissionResultListener = (requestCode, grantResult) -> {
+            if (requestCode == SHIZUKU_REQUEST_CODE && grantResult == PackageManager.PERMISSION_GRANTED) {
+                shizukuGranted = true;
             }
-        } catch (Exception ignored) {
-            // Shizukuがインストールされていない端末でもクラッシュしない
+        };
+        Shizuku.addRequestPermissionResultListener(requestPermissionResultListener);
+        if (Shizuku.pingBinder() && !Shizuku.isPreV11()) {
+            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                Shizuku.requestPermission(SHIZUKU_REQUEST_CODE);
+            }
         }
 
         pickBinaryButton.setOnClickListener(view -> launchFilePicker());
@@ -108,12 +85,17 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, "コマンドまたはバイナリを指定してください。", Toast.LENGTH_SHORT).show();
                 return;
             }
+
+            if (selectedBinary != null && selectedBinary.exists()) {
+                command = selectedBinary.getAbsolutePath() + " " + command;
+            }
+
             executeCommand(command, resultView);
         });
 
         stopButton.setOnClickListener(view -> {
             if (currentProcess != null && currentProcess.isAlive()) {
-                currentProcess.destroyForcibly();
+                currentProcess.destroy();
                 resultView.append("INFO: コマンドが強制終了されました\n");
             } else {
                 Toast.makeText(this, "実行中のプロセスはありません。", Toast.LENGTH_SHORT).show();
@@ -123,12 +105,8 @@ public class MainActivity extends Activity {
         keyboardButton.setOnClickListener(view -> {
             InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
             if (imm != null) {
-                if (imm.isActive()) {
-                    imm.hideSoftInputFromWindow(commandInput.getWindowToken(), 0);
-                } else {
-                    commandInput.requestFocus();
-                    imm.showSoftInput(commandInput, InputMethodManager.SHOW_IMPLICIT);
-                }
+                imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
+                commandInput.requestFocus();
             }
         });
     }
@@ -136,6 +114,7 @@ public class MainActivity extends Activity {
     private void checkPermissions() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+
             ActivityCompat.requestPermissions(this, new String[]{
                     Manifest.permission.READ_EXTERNAL_STORAGE,
                     Manifest.permission.WRITE_EXTERNAL_STORAGE
@@ -187,8 +166,10 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "ディレクトリ作成に失敗しました。", Toast.LENGTH_SHORT).show();
             return null;
         }
+
         try (InputStream inputStream = getContentResolver().openInputStream(uri)) {
             if (inputStream == null) return null;
+
             String fileName = getFileName(uri);
             File destFile = new File(directory, fileName);
             try (OutputStream outputStream = new FileOutputStream(destFile)) {
@@ -227,32 +208,19 @@ public class MainActivity extends Activity {
     private void executeCommand(String command, @NonNull TextView resultView) {
         resultView.setText("");
         try {
-            ProcessBuilder processBuilder;
-            if (selectedBinary != null && selectedBinary.exists()) {
-                List<String> cmdList = new ArrayList<>();
-                cmdList.add(selectedBinary.getAbsolutePath());
-                if (!command.isEmpty()) {
-                    cmdList.addAll(Arrays.asList(command.split("\\s+")));
-                }
-                processBuilder = new ProcessBuilder(cmdList);
-            } else {
-                processBuilder = new ProcessBuilder("/system/bin/sh", "-c", command);
-            }
-            Map<String, String> env = processBuilder.environment();
-            env.put("PATH", "/system/bin:/system/xbin:" + (System.getenv("PATH") != null ? System.getenv("PATH") : ""));
-            env.put("HOME", getFilesDir().getAbsolutePath());
-            env.put("TERM", "xterm-256color");
-            env.put("TMPDIR", getCacheDir().getAbsolutePath());
-            processBuilder.directory(new File(getFilesDir(), "binaries"));
+            ProcessBuilder processBuilder = new ProcessBuilder("/system/bin/sh", "-c", command);
             currentProcess = processBuilder.start();
 
             timeoutExecutor = Executors.newSingleThreadScheduledExecutor();
-            timeoutExecutor.schedule(() -> {
-                if (currentProcess != null && currentProcess.isAlive()) {
-                    currentProcess.destroyForcibly();
-                    runOnUiThread(() -> resultView.append("INFO: タイムアウトにより強制終了されました\n"));
-                }
-            }, 30, TimeUnit.SECONDS);
+            long timeout = isDeviceOwner ? 0L : 180L;
+            if (timeout > 0) {
+                timeoutExecutor.schedule(() -> {
+                    if (currentProcess != null && currentProcess.isAlive()) {
+                        currentProcess.destroy();
+                        runOnUiThread(() -> resultView.append("INFO: タイムアウトにより強制終了されました\n"));
+                    }
+                }, timeout, TimeUnit.SECONDS);
+            }
 
             Executors.newSingleThreadExecutor().submit(() -> {
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(currentProcess.getInputStream()));
@@ -266,6 +234,7 @@ public class MainActivity extends Activity {
                         final String finalLine = line;
                         runOnUiThread(() -> resultView.append(finalLine + "\n"));
                     }
+
                     while ((line = errorReader.readLine()) != null) {
                         output.append("ERROR: ").append(line).append("\n");
                         final String finalErrorLine = line;
@@ -273,17 +242,13 @@ public class MainActivity extends Activity {
                     }
 
                     int exitCode = currentProcess.waitFor();
-                    final int finalExitCode = exitCode;
-                    runOnUiThread(() -> resultView.append("Exit code: " + finalExitCode + "\n"));
+                    output.append("INFO: プロセス終了 (exit code: ").append(exitCode).append(")\n");
+                    runOnUiThread(() -> resultView.append("INFO: プロセス終了 (exit code: " + exitCode + ")\n"));
 
                     saveLogToFile(command, output.toString());
 
                 } catch (IOException | InterruptedException e) {
                     runOnUiThread(() -> resultView.append("ERROR: " + e.getMessage() + "\n"));
-                } finally {
-                    if (timeoutExecutor != null) {
-                        timeoutExecutor.shutdownNow();
-                    }
                 }
             });
 
@@ -297,15 +262,31 @@ public class MainActivity extends Activity {
         if (!directory.exists()) {
             directory.mkdirs();
         }
+
         String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
         String fileName = command.replaceAll("[^a-zA-Z0-9]", "_") + "_" + timeStamp + ".txt";
         File logFile = new File(directory, fileName);
+
         try (FileOutputStream fos = new FileOutputStream(logFile);
              OutputStreamWriter writer = new OutputStreamWriter(fos)) {
             writer.write(logContent);
             runOnUiThread(() -> Toast.makeText(this, "ログが保存されました: " + logFile.getAbsolutePath(), Toast.LENGTH_LONG).show());
         } catch (Exception e) {
             runOnUiThread(() -> Toast.makeText(this, "ログ保存中にエラー: " + e.getMessage(), Toast.LENGTH_LONG).show());
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (currentProcess != null && currentProcess.isAlive()) {
+            currentProcess.destroy();
+        }
+        if (timeoutExecutor != null && !timeoutExecutor.isShutdown()) {
+            timeoutExecutor.shutdownNow();
+        }
+        if (requestPermissionResultListener != null) {
+            Shizuku.removeRequestPermissionResultListener(requestPermissionResultListener);
         }
     }
 }
