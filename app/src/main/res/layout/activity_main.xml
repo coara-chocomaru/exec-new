@@ -6,7 +6,6 @@
     android:padding="16dp"
     android:background="@android:color/white">
 
-    <!-- コマンド入力エリア -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -30,7 +29,6 @@
             android:text="Execute" />
     </LinearLayout>
 
-    <!-- キーボード開閉ボタン -->
     <Button
         android:id="@+id/keyboard_button"
         android:layout_width="wrap_content"
@@ -38,7 +36,6 @@
         android:layout_marginBottom="8dp"
         android:text="Keyboard" />
 
-    <!-- バイナリ選択エリア -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -60,7 +57,6 @@
             android:text="Clear Binary" />
     </LinearLayout>
 
-    <!-- 強制停止ボタン -->
     <Button
         android:id="@+id/stop_button"
         android:layout_width="wrap_content"
@@ -68,7 +64,6 @@
         android:layout_marginBottom="8dp"
         android:text="Stop" />
 
-    <!-- 結果表示エリア（Android 11 + API24でも完全に白固定） -->
     <ScrollView
         android:id="@+id/scroll_view"
         android:layout_width="match_parent"
