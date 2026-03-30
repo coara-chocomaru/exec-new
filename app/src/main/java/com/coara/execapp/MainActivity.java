@@ -41,7 +41,7 @@ import rikka.shizuku.Shizuku;
 public class MainActivity extends Activity {
 
     private Process currentProcess;
-    private File selectedBinary;           // 内部ストレージにコピーしたオリジナル
+    private File selectedBinary;           // 外部ストレージにコピーしたオリジナル（shellから読める）
     private String executionPath;          // 実際に実行するパス（Shizuku時は /data/local/tmp/xxx）
     private ScheduledExecutorService timeoutExecutor;
     private boolean isDeviceOwner;
@@ -58,9 +58,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // ====================== Android 11 + API24固定でレイアウト崩れ完全防止 ======================
         getWindow().getDecorView().setBackgroundColor(Color.WHITE);
-
         ScrollView scrollView = findViewById(R.id.scroll_view);
         TextView resultView = findViewById(R.id.result_view);
         if (scrollView != null) scrollView.setBackgroundColor(Color.WHITE);
@@ -91,7 +89,6 @@ public class MainActivity extends Activity {
         Shizuku.addRequestPermissionResultListener(requestPermissionResultListener);
 
         updateShizukuStatus();
-
         handleWriteSettingsPermission();
 
         pickBinaryButton.setOnClickListener(view -> launchFilePicker());
@@ -111,11 +108,9 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, "コマンドまたはバイナリを指定してください。", Toast.LENGTH_SHORT).show();
                 return;
             }
-
             if (executionPath != null) {
                 command = executionPath + " " + command;
             }
-
             executeCommand(command, resultView);
         });
 
@@ -146,7 +141,6 @@ public class MainActivity extends Activity {
     private void updateShizukuStatus() {
         boolean binderAlive = Shizuku.pingBinder();
         boolean preV11 = Shizuku.isPreV11();
-
         if (binderAlive && !preV11) {
             shizukuGranted = Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
             if (!shizukuGranted) {
@@ -160,26 +154,20 @@ public class MainActivity extends Activity {
     private void handleWriteSettingsPermission() {
         SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
         boolean alreadyChecked = prefs.getBoolean(KEY_SETTINGS_CHECKED, false);
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (!Settings.System.canWrite(this)) {
-                if (!alreadyChecked) {
-                    AlertDialog.Builder builder = new AlertDialog.Builder(this);
-                    builder.setTitle("システム設定変更の許可");
-                    builder.setMessage("settings put/get コマンドでシステム設定を変更するには\n" +
-                            "WRITE_SETTINGS権限が必要です。\n\n" +
-                            "今すぐ許可しますか？\n" +
-                            "（許可しない場合、ShizukuまたはDevice Ownerが必要です）");
-                    builder.setPositiveButton("許可する", (dialog, which) -> {
-                        Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
-                        intent.setData(Uri.parse("package:" + getPackageName()));
-                        startActivity(intent);
-                        prefs.edit().putBoolean(KEY_SETTINGS_CHECKED, true).apply();
-                    });
-                    builder.setNegativeButton("後で", (dialog, which) -> prefs.edit().putBoolean(KEY_SETTINGS_CHECKED, true).apply());
-                    builder.setCancelable(true);
-                    builder.show();
-                }
+            if (!Settings.System.canWrite(this) && !alreadyChecked) {
+                AlertDialog.Builder builder = new AlertDialog.Builder(this);
+                builder.setTitle("システム設定変更の許可");
+                builder.setMessage("settings put/get コマンドでシステム設定を変更するには\nWRITE_SETTINGS権限が必要です。\n\n今すぐ許可しますか？\n（許可しない場合、ShizukuまたはDevice Ownerが必要です）");
+                builder.setPositiveButton("許可する", (dialog, which) -> {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                    prefs.edit().putBoolean(KEY_SETTINGS_CHECKED, true).apply();
+                });
+                builder.setNegativeButton("後で", (dialog, which) -> prefs.edit().putBoolean(KEY_SETTINGS_CHECKED, true).apply());
+                builder.setCancelable(true);
+                builder.show();
             }
         }
     }
@@ -187,11 +175,7 @@ public class MainActivity extends Activity {
     private void checkPermissions() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-
-            ActivityCompat.requestPermissions(this, new String[]{
-                    Manifest.permission.READ_EXTERNAL_STORAGE,
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE
-            }, PERMISSION_REQUEST_CODE);
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE}, PERMISSION_REQUEST_CODE);
         }
     }
 
@@ -200,11 +184,7 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == PERMISSION_REQUEST_CODE) {
             for (int i = 0; i < permissions.length; i++) {
-                if (grantResults[i] == PackageManager.PERMISSION_GRANTED) {
-                    Toast.makeText(this, permissions[i] + " 権限が許可されました", Toast.LENGTH_SHORT).show();
-                } else {
-                    Toast.makeText(this, permissions[i] + " 権限が拒否されました", Toast.LENGTH_SHORT).show();
-                }
+                Toast.makeText(this, permissions[i] + (grantResults[i] == PackageManager.PERMISSION_GRANTED ? " 権限が許可されました" : " 権限が拒否されました"), Toast.LENGTH_SHORT).show();
             }
         }
     }
@@ -237,26 +217,26 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ====================== Shizuku有効時専用の別処理（明確に分離） ======================
+    // ====================== Shizuku専用・完全に分離されたコピー処理 ======================
     private void handleShizukuBinaryCopy() {
         String filename = selectedBinary.getName();
         executionPath = "/data/local/tmp/" + filename;
 
-        // cpコマンド自体もShizuku権限（shell/root）で実行される
         String cmd = "cp -f \"" + selectedBinary.getAbsolutePath() + "\" \"" + executionPath + "\" && chmod 777 \"" + executionPath + "\"";
         boolean success = runSilentShizukuCommand(cmd);
 
         if (success) {
             Toast.makeText(this, "Shizukuで /data/local/tmp にコピー＆chmod 777完了: " + executionPath, Toast.LENGTH_SHORT).show();
         } else {
-            Toast.makeText(this, "Shizukuコピー失敗 → 内部ストレージのまま実行します", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Shizukuコピー失敗 → 内部ストレージのまま実行します", Toast.LENGTH_LONG).show();
             executionPath = selectedBinary.getAbsolutePath();
         }
     }
 
     @Nullable
     private File copyFileToInternalStorage(Uri uri) {
-        File directory = new File(getFilesDir(), "binaries");
+        // 外部ストレージのアプリ専用領域に保存（shellから確実に読める）
+        File directory = new File(getExternalFilesDir(null), "binaries");
         if (!directory.exists() && !directory.mkdirs()) {
             Toast.makeText(this, "ディレクトリ作成に失敗しました。", Toast.LENGTH_SHORT).show();
             return null;
@@ -307,9 +287,22 @@ public class MainActivity extends Activity {
             method.setAccessible(true);
             Process process = (Process) method.invoke(null, new String[]{"/system/bin/sh", "-c", command}, null, null);
 
+            // stderrも取得してデバッグしやすく
+            StringBuilder error = new StringBuilder();
+            try (BufferedReader errReader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
+                String line;
+                while ((line = errReader.readLine()) != null) {
+                    error.append(line).append("\n");
+                }
+            }
+
             int exitCode = process.waitFor();
+            if (exitCode != 0 && error.length() > 0) {
+                runOnUiThread(() -> Toast.makeText(this, "Shizukuコマンド失敗: " + error.toString().trim(), Toast.LENGTH_LONG).show());
+            }
             return exitCode == 0;
         } catch (Exception e) {
+            runOnUiThread(() -> Toast.makeText(this, "Shizukuコマンド実行エラー: " + e.getMessage(), Toast.LENGTH_LONG).show());
             return false;
         }
     }
@@ -319,13 +312,10 @@ public class MainActivity extends Activity {
 
         String trimmed = command.trim();
         if (trimmed.startsWith("settings ")) {
+            // settingsコマンド処理（変更なし）
             String[] parts = trimmed.split("\\s+");
-
-            String action;
-            String category;
-            String key;
+            String action, category, key;
             String value = null;
-
             if (parts.length >= 4 && ("put".equals(parts[1]) || "get".equals(parts[1]))) {
                 action = parts[1];
                 category = parts[2];
@@ -357,7 +347,6 @@ public class MainActivity extends Activity {
 
             DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
             ComponentName admin = new ComponentName(this, AppDeviceAdminReceiver.class);
-
             String resultText;
 
             if ("put".equals(action) && value != null) {
@@ -373,8 +362,7 @@ public class MainActivity extends Activity {
                         if ("system".equals(category)) success = Settings.System.putString(cr, key, value);
                         else if ("global".equals(category)) success = Settings.Global.putString(cr, key, value);
                         else if ("secure".equals(category)) success = Settings.Secure.putString(cr, key, value);
-                        resultText = success ? "ContentResolverで設定変更完了: " + category + " " + key + " = " + value
-                                             : "変更失敗（WRITE_SETTINGS権限が不足しています）";
+                        resultText = success ? "ContentResolverで設定変更完了: " + category + " " + key + " = " + value : "変更失敗（WRITE_SETTINGS権限が不足しています）";
                     }
                 } catch (Exception e) {
                     resultText = "ERROR: " + e.getMessage();
@@ -393,7 +381,6 @@ public class MainActivity extends Activity {
             } else {
                 resultText = "ERROR: 未対応のsettingsコマンドです";
             }
-
             resultView.append(resultText + "\n");
             saveLogToFile(command, resultText);
             return;
@@ -439,13 +426,11 @@ public class MainActivity extends Activity {
                      BufferedReader errorReader = new BufferedReader(new InputStreamReader(currentProcess.getErrorStream()))) {
 
                     String line;
-
                     while ((line = reader.readLine()) != null) {
                         output.append(line).append("\n");
                         final String finalLine = line;
                         runOnUiThread(() -> resultView.append(finalLine + "\n"));
                     }
-
                     while ((line = errorReader.readLine()) != null) {
                         output.append("ERROR: ").append(line).append("\n");
                         final String finalErrorLine = line;
@@ -462,7 +447,6 @@ public class MainActivity extends Activity {
                     runOnUiThread(() -> resultView.append("ERROR: " + e.getMessage() + "\n"));
                 }
             });
-
         } catch (Exception e) {
             resultView.setText("ERROR: " + e.getMessage());
         }
@@ -470,9 +454,7 @@ public class MainActivity extends Activity {
 
     private void saveLogToFile(String command, String logContent) {
         File directory = new File(getExternalFilesDir(null), "command_logs");
-        if (!directory.exists()) {
-            directory.mkdirs();
-        }
+        if (!directory.exists()) directory.mkdirs();
 
         String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
         String fileName = command.replaceAll("[^a-zA-Z0-9]", "_") + "_" + timeStamp + ".txt";
@@ -490,12 +472,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (currentProcess != null && currentProcess.isAlive()) {
-            currentProcess.destroy();
-        }
-        if (timeoutExecutor != null && !timeoutExecutor.isShutdown()) {
-            timeoutExecutor.shutdownNow();
-        }
+        if (currentProcess != null && currentProcess.isAlive()) currentProcess.destroy();
+        if (timeoutExecutor != null && !timeoutExecutor.isShutdown()) timeoutExecutor.shutdownNow();
         if (requestPermissionResultListener != null) {
             Shizuku.removeRequestPermissionResultListener(requestPermissionResultListener);
         }
