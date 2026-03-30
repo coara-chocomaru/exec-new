@@ -82,6 +82,8 @@ public class MainActivity extends Activity {
             }
         }
 
+        // ====================== 起動時にシステム設定変更許可確認 ======================
+        // WRITE_SETTINGS権限が無い場合は必ずダイアログを表示（前回と同じ）
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (!Settings.System.canWrite(this)) {
                 AlertDialog.Builder builder = new AlertDialog.Builder(this);
@@ -98,6 +100,9 @@ public class MainActivity extends Activity {
                 builder.setNegativeButton("後で", null);
                 builder.setCancelable(true);
                 builder.show();
+            } else {
+                // 既に許可済みの場合はToastで確認
+                Toast.makeText(this, "WRITE_SETTINGS権限は許可済みです", Toast.LENGTH_SHORT).show();
             }
         }
 
@@ -239,6 +244,7 @@ public class MainActivity extends Activity {
 
         String trimmed = command.trim();
         if (trimmed.startsWith("settings ")) {
+            // settingsコマンドは前回と同じ短縮形対応済み（省略なし）
             String[] parts = trimmed.split("\\s+");
 
             String action;
@@ -319,16 +325,23 @@ public class MainActivity extends Activity {
             return;
         }
 
+        // ====================== 通常コマンド（Shizuku or 通常shell） ======================
         try {
             Process process;
+            boolean usedShizuku = false;
+
             if (shizukuGranted) {
                 try {
+                    // 最新Shizuku対応：reflectionでnewProcessを呼び出し
                     Class<?> clazz = Class.forName("rikka.shizuku.Shizuku");
                     java.lang.reflect.Method method = clazz.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
                     method.setAccessible(true);
                     process = (Process) method.invoke(null, new String[]{"/system/bin/sh", "-c", command}, null, null);
+                    usedShizuku = true;
                     resultView.append("INFO: Shizukuで実行（shell/root権限）\n");
                 } catch (Exception reflectionEx) {
+                    // reflection失敗時は通常shellにフォールバック + 明確な警告表示
+                    resultView.append("WARNING: Shizuku reflection失敗 → 通常アプリ権限で実行します\n");
                     ProcessBuilder pb = new ProcessBuilder("/system/bin/sh", "-c", command);
                     process = pb.start();
                 }
