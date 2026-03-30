@@ -9,14 +9,15 @@ import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
+import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.database.Cursor;
-import android.graphics.Color;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ScrollView;
@@ -58,16 +59,13 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        EditText commandInput = findViewById(R.id.command_input);
-        Button executeButton = findViewById(R.id.execute_button);
-        Button pickBinaryButton = findViewById(R.id.pick_binary_button);
-        Button clearBinaryButton = findViewById(R.id.clear_binary_button);
-        Button stopButton = findViewById(R.id.stop_button);
-        Button keyboardButton = findViewById(R.id.keyboard_button);
-        TextView resultView = findViewById(R.id.result_view);
-        ScrollView scrollView = findViewById(R.id.scroll_view);
+        // ====================== API24固定で下半分が真っ暗になる問題の完全解決 ======================
+        // 1. Window全体の背景を強制的に白にする（DecorView）
+        getWindow().getDecorView().setBackgroundColor(Color.WHITE);
 
-        // API24固定で下半分が真っ暗になる問題の完全解決（背景色を明示的に白固定）
+        // 2. ScrollViewとTextViewも明示的に白固定（API24で親背景が透ける対策）
+        ScrollView scrollView = findViewById(R.id.scroll_view);
+        TextView resultView = findViewById(R.id.result_view);
         if (scrollView != null) {
             scrollView.setBackgroundColor(Color.WHITE);
         }
@@ -75,6 +73,13 @@ public class MainActivity extends Activity {
             resultView.setBackgroundColor(Color.WHITE);
             resultView.setTextColor(Color.BLACK);
         }
+
+        EditText commandInput = findViewById(R.id.command_input);
+        Button executeButton = findViewById(R.id.execute_button);
+        Button pickBinaryButton = findViewById(R.id.pick_binary_button);
+        Button clearBinaryButton = findViewById(R.id.clear_binary_button);
+        Button stopButton = findViewById(R.id.stop_button);
+        Button keyboardButton = findViewById(R.id.keyboard_button);
 
         checkPermissions();
 
@@ -98,7 +103,6 @@ public class MainActivity extends Activity {
 
         clearBinaryButton.setOnClickListener(view -> {
             if (shizukuGranted && executionPath != null && executionPath.startsWith("/data/local/tmp/")) {
-                // Shizuku有効時は /data/local/tmp からも削除
                 runSilentShizukuCommand("rm -f " + executionPath);
             }
             selectedBinary = null;
@@ -170,7 +174,7 @@ public class MainActivity extends Activity {
                     builder.setMessage("settings put/get コマンドでシステム設定を変更するには\n" +
                             "WRITE_SETTINGS権限が必要です。\n\n" +
                             "今すぐ許可しますか？\n" +
-                            "（許可しない場合、Shizukuが必要です）");
+                            "（許可しない場合、ShizukuまたはDevice Ownerが必要です）");
                     builder.setPositiveButton("許可する", (dialog, which) -> {
                         Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
                         intent.setData(Uri.parse("package:" + getPackageName()));
@@ -226,7 +230,6 @@ public class MainActivity extends Activity {
                 selectedBinary = copyFileToInternalStorage(uri);
                 if (selectedBinary != null && selectedBinary.setExecutable(true)) {
                     if (shizukuGranted && Shizuku.pingBinder()) {
-                        // Shizuku有効時は /data/local/tmp にコピー + chmod 0777
                         String filename = selectedBinary.getName();
                         executionPath = "/data/local/tmp/" + filename;
 
@@ -240,7 +243,6 @@ public class MainActivity extends Activity {
                             executionPath = selectedBinary.getAbsolutePath();
                         }
                     } else {
-                        // Shizuku無効時は通常の内部パス
                         executionPath = selectedBinary.getAbsolutePath();
                         Toast.makeText(this, "バイナリが選択され、実行権限が付与されました: " + executionPath, Toast.LENGTH_SHORT).show();
                     }
@@ -406,8 +408,8 @@ public class MainActivity extends Activity {
                     java.lang.reflect.Method method = clazz.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
                     method.setAccessible(true);
                     process = (Process) method.invoke(null, new String[]{"/system/bin/sh", "-c", command}, null, null);
-                    resultView.append("INFO: Shizukuで実行\n");
-                    output.append("INFO: Shizukuで実行\n");
+                    resultView.append("INFO: Shizukuで実行（shell/root権限）\n");
+                    output.append("INFO: Shizukuで実行（shell/root権限）\n");
                 } catch (Exception reflectionEx) {
                     resultView.append("WARNING: Shizuku reflection失敗 → 通常アプリ権限で実行します\n");
                     output.append("WARNING: Shizuku reflection失敗 → 通常アプリ権限で実行します\n");
