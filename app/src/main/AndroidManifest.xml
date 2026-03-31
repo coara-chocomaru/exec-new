@@ -13,8 +13,8 @@
         android:icon="@drawable/ic_launcher"
         android:label="ExecApp"
         android:requestLegacyExternalStorage="true"
-        android:theme="@android:style/Theme.Holo.Light">
-
+        android:theme="@style/Theme.AppCompat.Light">
+ 
         <activity
             android:name=".MainActivity"
             android:configChanges="keyboardHidden|orientation|screenSize"
