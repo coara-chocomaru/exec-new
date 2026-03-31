@@ -2,18 +2,17 @@ package com.coara.execapp;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.inputmethod.InputMethodManager;
@@ -48,11 +47,12 @@ import rikka.shizuku.Shizuku;
 
 public class MainActivity extends Activity {
 
-    private static final int PERMISSION_REQUEST_CODE = 1001;
+    private static final int REQ_ALL_FILES_ACCESS = 2001;
+    private static final int REQ_STORAGE_PERMISSIONS = 2002;
+    private static final int REQ_WRITE_SETTINGS = 2003;
     private static final int FILE_PICKER_REQUEST_CODE = 1002;
     private static final int SHIZUKU_REQUEST_CODE = 1003;
-    private static final String PREF_NAME = "execapp_prefs";
-    private static final String KEY_SETTINGS_CHECKED = "write_settings_checked_once";
+
     private static final String BINARY_DIR_NAME = "binaries";
     private static final String LOG_DIR_NAME = "command_logs";
 
@@ -117,8 +117,6 @@ public class MainActivity extends Activity {
         Button stopButton = findViewById(R.id.stop_button);
         Button keyboardButton = findViewById(R.id.keyboard_button);
 
-        checkPermissions();
-
         DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
         isDeviceOwner = dpm != null && dpm.isDeviceOwnerApp(getPackageName());
 
@@ -134,8 +132,7 @@ public class MainActivity extends Activity {
         };
         Shizuku.addRequestPermissionResultListener(requestPermissionResultListener);
 
-        updateShizukuStatus();
-        handleWriteSettingsPermission();
+        checkNextPermission();
 
         pickBinaryButton.setOnClickListener(view -> launchFilePicker());
 
@@ -188,10 +185,48 @@ public class MainActivity extends Activity {
         });
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
+    private void checkNextPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                try {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivityForResult(intent, REQ_ALL_FILES_ACCESS);
+                } catch (Exception e) {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                    startActivityForResult(intent, REQ_ALL_FILES_ACCESS);
+                }
+                return;
+            }
+        } else {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this, new String[]{
+                        Manifest.permission.READ_EXTERNAL_STORAGE,
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE
+                }, REQ_STORAGE_PERMISSIONS);
+                return;
+            }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!Settings.System.canWrite(this)) {
+                Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivityForResult(intent, REQ_WRITE_SETTINGS);
+                return;
+            }
+        }
+
         updateShizukuStatus();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_STORAGE_PERMISSIONS) {
+            checkNextPermission();
+        }
     }
 
     private void updateShizukuStatus() {
@@ -231,57 +266,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void handleWriteSettingsPermission() {
-        SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
-        boolean alreadyChecked = prefs.getBoolean(KEY_SETTINGS_CHECKED, false);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (!Settings.System.canWrite(this) && !alreadyChecked) {
-                AlertDialog.Builder builder = new AlertDialog.Builder(this);
-                builder.setTitle("システム設定変更の許可");
-                builder.setMessage("settings put/get コマンドでシステム設定を変更するには\nWRITE_SETTINGS権限が必要です。\n\n今すぐ許可しますか？\n（許可しない場合、Shizukuが必要です）");
-                builder.setPositiveButton("許可する", (dialog, which) -> {
-                    Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
-                    intent.setData(Uri.parse("package:" + getPackageName()));
-                    startActivity(intent);
-                    prefs.edit().putBoolean(KEY_SETTINGS_CHECKED, true).apply();
-                });
-                builder.setNegativeButton("後で", (dialog, which) -> prefs.edit().putBoolean(KEY_SETTINGS_CHECKED, true).apply());
-                builder.setCancelable(true);
-                builder.show();
-            }
-        }
-    }
-
-    private void checkPermissions() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
-                || ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(
-                    this,
-                    new String[] {
-                            Manifest.permission.READ_EXTERNAL_STORAGE,
-                            Manifest.permission.WRITE_EXTERNAL_STORAGE
-                    },
-                    PERMISSION_REQUEST_CODE
-            );
-        }
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            int count = Math.min(permissions.length, grantResults.length);
-            for (int i = 0; i < count; i++) {
-                Toast.makeText(
-                        this,
-                        permissions[i] + (grantResults[i] == PackageManager.PERMISSION_GRANTED ? " 権限が許可されました" : " 権限が拒否されました"),
-                        Toast.LENGTH_SHORT
-                ).show();
-            }
-        }
-    }
-
     private void launchFilePicker() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.setType("*/*");
@@ -294,6 +278,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+
+        if (requestCode == REQ_ALL_FILES_ACCESS || requestCode == REQ_WRITE_SETTINGS) {
+            checkNextPermission();
+            return;
+        }
 
         if (requestCode == FILE_PICKER_REQUEST_CODE && resultCode == RESULT_OK && data != null) {
             Uri uri = data.getData();
@@ -849,91 +838,61 @@ public class MainActivity extends Activity {
 
     @NonNull
     private File getLogDirectory() {
-        File external = getExternalFilesDir(null);
-        if (external != null) {
-            return new File(external, LOG_DIR_NAME);
-        }
-        return new File(getFilesDir(), LOG_DIR_NAME);
-    }
-
-    @NonNull
-    private File resolveUniqueFile(@NonNull File directory, @NonNull String fileName) {
-        File candidate = new File(directory, fileName);
-        if (!candidate.exists()) {
-            return candidate;
-        }
-
-        String name = fileName;
-        String extension = "";
-        int dot = fileName.lastIndexOf('.');
-        if (dot > 0) {
-            name = fileName.substring(0, dot);
-            extension = fileName.substring(dot);
-        }
-
-        int index = 1;
-        while (candidate.exists()) {
-            candidate = new File(directory, name + "_" + index + extension);
-            index++;
-        }
-        return candidate;
-    }
-
-    @NonNull
-    private String sanitizeLogFileName(@NonNull String command) {
-        String sanitized = command.replaceAll("[^a-zA-Z0-9._-]", "_");
-        if (sanitized.length() > 80) {
-            sanitized = sanitized.substring(0, 80);
-        }
-        if (sanitized.isEmpty()) {
-            sanitized = "command";
-        }
-        return sanitized;
+        return new File(getExternalFilesDir(null), LOG_DIR_NAME);
     }
 
     @NonNull
     private String sanitizeFileName(@NonNull String name) {
-        String sanitized = name.replaceAll("[^a-zA-Z0-9._-]", "_");
-        if (sanitized.isEmpty()) {
-            sanitized = "picked_binary";
+        return name.replaceAll("[^a-zA-Z0-9._-]", "_");
+    }
+
+    @NonNull
+    private String sanitizeLogFileName(@NonNull String command) {
+        String sanitized = command.replaceAll("[^a-zA-Z0-9_-]", "_");
+        if (sanitized.length() > 30) {
+            sanitized = sanitized.substring(0, 30);
         }
         return sanitized;
     }
 
     @NonNull
-    private String shellQuote(@NonNull String value) {
-        return "'" + value.replace("'", "'\"'\"'") + "'";
+    private File resolveUniqueFile(@NonNull File directory, @NonNull String baseName) {
+        File file = new File(directory, baseName);
+        int counter = 1;
+        String nameWithoutExt = baseName;
+        String ext = "";
+        int dotIndex = baseName.lastIndexOf('.');
+        if (dotIndex > 0) {
+            nameWithoutExt = baseName.substring(0, dotIndex);
+            ext = baseName.substring(dotIndex);
+        }
+        while (file.exists()) {
+            file = new File(directory, nameWithoutExt + "_" + counter + ext);
+            counter++;
+        }
+        return file;
     }
 
     private void deleteQuietly(@Nullable File file) {
-        if (file == null) {
-            return;
-        }
-        try {
-            if (file.exists() && !file.delete()) {
-                file.deleteOnExit();
+        if (file != null && file.exists()) {
+            try {
+                file.delete();
+            } catch (Exception ignored) {
             }
-        } catch (Throwable ignored) {
         }
+    }
+
+    @NonNull
+    private String shellQuote(@NonNull String s) {
+        return "'" + s.replace("'", "'\\''") + "'";
     }
 
     private void safeDestroy(@Nullable Process process) {
-        if (process == null) {
-            return;
-        }
-        try {
-            process.destroy();
-        } catch (Throwable ignored) {
-        }
-    }
-
-    private void safeForceDestroy(@Nullable Process process) {
-        if (process == null) {
-            return;
-        }
-        try {
-            process.destroyForcibly();
-        } catch (Throwable ignored) {
+        if (process != null) {
+            try {
+                process.destroy();
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -947,26 +906,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        Process processSnapshot = currentProcess;
-        currentProcess = null;
-        currentExecutionMode = ExecutionMode.NONE;
-        currentCommand = null;
-        currentExecutionToken = 0L;
-        executionRunning = false;
-
-        if (processSnapshot != null) {
-            safeDestroy(processSnapshot);
-            safeForceDestroy(processSnapshot);
-        }
-
-        if (requestPermissionResultListener != null) {
-            try {
-                Shizuku.removeRequestPermissionResultListener(requestPermissionResultListener);
-            } catch (Throwable ignored) {
-            }
-        }
-
-        backgroundExecutor.shutdownNow();
         super.onDestroy();
+        if (requestPermissionResultListener != null) {
+            Shizuku.removeRequestPermissionResultListener(requestPermissionResultListener);
+        }
+        backgroundExecutor.shutdownNow();
     }
 }
