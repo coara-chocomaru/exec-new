@@ -43,7 +43,6 @@ public class MainActivity extends Activity {
     private Process currentProcess;
     private File selectedBinary;
     private String executionPath;
-    private ScheduledExecutorService timeoutExecutor;
     private boolean isDeviceOwner;
     private boolean shizukuGranted;
     private Shizuku.OnRequestPermissionResultListener requestPermissionResultListener;
@@ -114,14 +113,7 @@ public class MainActivity extends Activity {
             executeCommand(command, resultView);
         });
 
-        stopButton.setOnClickListener(view -> {
-            if (currentProcess != null && currentProcess.isAlive()) {
-                currentProcess.destroy();
-                resultView.append("INFO: コマンドが強制終了されました\n");
-            } else {
-                Toast.makeText(this, "実行中のプロセスはありません。", Toast.LENGTH_SHORT).show();
-            }
-        });
+        stopButton.setOnClickListener(view -> stopCurrentProcess(resultView));
 
         keyboardButton.setOnClickListener(view -> {
             InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
@@ -409,17 +401,6 @@ public class MainActivity extends Activity {
             }
             currentProcess = process;
 
-            timeoutExecutor = Executors.newSingleThreadScheduledExecutor();
-            long timeout = isDeviceOwner ? 0L : 180L;
-            if (timeout > 0) {
-                timeoutExecutor.schedule(() -> {
-                    if (currentProcess != null && currentProcess.isAlive()) {
-                        currentProcess.destroy();
-                        runOnUiThread(() -> resultView.append("INFO: タイムアウトにより強制終了されました\n"));
-                    }
-                }, timeout, TimeUnit.SECONDS);
-            }
-
             Executors.newSingleThreadExecutor().submit(() -> {
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(currentProcess.getInputStream()));
                      BufferedReader errorReader = new BufferedReader(new InputStreamReader(currentProcess.getErrorStream()))) {
@@ -451,6 +432,33 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void stopCurrentProcess(@NonNull TextView resultView) {
+        if (currentProcess == null || !currentProcess.isAlive()) {
+            Toast.makeText(this, "実行中のプロセスはありません。", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        resultView.append("INFO: 強制停止を実行しています...\n");
+
+        try {
+            currentProcess.destroy();
+            Thread.sleep(500);
+
+            if (currentProcess.isAlive()) {
+                currentProcess.destroyForcibly();
+                Thread.sleep(500);
+            }
+
+            if (currentProcess.isAlive()) {
+                resultView.append("WARNING: プロセスが完全に停止しない場合があります\n");
+            } else {
+                resultView.append("INFO: プロセスを強制停止しました\n");
+            }
+        } catch (Exception e) {
+            resultView.append("ERROR: 停止中に例外発生: " + e.getMessage() + "\n");
+        }
+    }
+
     private void saveLogToFile(String command, String logContent) {
         File directory = new File(getExternalFilesDir(null), "command_logs");
         if (!directory.exists()) directory.mkdirs();
@@ -471,8 +479,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (currentProcess != null && currentProcess.isAlive()) currentProcess.destroy();
-        if (timeoutExecutor != null && !timeoutExecutor.isShutdown()) timeoutExecutor.shutdownNow();
+        if (currentProcess != null && currentProcess.isAlive()) {
+            currentProcess.destroyForcibly();
+        }
         if (requestPermissionResultListener != null) {
             Shizuku.removeRequestPermissionResultListener(requestPermissionResultListener);
         }
