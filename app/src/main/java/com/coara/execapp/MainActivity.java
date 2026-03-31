@@ -2,10 +2,12 @@ package com.coara.execapp;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Color;
@@ -47,12 +49,14 @@ import rikka.shizuku.Shizuku;
 
 public class MainActivity extends Activity {
 
-    private static final int REQ_ALL_FILES_ACCESS = 2001;
-    private static final int REQ_STORAGE_PERMISSIONS = 2002;
-    private static final int REQ_WRITE_SETTINGS = 2003;
+    private static final int PERMISSION_REQUEST_CODE = 1001;
     private static final int FILE_PICKER_REQUEST_CODE = 1002;
     private static final int SHIZUKU_REQUEST_CODE = 1003;
-
+    private static final int MANAGE_ALL_FILES_REQUEST_CODE = 1004;
+    private static final int WRITE_SETTINGS_REQUEST_CODE = 1005;
+    
+    private static final String PREF_NAME = "execapp_prefs";
+    private static final String KEY_SETTINGS_CHECKED = "write_settings_checked_once";
     private static final String BINARY_DIR_NAME = "binaries";
     private static final String LOG_DIR_NAME = "command_logs";
 
@@ -132,7 +136,7 @@ public class MainActivity extends Activity {
         };
         Shizuku.addRequestPermissionResultListener(requestPermissionResultListener);
 
-        checkNextPermission();
+        updateShizukuStatus();
 
         pickBinaryButton.setOnClickListener(view -> launchFilePicker());
 
@@ -183,50 +187,93 @@ public class MainActivity extends Activity {
                 commandInput.requestFocus();
             }
         });
+
+        checkPermissionsStep1();
     }
 
-    private void checkNextPermission() {
+    private void checkPermissionsStep1() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+                    || ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(
+                        this,
+                        new String[]{
+                                Manifest.permission.READ_EXTERNAL_STORAGE,
+                                Manifest.permission.WRITE_EXTERNAL_STORAGE
+                        },
+                        PERMISSION_REQUEST_CODE
+                );
+            } else {
+                checkPermissionsStep2();
+            }
+        } else {
+            checkPermissionsStep2();
+        }
+    }
+
+    private void checkPermissionsStep2() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
                 try {
                     Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
-                    intent.setData(Uri.parse("package:" + getPackageName()));
-                    startActivityForResult(intent, REQ_ALL_FILES_ACCESS);
+                    intent.addCategory("android.intent.category.DEFAULT");
+                    intent.setData(Uri.parse(String.format("package:%s", getApplicationContext().getPackageName())));
+                    startActivityForResult(intent, MANAGE_ALL_FILES_REQUEST_CODE);
                 } catch (Exception e) {
-                    Intent intent = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
-                    startActivityForResult(intent, REQ_ALL_FILES_ACCESS);
+                    Intent intent = new Intent();
+                    intent.setAction(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                    startActivityForResult(intent, MANAGE_ALL_FILES_REQUEST_CODE);
                 }
-                return;
+            } else {
+                checkPermissionsStep3();
             }
         } else {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this, new String[]{
-                        Manifest.permission.READ_EXTERNAL_STORAGE,
-                        Manifest.permission.WRITE_EXTERNAL_STORAGE
-                }, REQ_STORAGE_PERMISSIONS);
-                return;
-            }
+            checkPermissionsStep3();
         }
+    }
 
+    private void checkPermissionsStep3() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (!Settings.System.canWrite(this)) {
-                Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
-                intent.setData(Uri.parse("package:" + getPackageName()));
-                startActivityForResult(intent, REQ_WRITE_SETTINGS);
-                return;
+            SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+            boolean alreadyChecked = prefs.getBoolean(KEY_SETTINGS_CHECKED, false);
+
+            if (!Settings.System.canWrite(this) && !alreadyChecked) {
+                AlertDialog.Builder builder = new AlertDialog.Builder(this);
+                builder.setTitle("システム設定変更の許可");
+                builder.setMessage("settings put/get コマンドでシステム設定を変更するには\nWRITE_SETTINGS権限が必要です。\n\n今すぐ許可しますか？\n（許可しない場合、Shizukuが必要です）");
+                builder.setPositiveButton("許可する", (dialog, which) -> {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivityForResult(intent, WRITE_SETTINGS_REQUEST_CODE);
+                    prefs.edit().putBoolean(KEY_SETTINGS_CHECKED, true).apply();
+                });
+                builder.setNegativeButton("後で", (dialog, which) -> prefs.edit().putBoolean(KEY_SETTINGS_CHECKED, true).apply());
+                builder.setCancelable(true);
+                builder.show();
             }
         }
-
-        updateShizukuStatus();
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQ_STORAGE_PERMISSIONS) {
-            checkNextPermission();
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            int count = Math.min(permissions.length, grantResults.length);
+            for (int i = 0; i < count; i++) {
+                Toast.makeText(
+                        this,
+                        permissions[i] + (grantResults[i] == PackageManager.PERMISSION_GRANTED ? " 権限が許可されました" : " 権限が拒否されました"),
+                        Toast.LENGTH_SHORT
+                ).show();
+            }
+            checkPermissionsStep2();
         }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        updateShizukuStatus();
     }
 
     private void updateShizukuStatus() {
@@ -279,12 +326,24 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
 
-        if (requestCode == REQ_ALL_FILES_ACCESS || requestCode == REQ_WRITE_SETTINGS) {
-            checkNextPermission();
-            return;
-        }
-
-        if (requestCode == FILE_PICKER_REQUEST_CODE && resultCode == RESULT_OK && data != null) {
+        if (requestCode == MANAGE_ALL_FILES_REQUEST_CODE) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (Environment.isExternalStorageManager()) {
+                    Toast.makeText(this, "全てのファイルアクセス 権限が許可されました", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(this, "全てのファイルアクセス 権限が拒否されました", Toast.LENGTH_SHORT).show();
+                }
+            }
+            checkPermissionsStep3();
+        } else if (requestCode == WRITE_SETTINGS_REQUEST_CODE) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                if (Settings.System.canWrite(this)) {
+                    Toast.makeText(this, "システム設定変更 権限が許可されました", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(this, "システム設定変更 権限が拒否されました", Toast.LENGTH_SHORT).show();
+                }
+            }
+        } else if (requestCode == FILE_PICKER_REQUEST_CODE && resultCode == RESULT_OK && data != null) {
             Uri uri = data.getData();
             if (uri == null) {
                 Toast.makeText(this, "ファイルの取得に失敗しました。", Toast.LENGTH_SHORT).show();
@@ -659,7 +718,7 @@ public class MainActivity extends Activity {
     @Nullable
     private Process startProcess(@NonNull String command, boolean preferShizuku) throws IOException {
         String mergedCommand = command.endsWith(" 2>&1") ? command : command + " 2>&1";
-        String[] argv = new String[] { "/system/bin/sh", "-c", mergedCommand };
+        String[] argv = new String[]{"/system/bin/sh", "-c", mergedCommand};
 
         if (preferShizuku && isShizukuUsable()) {
             try {
@@ -823,7 +882,7 @@ public class MainActivity extends Activity {
         File logFile = resolveUniqueFile(directory, fileName);
 
         try (FileOutputStream fos = new FileOutputStream(logFile);
-             OutputStreamWriter writer = new OutputStreamWriter(fos)) {
+                OutputStreamWriter writer = new OutputStreamWriter(fos)) {
             writer.write(logContent);
             postToast("ログが保存されました: " + logFile.getAbsolutePath());
         } catch (Exception e) {
@@ -841,9 +900,15 @@ public class MainActivity extends Activity {
         return new File(getExternalFilesDir(null), LOG_DIR_NAME);
     }
 
+    private void deleteQuietly(@Nullable File file) {
+        if (file != null && file.exists()) {
+            file.delete();
+        }
+    }
+
     @NonNull
-    private String sanitizeFileName(@NonNull String name) {
-        return name.replaceAll("[^a-zA-Z0-9._-]", "_");
+    private String sanitizeFileName(@NonNull String fileName) {
+        return fileName.replaceAll("[^a-zA-Z0-9._-]", "_");
     }
 
     @NonNull
@@ -856,30 +921,24 @@ public class MainActivity extends Activity {
     }
 
     @NonNull
-    private File resolveUniqueFile(@NonNull File directory, @NonNull String baseName) {
-        File file = new File(directory, baseName);
-        int counter = 1;
-        String nameWithoutExt = baseName;
+    private File resolveUniqueFile(@NonNull File directory, @NonNull String fileName) {
+        File file = new File(directory, fileName);
+        if (!file.exists()) {
+            return file;
+        }
+        int i = 1;
+        String name = fileName;
         String ext = "";
-        int dotIndex = baseName.lastIndexOf('.');
-        if (dotIndex > 0) {
-            nameWithoutExt = baseName.substring(0, dotIndex);
-            ext = baseName.substring(dotIndex);
+        int dotIdx = fileName.lastIndexOf('.');
+        if (dotIdx > 0) {
+            name = fileName.substring(0, dotIdx);
+            ext = fileName.substring(dotIdx);
         }
         while (file.exists()) {
-            file = new File(directory, nameWithoutExt + "_" + counter + ext);
-            counter++;
+            file = new File(directory, name + "_" + i + ext);
+            i++;
         }
         return file;
-    }
-
-    private void deleteQuietly(@Nullable File file) {
-        if (file != null && file.exists()) {
-            try {
-                file.delete();
-            } catch (Exception ignored) {
-            }
-        }
     }
 
     @NonNull
@@ -899,17 +958,8 @@ public class MainActivity extends Activity {
     private void sleepQuietly(long millis) {
         try {
             Thread.sleep(millis);
-        } catch (InterruptedException e) {
+        } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
         }
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        if (requestPermissionResultListener != null) {
-            Shizuku.removeRequestPermissionResultListener(requestPermissionResultListener);
-        }
-        backgroundExecutor.shutdownNow();
     }
 }
