@@ -3,8 +3,9 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="16dp"
-    android:background="?android:attr/colorBackground">
+    android:fitsSystemWindows="true"
+    android:background="?android:attr/colorBackground"
+    android:padding="16dp">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -32,7 +33,6 @@
             android:text="Execute" />
     </LinearLayout>
 
-    <!-- Keyboardボタン -->
     <Button
         android:id="@+id/keyboard_button"
         android:layout_width="wrap_content"
@@ -41,7 +41,7 @@
         android:layout_marginBottom="8dp"
         android:text="Keyboard" />
 
-    <!-- Binaryボタン群（横並び） -->
+    <!-- Binaryボタン群 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -62,7 +62,6 @@
             android:text="Clear Binary" />
     </LinearLayout>
 
-    <!-- Stopボタン -->
     <Button
         android:id="@+id/stop_button"
         android:layout_width="wrap_content"
@@ -70,15 +69,15 @@
         android:layout_marginBottom="12dp"
         android:text="Stop" />
 
-    <!-- 結果表示エリア（スクロール可能） -->
+    <!-- 結果表示エリア -->
     <ScrollView
         android:id="@+id/scroll_view"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:background="@android:color/white"
         android:scrollbars="vertical"
-        android:padding="4dp">
+        android:padding="4dp"
+        android:background="?android:attr/colorBackground">
 
         <TextView
             android:id="@+id/result_view"
@@ -87,8 +86,7 @@
             android:padding="12dp"
             android:text="Result will be displayed here"
             android:textIsSelectable="true"
-            android:textColor="@android:color/black"
-            android:background="@android:color/white"
+            android:textColor="?android:attr/textColorPrimary"
             android:lineSpacingExtra="4dp" />
     </ScrollView>
 
