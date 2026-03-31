@@ -310,10 +310,7 @@ public class MainActivity extends Activity {
         String trimmed = command.trim();
         if (trimmed.startsWith("settings ")) {
             if (shizukuGranted && Shizuku.pingBinder()) {
-                // Shizuku有効時は補助処理を使わず普通のsettingsコマンドに任せる
-                // 短縮形はそのまま実行
             } else {
-                // 普通の時とDevice Ownerの時だけ補助処理が働く
                 String[] parts = trimmed.split("\\s+");
                 String action, category, key;
                 String value = null;
