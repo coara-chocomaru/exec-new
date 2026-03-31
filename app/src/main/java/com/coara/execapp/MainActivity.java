@@ -17,7 +17,6 @@ import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.inputmethod.InputMethodManager;
-import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ScrollView;
@@ -28,11 +27,6 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-
-import androidx.core.graphics.Insets;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
-import androidx.core.view.WindowInsetsControllerCompat;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -104,9 +98,10 @@ protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
     setContentView(R.layout.activity_main);
 
+    getWindow().getDecorView().setBackgroundColor(Color.WHITE);
+
     ScrollView scrollView = findViewById(R.id.scroll_view);
     TextView resultView = findViewById(R.id.result_view);
-
     if (scrollView != null) {
         scrollView.setBackgroundColor(Color.WHITE);
     }
@@ -115,99 +110,104 @@ protected void onCreate(Bundle savedInstanceState) {
         resultView.setTextColor(Color.BLACK);
     }
 
-    getWindow().setNavigationBarColor(Color.WHITE);
-    View rootView = findViewById(android.R.id.content); 
+    // ==================== 下部が完全に真っ黒になる対策 ====================
 
-    ViewCompat.setOnApplyWindowInsetsListener(rootView, (v, windowInsets) -> {
-        Insets systemBars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
-        
-        v.setPadding(0, systemBars.top, 0, systemBars.bottom);
-        
-        return WindowInsetsCompat.CONSUMED;
+    // Navigation Barの色を白にする（これが一番重要）
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        getWindow().setNavigationBarColor(Color.WHITE);
+    }
+
+    // ルートViewの下部に余白を強制的に入れる（上に縮む対策）
+    View rootView = getWindow().getDecorView().findViewById(android.R.id.content);
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+        rootView.setFitsSystemWindows(true);
+    }
+
+    // さらに下部に余白を追加（Gesture Navigationで黒帯が出やすい対策）
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        rootView.setPadding(0, 0, 0, 80);   // 80dp相当の余白（ピクセル）
+    }
+
+    // 既存のボタンなどの初期化（そのまま）
+    EditText commandInput = findViewById(R.id.command_input);
+    Button executeButton = findViewById(R.id.execute_button);
+    Button pickBinaryButton = findViewById(R.id.pick_binary_button);
+    Button clearBinaryButton = findViewById(R.id.clear_binary_button);
+    Button stopButton = findViewById(R.id.stop_button);
+    Button keyboardButton = findViewById(R.id.keyboard_button);
+
+    checkPermissions();
+
+    DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+    isDeviceOwner = dpm != null && dpm.isDeviceOwnerApp(getPackageName());
+
+    shizukuGranted = false;
+    shizukuPermissionRequestInFlight = false;
+
+    requestPermissionResultListener = (requestCode, grantResult) -> {
+        if (requestCode == SHIZUKU_REQUEST_CODE) {
+            shizukuPermissionRequestInFlight = false;
+            shizukuGranted = grantResult == PackageManager.PERMISSION_GRANTED;
+            postToast(shizukuGranted ? "Shizuku権限が付与されました" : "Shizuku権限が拒否されました");
+        }
+    };
+    Shizuku.addRequestPermissionResultListener(requestPermissionResultListener);
+
+    updateShizukuStatus();
+    handleWriteSettingsPermission();
+
+    pickBinaryButton.setOnClickListener(view -> launchFilePicker());
+
+    clearBinaryButton.setOnClickListener(view -> {
+        // ... 以降はあなたの元のコードのままです（省略せず全部残してください）
+        File internalBinary = selectedBinary;
+        String executionPathSnapshot = executionPath;
+
+        selectedBinary = null;
+        executionPath = null;
+
+        boolean deleteShizukuCopy = executionPathSnapshot != null && executionPathSnapshot.startsWith("/data/local/tmp/");
+
+        if (internalBinary != null) {
+            deleteQuietly(internalBinary);
+        }
+
+        if (deleteShizukuCopy) {
+            final String pathToDelete = executionPathSnapshot;
+            if (isShizukuUsable()) {
+                backgroundExecutor.execute(() -> runSilentShizukuCommand("rm -f " + shellQuote(pathToDelete)));
+            } else {
+                Toast.makeText(this, "/data/local/tmp 上のコピーはShizukuが利用できないため削除できません。", Toast.LENGTH_LONG).show();
+            }
+        }
+
+        Toast.makeText(this, "バイナリが解除されました。", Toast.LENGTH_SHORT).show();
     });
 
-    WindowInsetsControllerCompat controller = new WindowInsetsControllerCompat(getWindow(), rootView);
-    controller.setAppearanceLightNavigationBars(true); 
-    getWindow().getDecorView().setBackgroundColor(Color.WHITE);
+    // 以降の executeButton, stopButton, keyboardButton の setOnClickListener もすべてそのまま残してください
+    executeButton.setOnClickListener(view -> {
+        String command = commandInput.getText().toString().trim();
+        if (command.isEmpty() && executionPath == null) {
+            Toast.makeText(this, "コマンドまたはバイナリを指定してください。", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (isExecutionRunning()) {
+            Toast.makeText(this, "実行中の処理があります。STOPで停止してください。", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        executeCommand(command, resultView);
+    });
+
+    stopButton.setOnClickListener(view -> stopCurrentExecution(resultView));
+
+    keyboardButton.setOnClickListener(view -> {
+        InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
+            commandInput.requestFocus();
+        }
+    });
 }
-
-        EditText commandInput = findViewById(R.id.command_input);
-        Button executeButton = findViewById(R.id.execute_button);
-        Button pickBinaryButton = findViewById(R.id.pick_binary_button);
-        Button clearBinaryButton = findViewById(R.id.clear_binary_button);
-        Button stopButton = findViewById(R.id.stop_button);
-        Button keyboardButton = findViewById(R.id.keyboard_button);
-
-        checkPermissions();
-
-        DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
-        isDeviceOwner = dpm != null && dpm.isDeviceOwnerApp(getPackageName());
-
-        shizukuGranted = false;
-        shizukuPermissionRequestInFlight = false;
-
-        requestPermissionResultListener = (requestCode, grantResult) -> {
-            if (requestCode == SHIZUKU_REQUEST_CODE) {
-                shizukuPermissionRequestInFlight = false;
-                shizukuGranted = grantResult == PackageManager.PERMISSION_GRANTED;
-                postToast(shizukuGranted ? "Shizuku権限が付与されました" : "Shizuku権限が拒否されました");
-            }
-        };
-        Shizuku.addRequestPermissionResultListener(requestPermissionResultListener);
-
-        updateShizukuStatus();
-        handleWriteSettingsPermission();
-
-        pickBinaryButton.setOnClickListener(view -> launchFilePicker());
-
-        clearBinaryButton.setOnClickListener(view -> {
-            File internalBinary = selectedBinary;
-            String executionPathSnapshot = executionPath;
-
-            selectedBinary = null;
-            executionPath = null;
-
-            boolean deleteShizukuCopy = executionPathSnapshot != null && executionPathSnapshot.startsWith("/data/local/tmp/");
-
-            if (internalBinary != null) {
-                deleteQuietly(internalBinary);
-            }
-
-            if (deleteShizukuCopy) {
-                final String pathToDelete = executionPathSnapshot;
-                if (isShizukuUsable()) {
-                    backgroundExecutor.execute(() -> runSilentShizukuCommand("rm -f " + shellQuote(pathToDelete)));
-                } else {
-                    Toast.makeText(this, "/data/local/tmp 上のコピーはShizukuが利用できないため削除できません。", Toast.LENGTH_LONG).show();
-                }
-            }
-
-            Toast.makeText(this, "バイナリが解除されました。", Toast.LENGTH_SHORT).show();
-        });
-
-        executeButton.setOnClickListener(view -> {
-            String command = commandInput.getText().toString().trim();
-            if (command.isEmpty() && executionPath == null) {
-                Toast.makeText(this, "コマンドまたはバイナリを指定してください。", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            if (isExecutionRunning()) {
-                Toast.makeText(this, "実行中の処理があります。STOPで停止してください。", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            executeCommand(command, resultView);
-        });
-
-        stopButton.setOnClickListener(view -> stopCurrentExecution(resultView));
-
-        keyboardButton.setOnClickListener(view -> {
-            InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-            if (imm != null) {
-                imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
-                commandInput.requestFocus();
-            }
-        });
-    }
 
     @Override
     protected void onResume() {
