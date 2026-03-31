@@ -1,111 +1,73 @@
-# allwinner_head_parser.py
-# Windows用 Allwinner 先頭領域（36MB）分離・解析ツール
-# Python 3.8以上で動作（標準ライブラリのみ使用）
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 import os
 import sys
-import struct
-
-def find_magic(data, magic_bytes, max_offset=0x02400000):
-    """magic_bytesを探してオフセット一覧を返す"""
-    positions = []
-    offset = 0
-    while offset < len(data):
-        pos = data.find(magic_bytes, offset)
-        if pos == -1 or pos > max_offset:
-            break
-        positions.append(pos)
-        offset = pos + 1
-    return positions
+from pathlib import Path
 
 def main():
-    if len(sys.argv) < 2:
-        print("使い方: python allwinner_head_parser.py <head_36M.img>")
-        print("例: python allwinner_head_parser.py head_36M.img")
+    if len(sys.argv) > 1:
+        fex_dir = Path(sys.argv[1])
+    else:
+        fex_dir = Path("fex")  # 実行フォルダ内の fex ディレクトリ
+
+    if not fex_dir.exists() or not fex_dir.is_dir():
+        print(f"エラー: {fex_dir} ディレクトリが見つかりません。")
+        print("使い方: python generate_allwinner_image_cfg.py [fex_dir]")
         sys.exit(1)
 
-    img_path = sys.argv[1]
-    if not os.path.exists(img_path):
-        print(f"エラー: ファイルが見つかりません → {img_path}")
-        sys.exit(1)
+    output_file = Path("image.cfg")
 
-    print(f"解析開始: {img_path} (先頭36MBまで処理)")
-    
-    with open(img_path, "rb") as f:
-        data = f.read(36 * 1024 * 1024)  # 36MBまで読み込み
+    print(f"fex ディレクトリ: {fex_dir.resolve()}")
+    print(f"出力: {output_file}")
 
-    # 主要なmagic文字列検索（16進数オフセット表示）
-    print("\n=== Magic文字列検索 (16進数オフセット) ===")
-    magics = {
-        "TOC0": b"TOC0",
-        "U-Boot": b"U-Boot",
-        "sunxi_mbr": b"sunxi_mbr",
-        "EGON": b"EGON.BT0",
-        "boot0": b"boot0",
-        "dlinfo": b"dlinfo",
-        "sys_config": b"sys_config",
-    }
+    # image.cfg のヘッダー部分（基本的なテンプレート）
+    cfg_lines = [
+        "[image]",
+        "version = 1.0",
+        "chip = sunxi",          # 必要に応じて sun8i, sun50i などに変更
+        "mode = normal",
+        "",
+        "[image_list]",
+    ]
 
-    for name, magic in magics.items():
-        positions = find_magic(data, magic)
-        if positions:
-            print(f"{name:12} 発見位置:")
-            for pos in positions[:10]:  # 最大10件まで
-                print(f"  0x{pos:08X}  ({pos:,} bytes)")
+    # fex フォルダ内のファイルをスキャンしてエントリを追加
+    for file_path in sorted(fex_dir.iterdir()):
+        if not file_path.is_file():
+            continue
+
+        filename = file_path.name
+        name_without_ext = file_path.stem
+
+        # 典型的な Allwinner ファイル名に応じた設定（カスタマイズ可能）
+        if filename == "sys_config.fex":
+            entry = f'  item = sys_config.fex : "{filename}" : 0x0 : 0x0 : 0x0 : 0x0'
+        elif filename == "sys_partition.fex":
+            entry = f'  item = sys_partition.fex : "{filename}" : 0x0 : 0x0 : 0x0 : 0x0'
+        elif filename in ["boot0.fex", "boot1.fex", "u-boot.fex"]:
+            entry = f'  item = {name_without_ext} : "{filename}" : 0x0 : 0x0 : 0x0 : 0x0'
+        elif filename.endswith(".fex"):
+            # 一般的なパーティション（boot, system, recovery など）
+            entry = f'  item = {name_without_ext} : "{filename}" : 0x0 : 0x0 : 0x0 : 0x0'
         else:
-            print(f"{name:12} 見つかりませんでした")
+            # その他のファイル（.bin など）
+            entry = f'  item = {name_without_ext} : "{filename}" : 0x0 : 0x0 : 0x0 : 0x0'
 
-    # TOC0検出と抽出（典型的なTOC0ヘッダー: 最初の4バイトがTOC0）
-    toc_positions = find_magic(data, b"TOC0")
-    if toc_positions:
-        for i, pos in enumerate(toc_positions[:3]):
-            # TOC0ヘッダー解析（簡易）
-            if pos + 0x20 < len(data):
-                length = struct.unpack_from("<I", data, pos + 0x08)[0]  # よく使われる長さフィールド
-                print(f"\nTOC0 #{i+1} を抽出中... (オフセット 0x{pos:08X}, 推定サイズ {length} bytes)")
-                out_name = f"toc0_{i+1}_0x{pos:08X}.img"
-                with open(out_name, "wb") as f:
-                    f.write(data[pos:pos + max(0x10000, length + 0x1000)])  # 安全に少し多めに
-                print(f"  → 保存: {out_name}")
-    
-    # sunxi_mbr検出と抽出
-    mbr_positions = find_magic(data, b"sunxi_mbr")
-    if mbr_positions:
-        for i, pos in enumerate(mbr_positions[:2]):
-            print(f"\nsunxi_mbr #{i+1} を抽出中... (オフセット 0x{pos:08X})")
-            out_name = f"sunxi_mbr_0x{pos:08X}.fex"
-            # MBRは通常数KiB〜64KiB程度
-            with open(out_name, "wb") as f:
-                f.write(data[pos:pos + 0x20000])
-            print(f"  → 保存: {out_name}")
-            
-            # 簡易MBR情報ダンプ（part数など）
-            if pos + 0x100 < len(data):
-                part_count = struct.unpack_from("<I", data, pos + 0x04)[0] if pos + 0x08 < len(data) else 0
-                print(f"    検出されたpartition数: {part_count} (29個が期待値)")
+        cfg_lines.append(entry)
 
-    # U-Bootっぽい大きなブロックを抽出（128KiB以降の領域）
-    print("\nU-Boot / boot_package 候補領域を抽出...")
-    # 128KiB (0x20000) から数MiB単位で試す
-    candidates = [0x00020000, 0x00400000, 0x00800000, 0x00A00000]
-    for start in candidates:
-        if start + 0x100000 < len(data):  # 最低1MiB確保
-            out_name = f"uboot_package_0x{start:08X}.img"
-            with open(out_name, "wb") as f:
-                f.write(data[start:start + 0x800000])  # 8MiB分（調整可）
-            print(f"  0x{start:08X} から抽出 → {out_name} (8MiB)")
+    # フッター
+    cfg_lines.append("")
+    cfg_lines.append("[end]")
 
-    print("\n解析完了！")
-    print("生成されたファイル:")
-    for file in os.listdir("."):
-        if file.startswith(("toc0_", "sunxi_mbr_", "uboot_package_")) and file.endswith((".img", ".fex")):
-            size = os.path.getsize(file) / (1024*1024)
-            print(f"  {file}  ({size:.2f} MiB)")
+    # image.cfg として書き出し
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(cfg_lines) + "\n")
 
-    print("\n復旧用firmware作成のヒント:")
-    print("1. toc0_xxx.img と sunxi_mbr_xxx.fex を先頭に配置")
-    print("2. /dev/block/by-name/ の各partitionを sunxi_mbr内のaddrloに従って配置")
-    print("3. PhoenixSuit / LiveSuit で焼く")
+    print(f"\n✅ {output_file} を生成しました！")
+    print("中身を確認して必要に応じて以下を編集してください：")
+    print("  - chip = sunxi の部分（SoC に合わせて変更）")
+    - item の後ろの数値（オフセット、サイズ、verify など）")
+    print("\n次に imgRePacker や dragon pack ツールで image.cfg を使用して firmware.img を作成してください。")
 
 if __name__ == "__main__":
     main()
