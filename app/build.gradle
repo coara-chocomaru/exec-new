@@ -7,8 +7,8 @@ android {
     namespace = 'com.coara.execapp'
 
     defaultConfig {
-        minSdk = 24
-        targetSdk = 24
+        minSdk = 23
+        targetSdk = 26
         versionCode = 6
         versionName = "2.6"
         multiDexEnabled = true
