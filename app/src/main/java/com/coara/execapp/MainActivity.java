@@ -111,25 +111,18 @@ protected void onCreate(Bundle savedInstanceState) {
         resultView.setTextColor(Color.BLACK);
     }
 
-    // ==================== 下部が完全に真っ黒になる対策 ====================
-
-    // Navigation Barの色を白にする（これが一番重要）
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
         getWindow().setNavigationBarColor(Color.WHITE);
     }
 
-    // ルートViewの下部に余白を強制的に入れる（上に縮む対策）
     View rootView = getWindow().getDecorView().findViewById(android.R.id.content);
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
         rootView.setFitsSystemWindows(true);
     }
-
-    // さらに下部に余白を追加（Gesture Navigationで黒帯が出やすい対策）
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-        rootView.setPadding(0, 0, 0, 80);   // 80dp相当の余白（ピクセル）
+        rootView.setPadding(0, 0, 0, 80); 
     }
 
-    // 既存のボタンなどの初期化（そのまま）
     EditText commandInput = findViewById(R.id.command_input);
     Button executeButton = findViewById(R.id.execute_button);
     Button pickBinaryButton = findViewById(R.id.pick_binary_button);
@@ -160,7 +153,6 @@ protected void onCreate(Bundle savedInstanceState) {
     pickBinaryButton.setOnClickListener(view -> launchFilePicker());
 
     clearBinaryButton.setOnClickListener(view -> {
-        // ... 以降はあなたの元のコードのままです（省略せず全部残してください）
         File internalBinary = selectedBinary;
         String executionPathSnapshot = executionPath;
 
@@ -185,7 +177,6 @@ protected void onCreate(Bundle savedInstanceState) {
         Toast.makeText(this, "バイナリが解除されました。", Toast.LENGTH_SHORT).show();
     });
 
-    // 以降の executeButton, stopButton, keyboardButton の setOnClickListener もすべてそのまま残してください
     executeButton.setOnClickListener(view -> {
         String command = commandInput.getText().toString().trim();
         if (command.isEmpty() && executionPath == null) {
