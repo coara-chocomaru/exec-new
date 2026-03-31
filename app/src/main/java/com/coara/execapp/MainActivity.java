@@ -422,8 +422,13 @@ public class MainActivity extends Activity {
             }
 
             int exitCode = process.waitFor();
-            if (exitCode != 0 && merged.length() > 0) {
-                postToast("Shizukuコマンド失敗: " + merged.toString().trim());
+            if (exitCode != 0) {
+                String trimmedOutput = merged.toString().trim();
+                if (!trimmedOutput.isEmpty()) {
+                    postToast("Shizukuコマンド失敗 (exit_code: " + exitCode + "): " + trimmedOutput);
+                } else {
+                    postToast("Shizukuコマンド失敗 (exit_code: " + exitCode + ")");
+                }
             }
             safeDestroy(process);
             return exitCode == 0;
@@ -634,9 +639,12 @@ public class MainActivity extends Activity {
                 }
 
                 int exitCode = process.waitFor();
-                output.append("INFO: プロセス終了 (exit code: ").append(exitCode).append(")\n");
-                if (isTokenActive(token)) {
-                    appendResult(resultView, "INFO: プロセス終了 (exit code: " + exitCode + ")");
+                if (exitCode != 0) {
+                    String exitMessage = "ERROR: プロセスが異常終了しました (exit_code: " + exitCode + ")";
+                    output.append(exitMessage).append('\n');
+                    if (isTokenActive(token)) {
+                        appendResult(resultView, exitMessage);
+                    }
                 }
                 saveLogToFile(command, output.toString());
             } catch (InterruptedException e) {
