@@ -54,7 +54,6 @@ public class MainActivity extends Activity {
     private static final int SHIZUKU_REQUEST_CODE = 1003;
     private static final int MANAGE_ALL_FILES_REQUEST_CODE = 1004;
     private static final int WRITE_SETTINGS_REQUEST_CODE = 1005;
-    
     private static final String PREF_NAME = "execapp_prefs";
     private static final String KEY_SETTINGS_CHECKED = "write_settings_checked_once";
     private static final String BINARY_DIR_NAME = "binaries";
@@ -156,7 +155,7 @@ public class MainActivity extends Activity {
             if (deleteShizukuCopy) {
                 final String pathToDelete = executionPathSnapshot;
                 if (isShizukuUsable()) {
-                    backgroundExecutor.execute(() -> runSilentShizukuCommand("rm -f " + shellQuote(pathToDelete)));
+                    backgroundExecutor.execute(() -> runSilentShizukuCommand("rm -f \"" + pathToDelete + "\""));
                 } else {
                     Toast.makeText(this, "/data/local/tmp 上のコピーはShizukuが利用できないため削除できません。", Toast.LENGTH_LONG).show();
                 }
@@ -279,7 +278,6 @@ public class MainActivity extends Activity {
     private void updateShizukuStatus() {
         boolean binderAlive;
         boolean preV11;
-
         try {
             binderAlive = Shizuku.pingBinder();
         } catch (Throwable ignored) {
@@ -370,18 +368,18 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void handleShizukuBinaryCopy() {
-        String filename = selectedBinary.getName();
+    private void handleShizukuBinaryCopy(@NonNull File sourceBinary) {
+        String filename = sourceBinary.getName();
         executionPath = "/data/local/tmp/" + filename;
 
-        String cmd = "cp -f \"" + selectedBinary.getAbsolutePath() + "\" \"" + executionPath + "\" && chmod 777 \"" + executionPath + "\"";
+        String cmd = "cp -f \"" + sourceBinary.getAbsolutePath() + "\" \"" + executionPath + "\" && chmod 777 \"" + executionPath + "\"";
         boolean success = runSilentShizukuCommand(cmd);
 
         if (success) {
             Toast.makeText(this, "バイナリ選択完了: " + executionPath, Toast.LENGTH_SHORT).show();
         } else {
-            Toast.makeText(this, "エラー", Toast.LENGTH_LONG).show();
-            executionPath = selectedBinary.getAbsolutePath();
+            Toast.makeText(this, "Shizuku経由のコピーに失敗しました。内部領域のパスを使用します。", Toast.LENGTH_LONG).show();
+            executionPath = sourceBinary.getAbsolutePath();
         }
     }
 
@@ -393,19 +391,19 @@ public class MainActivity extends Activity {
             return null;
         }
 
-        String fileName = getFileName(uri);
-        if (fileName == null || fileName.trim().isEmpty()) {
-            fileName = "picked_binary";
-        }
-        fileName = sanitizeFileName(fileName);
-
-        File destFile = resolveUniqueFile(directory, fileName);
-
         try (InputStream inputStream = getContentResolver().openInputStream(uri)) {
             if (inputStream == null) {
                 Toast.makeText(this, "ファイルを開けませんでした。", Toast.LENGTH_SHORT).show();
                 return null;
             }
+
+            String fileName = getFileName(uri);
+            if (fileName == null || fileName.trim().isEmpty()) {
+                fileName = "picked_binary";
+            }
+            fileName = sanitizeFileName(fileName);
+
+            File destFile = resolveUniqueFile(directory, fileName);
 
             try (OutputStream outputStream = new FileOutputStream(destFile)) {
                 byte[] buffer = new byte[8192];
@@ -415,15 +413,8 @@ public class MainActivity extends Activity {
                 }
             }
 
-            if (!destFile.setExecutable(true)) {
-                deleteQuietly(destFile);
-                Toast.makeText(this, "実行権限の付与に失敗しました。", Toast.LENGTH_SHORT).show();
-                return null;
-            }
-
             return destFile;
         } catch (IOException e) {
-            deleteQuietly(destFile);
             Toast.makeText(this, "ファイルのコピーに失敗しました: " + e.getMessage(), Toast.LENGTH_LONG).show();
             return null;
         }
@@ -488,7 +479,6 @@ public class MainActivity extends Activity {
 
     private void executeCommand(@NonNull String command, @NonNull TextView resultView) {
         resultView.setText("");
-
         String trimmed = command.trim();
         String effectiveCommand = buildEffectiveCommand(trimmed);
 
@@ -594,7 +584,6 @@ public class MainActivity extends Activity {
 
         int index = 1;
         String action = "put";
-
         if ("put".equals(parts[1]) || "get".equals(parts[1])) {
             action = parts[1];
             index = 2;
@@ -612,7 +601,6 @@ public class MainActivity extends Activity {
 
         String key = parts[index++];
         String value = null;
-
         if ("put".equals(action)) {
             if (parts.length <= index) {
                 return null;
@@ -695,6 +683,7 @@ public class MainActivity extends Activity {
                     }
                 }
                 saveLogToFile(command, output.toString());
+
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 output.append("ERROR: ").append(e.getMessage()).append('\n');
@@ -741,6 +730,7 @@ public class MainActivity extends Activity {
         Method method = clazz.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
         method.setAccessible(true);
         Object process = method.invoke(null, argv, null, null);
+
         if (process instanceof Process) {
             return (Process) process;
         }
@@ -892,7 +882,7 @@ public class MainActivity extends Activity {
 
     @NonNull
     private File getBinaryDirectory() {
-        return new File(getFilesDir(), BINARY_DIR_NAME);
+        return new File(getExternalFilesDir(null), BINARY_DIR_NAME);
     }
 
     @NonNull
