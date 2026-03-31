@@ -7,9 +7,9 @@ android {
     namespace = 'com.coara.execapp'
 
     defaultConfig {
-        minSdk = 23
-        targetSdk = 26
-        versionCode = 6
+        minSdk = 21
+        targetSdk = 24
+        versionCode = 11
         versionName = "2.6"
         multiDexEnabled = true
         proguardFiles += 'proguard-rules.pro'
