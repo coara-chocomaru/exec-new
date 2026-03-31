@@ -66,6 +66,7 @@ public class MainActivity extends Activity {
     private volatile boolean shizukuGranted;
     private volatile boolean shizukuPermissionRequestInFlight;
     private volatile long currentExecutionToken;
+    private volatile boolean executionRunning;
     private volatile ExecutionMode currentExecutionMode = ExecutionMode.NONE;
     private volatile String currentCommand;
 
@@ -194,8 +195,8 @@ public class MainActivity extends Activity {
     }
 
     private void updateShizukuStatus() {
-        boolean binderAlive = false;
-        boolean preV11 = false;
+        boolean binderAlive;
+        boolean preV11;
 
         try {
             binderAlive = Shizuku.pingBinder();
@@ -601,6 +602,7 @@ public class MainActivity extends Activity {
         currentExecutionToken = token;
         currentCommand = command;
         currentExecutionMode = isShizukuUsable() ? ExecutionMode.SHIZUKU_SHELL : ExecutionMode.APP_SHELL;
+        executionRunning = true;
 
         appendResult(resultView, currentExecutionMode == ExecutionMode.SHIZUKU_SHELL ? "INFO: Shizukuで実行" : "INFO: 通常権限で実行");
 
@@ -611,8 +613,10 @@ public class MainActivity extends Activity {
             try {
                 process = startProcess(command, currentExecutionMode == ExecutionMode.SHIZUKU_SHELL);
                 if (process == null) {
-                    appendResult(resultView, "ERROR: プロセスの起動に失敗しました");
-                    saveLogToFile(command, "ERROR: プロセスの起動に失敗しました");
+                    if (isTokenActive(token)) {
+                        appendResult(resultView, "ERROR: プロセスの起動に失敗しました");
+                        saveLogToFile(command, "ERROR: プロセスの起動に失敗しました");
+                    }
                     clearExecutionStateIfMatches(token);
                     return;
                 }
@@ -623,22 +627,30 @@ public class MainActivity extends Activity {
                     String line;
                     while ((line = reader.readLine()) != null) {
                         output.append(line).append('\n');
-                        appendResult(resultView, line);
+                        if (isTokenActive(token)) {
+                            appendResult(resultView, line);
+                        }
                     }
                 }
 
                 int exitCode = process.waitFor();
                 output.append("INFO: プロセス終了 (exit code: ").append(exitCode).append(")\n");
-                appendResult(resultView, "INFO: プロセス終了 (exit code: " + exitCode + ")");
+                if (isTokenActive(token)) {
+                    appendResult(resultView, "INFO: プロセス終了 (exit code: " + exitCode + ")");
+                }
                 saveLogToFile(command, output.toString());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 output.append("ERROR: ").append(e.getMessage()).append('\n');
-                appendResult(resultView, "ERROR: " + e.getMessage());
+                if (isTokenActive(token)) {
+                    appendResult(resultView, "ERROR: " + e.getMessage());
+                }
                 saveLogToFile(command, output.toString());
             } catch (Exception e) {
                 output.append("ERROR: ").append(e.getMessage()).append('\n');
-                appendResult(resultView, "ERROR: " + e.getMessage());
+                if (isTokenActive(token)) {
+                    appendResult(resultView, "ERROR: " + e.getMessage());
+                }
                 saveLogToFile(command, output.toString());
             } finally {
                 safeDestroy(process);
@@ -690,19 +702,24 @@ public class MainActivity extends Activity {
     }
 
     private boolean isExecutionRunning() {
-        Process process = currentProcess;
-        return process != null && process.isAlive();
+        return executionRunning;
+    }
+
+    private boolean isTokenActive(long token) {
+        return executionRunning && currentExecutionToken == token;
     }
 
     private void stopCurrentExecution(@NonNull TextView resultView) {
-        Process processSnapshot = currentProcess;
-        ExecutionMode modeSnapshot = currentExecutionMode;
+        final Process processSnapshot = currentProcess;
+        final ExecutionMode modeSnapshot = currentExecutionMode;
+
         currentProcess = null;
         currentExecutionMode = ExecutionMode.NONE;
         currentCommand = null;
         currentExecutionToken = 0L;
+        executionRunning = false;
 
-        if (processSnapshot == null || !processSnapshot.isAlive()) {
+        if (processSnapshot == null) {
             Toast.makeText(this, "実行中のプロセスはありません。", Toast.LENGTH_SHORT).show();
             return;
         }
@@ -714,28 +731,30 @@ public class MainActivity extends Activity {
                 if (modeSnapshot == ExecutionMode.SHIZUKU_SHELL) {
                     Long pid = getProcessPid(processSnapshot);
                     if (pid != null) {
-                        runSilentShizukuCommand("kill -TERM " + pid);
-                        sleepQuietly(150);
-                        if (processSnapshot.isAlive()) {
+                        try {
+                            runSilentShizukuCommand("kill -TERM " + pid);
+                            sleepQuietly(150);
                             runSilentShizukuCommand("kill -KILL " + pid);
                             sleepQuietly(150);
+                        } catch (Throwable ignored) {
                         }
-                        stopped = !processSnapshot.isAlive();
                     }
                 }
 
-                if (!stopped) {
-                    safeDestroy(processSnapshot);
-                    sleepQuietly(150);
-                    if (processSnapshot.isAlive()) {
-                        safeForceDestroy(processSnapshot);
-                        sleepQuietly(150);
-                    }
-                    stopped = true;
+                try {
+                    processSnapshot.destroy();
+                } catch (Throwable ignored) {
                 }
+
+                sleepQuietly(150);
+
+                try {
+                    processSnapshot.destroyForcibly();
+                } catch (Throwable ignored) {
+                }
+
+                stopped = true;
             } catch (Throwable ignored) {
-                safeDestroy(processSnapshot);
-                safeForceDestroy(processSnapshot);
                 stopped = true;
             }
 
@@ -773,6 +792,7 @@ public class MainActivity extends Activity {
             currentProcess = null;
             currentExecutionMode = ExecutionMode.NONE;
             currentCommand = null;
+            executionRunning = false;
         }
     }
 
@@ -924,8 +944,9 @@ public class MainActivity extends Activity {
         currentExecutionMode = ExecutionMode.NONE;
         currentCommand = null;
         currentExecutionToken = 0L;
+        executionRunning = false;
 
-        if (processSnapshot != null && processSnapshot.isAlive()) {
+        if (processSnapshot != null) {
             safeDestroy(processSnapshot);
             safeForceDestroy(processSnapshot);
         }
