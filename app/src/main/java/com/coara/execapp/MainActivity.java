@@ -15,6 +15,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
+import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -117,23 +118,10 @@ public class MainActivity extends Activity {
         handleWriteSettingsPermission();
 
         pickBinaryButton.setOnClickListener(view -> launchFilePicker());
-
         clearBinaryButton.setOnClickListener(view -> clearSelectedBinary());
-
-        executeButton.setOnClickListener(view -> {
-            String command = commandInput.getText().toString().trim();
-            executeCommand(command, resultView);
-        });
-
+        executeButton.setOnClickListener(view -> executeCommand(commandInput.getText().toString().trim(), resultView));
         stopButton.setOnClickListener(view -> stopCurrentExecution(resultView));
-
-        keyboardButton.setOnClickListener(view -> {
-            InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-            if (imm != null) {
-                imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
-                commandInput.requestFocus();
-            }
-        });
+        keyboardButton.setOnClickListener(view -> showKeyboard(commandInput));
     }
 
     @Override
@@ -154,6 +142,14 @@ public class MainActivity extends Activity {
         }
         if (requestPermissionResultListener != null) {
             Shizuku.removeRequestPermissionResultListener(requestPermissionResultListener);
+        }
+    }
+
+    private void showKeyboard(@NonNull View target) {
+        InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            target.requestFocus();
+            imm.showSoftInput(target, InputMethodManager.SHOW_IMPLICIT);
         }
     }
 
@@ -327,11 +323,7 @@ public class MainActivity extends Activity {
         if (value == null) {
             return null;
         }
-        String sanitized = value.replaceAll("[\\\\/:*?\"<>|]+", "_").replaceAll("\\s+", "_");
-        if (sanitized.length() > 120) {
-            sanitized = sanitized.substring(0, 120);
-        }
-        return sanitized;
+        return value.replaceAll("[\\\\/:*?\"<>|]+", "_").replaceAll("\\s+", "_");
     }
 
     private void executeCommand(String command, @NonNull TextView resultView) {
