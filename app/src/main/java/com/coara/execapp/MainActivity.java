@@ -17,6 +17,7 @@ import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.inputmethod.InputMethodManager;
+import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ScrollView;
@@ -27,6 +28,11 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -93,22 +99,37 @@ public class MainActivity extends Activity {
         }
     }
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
+@Override
+protected void onCreate(Bundle savedInstanceState) {
+    super.onCreate(savedInstanceState);
+    setContentView(R.layout.activity_main);
 
-        getWindow().getDecorView().setBackgroundColor(Color.WHITE);
+    ScrollView scrollView = findViewById(R.id.scroll_view);
+    TextView resultView = findViewById(R.id.result_view);
 
-        ScrollView scrollView = findViewById(R.id.scroll_view);
-        TextView resultView = findViewById(R.id.result_view);
-        if (scrollView != null) {
-            scrollView.setBackgroundColor(Color.WHITE);
-        }
-        if (resultView != null) {
-            resultView.setBackgroundColor(Color.WHITE);
-            resultView.setTextColor(Color.BLACK);
-        }
+    if (scrollView != null) {
+        scrollView.setBackgroundColor(Color.WHITE);
+    }
+    if (resultView != null) {
+        resultView.setBackgroundColor(Color.WHITE);
+        resultView.setTextColor(Color.BLACK);
+    }
+
+    getWindow().setNavigationBarColor(Color.WHITE);
+    View rootView = findViewById(android.R.id.content); 
+
+    ViewCompat.setOnApplyWindowInsetsListener(rootView, (v, windowInsets) -> {
+        Insets systemBars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
+        
+        v.setPadding(0, systemBars.top, 0, systemBars.bottom);
+        
+        return WindowInsetsCompat.CONSUMED;
+    });
+
+    WindowInsetsControllerCompat controller = new WindowInsetsControllerCompat(getWindow(), rootView);
+    controller.setAppearanceLightNavigationBars(true); 
+    getWindow().getDecorView().setBackgroundColor(Color.WHITE);
+}
 
         EditText commandInput = findViewById(R.id.command_input);
         Button executeButton = findViewById(R.id.execute_button);
