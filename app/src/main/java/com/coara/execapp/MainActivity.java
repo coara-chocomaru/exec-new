@@ -16,7 +16,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
-import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -94,112 +93,100 @@ public class MainActivity extends Activity {
         }
     }
 
-@Override
-protected void onCreate(Bundle savedInstanceState) {
-    super.onCreate(savedInstanceState);
-    setContentView(R.layout.activity_main);
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
 
-    getWindow().getDecorView().setBackgroundColor(Color.WHITE);
+        getWindow().getDecorView().setBackgroundColor(Color.WHITE);
 
-    ScrollView scrollView = findViewById(R.id.scroll_view);
-    TextView resultView = findViewById(R.id.result_view);
-    if (scrollView != null) {
-        scrollView.setBackgroundColor(Color.WHITE);
-    }
-    if (resultView != null) {
-        resultView.setBackgroundColor(Color.WHITE);
-        resultView.setTextColor(Color.BLACK);
-    }
-
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-        getWindow().setNavigationBarColor(Color.WHITE);
-    }
-
-    View rootView = getWindow().getDecorView().findViewById(android.R.id.content);
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-        rootView.setFitsSystemWindows(true);
-    }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-        rootView.setPadding(0, 0, 0, 80); 
-    }
-
-    EditText commandInput = findViewById(R.id.command_input);
-    Button executeButton = findViewById(R.id.execute_button);
-    Button pickBinaryButton = findViewById(R.id.pick_binary_button);
-    Button clearBinaryButton = findViewById(R.id.clear_binary_button);
-    Button stopButton = findViewById(R.id.stop_button);
-    Button keyboardButton = findViewById(R.id.keyboard_button);
-
-    checkPermissions();
-
-    DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
-    isDeviceOwner = dpm != null && dpm.isDeviceOwnerApp(getPackageName());
-
-    shizukuGranted = false;
-    shizukuPermissionRequestInFlight = false;
-
-    requestPermissionResultListener = (requestCode, grantResult) -> {
-        if (requestCode == SHIZUKU_REQUEST_CODE) {
-            shizukuPermissionRequestInFlight = false;
-            shizukuGranted = grantResult == PackageManager.PERMISSION_GRANTED;
-            postToast(shizukuGranted ? "Shizuku権限が付与されました" : "Shizuku権限が拒否されました");
+        ScrollView scrollView = findViewById(R.id.scroll_view);
+        TextView resultView = findViewById(R.id.result_view);
+        if (scrollView != null) {
+            scrollView.setBackgroundColor(Color.WHITE);
         }
-    };
-    Shizuku.addRequestPermissionResultListener(requestPermissionResultListener);
-
-    updateShizukuStatus();
-    handleWriteSettingsPermission();
-
-    pickBinaryButton.setOnClickListener(view -> launchFilePicker());
-
-    clearBinaryButton.setOnClickListener(view -> {
-        File internalBinary = selectedBinary;
-        String executionPathSnapshot = executionPath;
-
-        selectedBinary = null;
-        executionPath = null;
-
-        boolean deleteShizukuCopy = executionPathSnapshot != null && executionPathSnapshot.startsWith("/data/local/tmp/");
-
-        if (internalBinary != null) {
-            deleteQuietly(internalBinary);
+        if (resultView != null) {
+            resultView.setBackgroundColor(Color.WHITE);
+            resultView.setTextColor(Color.BLACK);
         }
 
-        if (deleteShizukuCopy) {
-            final String pathToDelete = executionPathSnapshot;
-            if (isShizukuUsable()) {
-                backgroundExecutor.execute(() -> runSilentShizukuCommand("rm -f " + shellQuote(pathToDelete)));
-            } else {
-                Toast.makeText(this, "/data/local/tmp 上のコピーはShizukuが利用できないため削除できません。", Toast.LENGTH_LONG).show();
+        EditText commandInput = findViewById(R.id.command_input);
+        Button executeButton = findViewById(R.id.execute_button);
+        Button pickBinaryButton = findViewById(R.id.pick_binary_button);
+        Button clearBinaryButton = findViewById(R.id.clear_binary_button);
+        Button stopButton = findViewById(R.id.stop_button);
+        Button keyboardButton = findViewById(R.id.keyboard_button);
+
+        checkPermissions();
+
+        DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+        isDeviceOwner = dpm != null && dpm.isDeviceOwnerApp(getPackageName());
+
+        shizukuGranted = false;
+        shizukuPermissionRequestInFlight = false;
+
+        requestPermissionResultListener = (requestCode, grantResult) -> {
+            if (requestCode == SHIZUKU_REQUEST_CODE) {
+                shizukuPermissionRequestInFlight = false;
+                shizukuGranted = grantResult == PackageManager.PERMISSION_GRANTED;
+                postToast(shizukuGranted ? "Shizuku権限が付与されました" : "Shizuku権限が拒否されました");
             }
-        }
+        };
+        Shizuku.addRequestPermissionResultListener(requestPermissionResultListener);
 
-        Toast.makeText(this, "バイナリが解除されました。", Toast.LENGTH_SHORT).show();
-    });
+        updateShizukuStatus();
+        handleWriteSettingsPermission();
 
-    executeButton.setOnClickListener(view -> {
-        String command = commandInput.getText().toString().trim();
-        if (command.isEmpty() && executionPath == null) {
-            Toast.makeText(this, "コマンドまたはバイナリを指定してください。", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (isExecutionRunning()) {
-            Toast.makeText(this, "実行中の処理があります。STOPで停止してください。", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        executeCommand(command, resultView);
-    });
+        pickBinaryButton.setOnClickListener(view -> launchFilePicker());
 
-    stopButton.setOnClickListener(view -> stopCurrentExecution(resultView));
+        clearBinaryButton.setOnClickListener(view -> {
+            File internalBinary = selectedBinary;
+            String executionPathSnapshot = executionPath;
 
-    keyboardButton.setOnClickListener(view -> {
-        InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-        if (imm != null) {
-            imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
-            commandInput.requestFocus();
-        }
-    });
-}
+            selectedBinary = null;
+            executionPath = null;
+
+            boolean deleteShizukuCopy = executionPathSnapshot != null && executionPathSnapshot.startsWith("/data/local/tmp/");
+
+            if (internalBinary != null) {
+                deleteQuietly(internalBinary);
+            }
+
+            if (deleteShizukuCopy) {
+                final String pathToDelete = executionPathSnapshot;
+                if (isShizukuUsable()) {
+                    backgroundExecutor.execute(() -> runSilentShizukuCommand("rm -f " + shellQuote(pathToDelete)));
+                } else {
+                    Toast.makeText(this, "/data/local/tmp 上のコピーはShizukuが利用できないため削除できません。", Toast.LENGTH_LONG).show();
+                }
+            }
+
+            Toast.makeText(this, "バイナリが解除されました。", Toast.LENGTH_SHORT).show();
+        });
+
+        executeButton.setOnClickListener(view -> {
+            String command = commandInput.getText().toString().trim();
+            if (command.isEmpty() && executionPath == null) {
+                Toast.makeText(this, "コマンドまたはバイナリを指定してください。", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (isExecutionRunning()) {
+                Toast.makeText(this, "実行中の処理があります。STOPで停止してください。", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            executeCommand(command, resultView);
+        });
+
+        stopButton.setOnClickListener(view -> stopCurrentExecution(resultView));
+
+        keyboardButton.setOnClickListener(view -> {
+            InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null) {
+                imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
+                commandInput.requestFocus();
+            }
+        });
+    }
 
     @Override
     protected void onResume() {
