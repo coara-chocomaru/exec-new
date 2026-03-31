@@ -370,18 +370,18 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void handleShizukuBinaryCopy(@NonNull File sourceBinary) {
-        String filename = sourceBinary.getName();
+    private void handleShizukuBinaryCopy() {
+        String filename = selectedBinary.getName();
         executionPath = "/data/local/tmp/" + filename;
 
-        String cmd = "cp -f " + shellQuote(sourceBinary.getAbsolutePath()) + " " + shellQuote(executionPath) + " && chmod 777 " + shellQuote(executionPath);
+        String cmd = "cp -f \"" + selectedBinary.getAbsolutePath() + "\" \"" + executionPath + "\" && chmod 777 \"" + executionPath + "\"";
         boolean success = runSilentShizukuCommand(cmd);
 
         if (success) {
             Toast.makeText(this, "バイナリ選択完了: " + executionPath, Toast.LENGTH_SHORT).show();
         } else {
-            Toast.makeText(this, "Shizuku経由のコピーに失敗しました。内部領域のパスを使用します。", Toast.LENGTH_LONG).show();
-            executionPath = sourceBinary.getAbsolutePath();
+            Toast.makeText(this, "エラー", Toast.LENGTH_LONG).show();
+            executionPath = selectedBinary.getAbsolutePath();
         }
     }
 
