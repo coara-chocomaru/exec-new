@@ -155,7 +155,7 @@ public class MainActivity extends Activity {
             if (deleteShizukuCopy) {
                 final String pathToDelete = executionPathSnapshot;
                 if (isShizukuUsable()) {
-                    backgroundExecutor.execute(() -> runSilentShizukuCommand("rm -f \"" + pathToDelete + "\""));
+                    backgroundExecutor.execute(() -> runSilentShizukuCommand("rm -f " + shellQuote(pathToDelete)));
                 } else {
                     Toast.makeText(this, "/data/local/tmp 上のコピーはShizukuが利用できないため削除できません。", Toast.LENGTH_LONG).show();
                 }
@@ -278,6 +278,7 @@ public class MainActivity extends Activity {
     private void updateShizukuStatus() {
         boolean binderAlive;
         boolean preV11;
+
         try {
             binderAlive = Shizuku.pingBinder();
         } catch (Throwable ignored) {
@@ -372,7 +373,7 @@ public class MainActivity extends Activity {
         String filename = sourceBinary.getName();
         executionPath = "/data/local/tmp/" + filename;
 
-        String cmd = "cp -f \"" + sourceBinary.getAbsolutePath() + "\" \"" + executionPath + "\" && chmod 777 \"" + executionPath + "\"";
+        String cmd = "cp -f " + shellQuote(sourceBinary.getAbsolutePath()) + " " + shellQuote(executionPath) + " && chmod 777 " + shellQuote(executionPath);
         boolean success = runSilentShizukuCommand(cmd);
 
         if (success) {
@@ -486,6 +487,7 @@ public class MainActivity extends Activity {
 
     private void executeCommand(@NonNull String command, @NonNull TextView resultView) {
         resultView.setText("");
+
         String trimmed = command.trim();
         String effectiveCommand = buildEffectiveCommand(trimmed);
 
@@ -591,6 +593,7 @@ public class MainActivity extends Activity {
 
         int index = 1;
         String action = "put";
+
         if ("put".equals(parts[1]) || "get".equals(parts[1])) {
             action = parts[1];
             index = 2;
@@ -608,6 +611,7 @@ public class MainActivity extends Activity {
 
         String key = parts[index++];
         String value = null;
+
         if ("put".equals(action)) {
             if (parts.length <= index) {
                 return null;
@@ -690,7 +694,6 @@ public class MainActivity extends Activity {
                     }
                 }
                 saveLogToFile(command, output.toString());
-
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 output.append("ERROR: ").append(e.getMessage()).append('\n');
@@ -737,7 +740,6 @@ public class MainActivity extends Activity {
         Method method = clazz.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
         method.setAccessible(true);
         Object process = method.invoke(null, argv, null, null);
-
         if (process instanceof Process) {
             return (Process) process;
         }
@@ -889,7 +891,7 @@ public class MainActivity extends Activity {
 
     @NonNull
     private File getBinaryDirectory() {
-        return new File(getExternalFilesDir(null), BINARY_DIR_NAME);
+        return new File(getFilesDir(), BINARY_DIR_NAME);
     }
 
     @NonNull
