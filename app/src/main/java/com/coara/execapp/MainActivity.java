@@ -357,8 +357,8 @@ public class MainActivity extends Activity {
 
             selectedBinary = copyFileToInternalStorage(uri);
             if (selectedBinary != null) {
+                makeAccessibleForShizuku(selectedBinary);
                 if (isShizukuUsable()) {
-                    makeAccessibleForShizuku(selectedBinary);
                     handleShizukuBinaryCopy(selectedBinary);
                 } else {
                     executionPath = selectedBinary.getAbsolutePath();
@@ -431,12 +431,6 @@ public class MainActivity extends Activity {
                 while ((length = inputStream.read(buffer)) > 0) {
                     outputStream.write(buffer, 0, length);
                 }
-            }
-
-            if (!destFile.setExecutable(true)) {
-                deleteQuietly(destFile);
-                Toast.makeText(this, "実行権限の付与に失敗しました。", Toast.LENGTH_SHORT).show();
-                return null;
             }
 
             return destFile;
@@ -910,7 +904,7 @@ public class MainActivity extends Activity {
 
     @NonNull
     private File getBinaryDirectory() {
-        return new File(getFilesDir(), BINARY_DIR_NAME);
+        return new File(getExternalFilesDir(null), BINARY_DIR_NAME);
     }
 
     @NonNull
