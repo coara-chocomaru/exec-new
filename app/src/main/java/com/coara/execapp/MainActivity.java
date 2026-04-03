@@ -356,8 +356,9 @@ public class MainActivity extends Activity {
             }
 
             selectedBinary = copyFileToInternalStorage(uri);
-            if (selectedBinary != null && selectedBinary.setExecutable(true)) {
+            if (selectedBinary != null) {
                 if (isShizukuUsable()) {
+                    makeAccessibleForShizuku(selectedBinary);
                     handleShizukuBinaryCopy(selectedBinary);
                 } else {
                     executionPath = selectedBinary.getAbsolutePath();
@@ -366,6 +367,24 @@ public class MainActivity extends Activity {
             } else {
                 Toast.makeText(this, "バイナリ選択または実行権限付与に失敗しました。", Toast.LENGTH_SHORT).show();
             }
+        }
+    }
+
+    private void makeAccessibleForShizuku(@NonNull File file) {
+        if (!file.exists()) {
+            return;
+        }
+        file.setReadable(true, false);
+        file.setWritable(true, false);
+        file.setExecutable(true, false);
+        File currentDir = file.getParentFile();
+        while (currentDir != null) {
+            currentDir.setReadable(true, false);
+            currentDir.setExecutable(true, false);
+            if (currentDir.getName().equals(BINARY_DIR_NAME) || currentDir.getName().equals("files")) {
+                break;
+            }
+            currentDir = currentDir.getParentFile();
         }
     }
 
