@@ -381,7 +381,7 @@ public class MainActivity extends Activity {
         while (currentDir != null) {
             currentDir.setReadable(true, false);
             currentDir.setExecutable(true, false);
-            if (currentDir.getName().equals(BINARY_DIR_NAME) || currentDir.getName().equals("files")) {
+            if (currentDir.getName().equals(getPackageName())) {
                 break;
             }
             currentDir = currentDir.getParentFile();
@@ -904,7 +904,7 @@ public class MainActivity extends Activity {
 
     @NonNull
     private File getBinaryDirectory() {
-        return new File(getExternalFilesDir(null), BINARY_DIR_NAME);
+        return new File(getFilesDir(), BINARY_DIR_NAME);
     }
 
     @NonNull
