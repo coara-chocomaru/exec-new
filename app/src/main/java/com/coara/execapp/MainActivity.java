@@ -391,19 +391,19 @@ public class MainActivity extends Activity {
             return null;
         }
 
+        String fileName = getFileName(uri);
+        if (fileName == null || fileName.trim().isEmpty()) {
+            fileName = "picked_binary";
+        }
+        fileName = sanitizeFileName(fileName);
+
+        File destFile = resolveUniqueFile(directory, fileName);
+
         try (InputStream inputStream = getContentResolver().openInputStream(uri)) {
             if (inputStream == null) {
                 Toast.makeText(this, "ファイルを開けませんでした。", Toast.LENGTH_SHORT).show();
                 return null;
             }
-
-            String fileName = getFileName(uri);
-            if (fileName == null || fileName.trim().isEmpty()) {
-                fileName = "picked_binary";
-            }
-            fileName = sanitizeFileName(fileName);
-
-            File destFile = resolveUniqueFile(directory, fileName);
 
             try (OutputStream outputStream = new FileOutputStream(destFile)) {
                 byte[] buffer = new byte[8192];
@@ -413,8 +413,15 @@ public class MainActivity extends Activity {
                 }
             }
 
+            if (!destFile.setExecutable(true)) {
+                deleteQuietly(destFile);
+                Toast.makeText(this, "実行権限の付与に失敗しました。", Toast.LENGTH_SHORT).show();
+                return null;
+            }
+
             return destFile;
         } catch (IOException e) {
+            deleteQuietly(destFile);
             Toast.makeText(this, "ファイルのコピーに失敗しました: " + e.getMessage(), Toast.LENGTH_LONG).show();
             return null;
         }
