@@ -123,7 +123,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
-            publishProgress("===== バックドア調査開始 =====\n");
+            publishProgress("===== バックドア調査開始ぃ〜 =====\n");
         }
 
         @Override
@@ -305,7 +305,7 @@ public class MainActivity extends AppCompatActivity {
                         }
                     }
                 }
-                publishProgress(cls + " : 解決できませんでした (非公開または存在しない)");
+                publishProgress(cls + " : 解決できませんでした (非公開またはたぶん存在しない)");
             } catch (Exception e) {
                 publishProgress(cls + " 調査エラー: " + e.toString());
             }
