@@ -4,7 +4,6 @@ import android.Manifest;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.os.AsyncTask;
@@ -21,9 +20,11 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.lang.reflect.Method;
@@ -89,7 +90,7 @@ public class MainActivity extends AppCompatActivity {
     private void updateLog(final String line) {
         runOnUiThread(() -> {
             logBuilder.append(line).append("\n");
-            tvLog.append(line + "\n");
+            tvLog.append(line).append("\n");
             final int scrollAmount = tvLog.getLayout() != null ? tvLog.getLayout().getLineTop(tvLog.getLineCount()) - tvLog.getHeight() : 0;
             if (scrollAmount > 0) {
                 tvLog.scrollTo(0, scrollAmount);
@@ -143,56 +144,12 @@ public class MainActivity extends AppCompatActivity {
                 checkComponent("com.ape.factory", "com.ape.factory.CQAtest.CQAActivity");
                 checkComponent("com.ape.factory", "com.ape.factory.CommandService");
                 checkComponent("com.ape.factory", "com.ape.factory.FTMReceiver");
+                checkComponent("com.ape.factory", "com.ape.factory.Version");
 
-                publishProgress("--- インテント解決テスト ---");
-                Intent cqaIntent = new Intent();
-                cqaIntent.setComponent(new ComponentName("com.ape.factory", "com.ape.factory.CQAtest.CQAActivity"));
-                cqaIntent.putExtra("CQA_TEST_MODE", "AIRPLANE");
-                cqaIntent.putExtra("CQA_TEST_FUNCTION", "IsAirModeOn");
-                ResolveInfo resolveInfo = getPackageManager().resolveActivity(cqaIntent, PackageManager.MATCH_DEFAULT_ONLY);
-                if (resolveInfo != null) {
-                    publishProgress("CQAActivity は解決可能 (エクスポートされている)");
-                } else {
-                    publishProgress("CQAActivity は解決不可 (非公開またはエクスポート無効)");
-                }
+                publishProgress("--- Version.java 任意ファイル書き込みテスト ---");
+                testVersionFileWrite();
 
-                Intent cmdIntent = new Intent();
-                cmdIntent.setComponent(new ComponentName("com.ape.factory", "com.ape.factory.CommandService"));
-                ResolveInfo svcInfo = getPackageManager().resolveService(cmdIntent, PackageManager.MATCH_DEFAULT_ONLY);
-                if (svcInfo != null) {
-                    publishProgress("CommandService は解決可能 (エクスポートされている)");
-                } else {
-                    publishProgress("CommandService は解決不可 (非公開またはエクスポート無効)");
-                }
-
-                publishProgress("--- サービス起動試行 (読み取り専用目的) ---");
-                try {
-                    Intent startIntent = new Intent();
-                    startIntent.setComponent(new ComponentName("com.ape.factory", "com.ape.factory.CommandService"));
-                    startIntent.putExtra("command", "getSysPropInfo");
-                    startService(startIntent);
-                    publishProgress("CommandService 起動試行: 例外なし (実際に何かが起動した可能性)");
-                } catch (SecurityException e) {
-                    publishProgress("CommandService 起動試行: SecurityException - " + e.getMessage());
-                } catch (Exception e) {
-                    publishProgress("CommandService 起動試行: その他例外 - " + e.toString());
-                }
-
-                publishProgress("--- FTMReceiver ブロードキャスト試行 (読み取り専用) ---");
-                try {
-                    Intent secretIntent = new Intent("android.provider.Telephony.SECRET_CODE");
-                    secretIntent.setData(android.net.Uri.parse("android_secret_code://9"));
-                    PackageManager pm = getPackageManager();
-                    List<ResolveInfo> receivers = pm.queryBroadcastReceivers(secretIntent, 0);
-                    if (receivers != null && !receivers.isEmpty()) {
-                        publishProgress("FTMReceiver はこのインテントを受け取れそう (エクスポートされている)");
-                    } else {
-                        publishProgress("FTMReceiver はこのインテントを受け取れなさそう");
-                    }
-                } catch (Exception e) {
-                    publishProgress("FTMReceiver 調査エラー: " + e.toString());
-                }
-
+                publishProgress("--- その他 ---");
                 publishProgress("--- システムプロパティ (読み取り) ---");
                 readSystemProperty("ro.oem_unlock_supported");
                 readSystemProperty("ro.product.name");
@@ -223,28 +180,95 @@ public class MainActivity extends AppCompatActivity {
             return null;
         }
 
-        @Override
-        protected void onProgressUpdate(String... values) {
-            for (String line : values) {
-                updateLog(line);
-                tvStatus.setText(line);
+        private void testVersionFileWrite() {
+            try {
+                ComponentName versionComponent = new ComponentName("com.ape.factory", "com.ape.factory.Version");
+                Intent intent = new Intent();
+                intent.setComponent(versionComponent);
+                PackageManager pm = getPackageManager();
+                ResolveInfo ri = pm.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY);
+                if (ri == null || ri.activityInfo == null) {
+                    publishProgress("Version Activity は解決できません (エクスポートされていない可能性)");
+                    return;
+                }
+                publishProgress("Version Activity はエクスポートされています (permission: " + ri.activityInfo.permission + ")");
+
+                File externalFile = new File(getExternalFilesDir(null), "test_barcode_external.txt");
+                File cacheTarget = new File("/data/data/com.ape.factory/cache/test_barcode_cache.txt");
+
+                try {
+                    if (externalFile.exists()) {
+                        externalFile.delete();
+                    }
+                    intent.putExtra("writeBarcodeToFile", true);
+                    intent.putExtra("pathToWriteBarcode", externalFile.getAbsolutePath());
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                    publishProgress("Version Activity 起動 (外部書き込み) - 待機中...");
+                    Thread.sleep(2000);
+                    if (externalFile.exists()) {
+                        String content = readFileContent(externalFile);
+                        if (!TextUtils.isEmpty(content)) {
+                            publishProgress("外部ファイル書き込み成功: " + externalFile.getAbsolutePath() + " 内容: " + content);
+                        } else {
+                            publishProgress("外部ファイルは存在しますが、内容が空です");
+                        }
+                    } else {
+                        publishProgress("外部ファイルが作成されませんでした (書き込み失敗または権限不足)");
+                    }
+                } catch (Exception e) {
+                    publishProgress("外部書き込みテスト中に例外: " + e.toString());
+                }
+
+                try {
+                    intent = new Intent();
+                    intent.setComponent(versionComponent);
+                    intent.putExtra("writeBarcodeToFile", true);
+                    intent.putExtra("pathToWriteBarcode", cacheTarget.getAbsolutePath());
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                    publishProgress("Version Activity 起動 (cache書き込み) - 待機中...");
+                    Thread.sleep(2000);
+                    boolean cacheExists = false;
+                    try {
+                        cacheExists = cacheTarget.exists();
+                    } catch (SecurityException se) {
+                        publishProgress("cacheファイル存在確認でSecurityException: " + se.getMessage());
+                    }
+                    if (cacheExists) {
+                        publishProgress("cacheファイルが存在します (書き込み成功の可能性)");
+                        try {
+                            String cacheContent = readFileContent(cacheTarget);
+                            if (!TextUtils.isEmpty(cacheContent)) {
+                                publishProgress("cacheファイル内容: " + cacheContent);
+                            } else {
+                                publishProgress("cacheファイルは空です");
+                            }
+                        } catch (Exception e2) {
+                            publishProgress("cacheファイル読み取り失敗: " + e2.toString() + " (権限不足の可能性)");
+                        }
+                    } else {
+                        publishProgress("cacheファイルが存在しません (書き込み失敗またはアクセス不可)");
+                    }
+                } catch (Exception e) {
+                    publishProgress("cache書き込みテスト中に例外: " + e.toString());
+                }
+
+            } catch (Exception e) {
+                publishProgress("Version テスト全体で例外: " + e.toString());
             }
         }
 
-        @Override
-        protected void onPostExecute(Void aVoid) {
-            btnStart.setEnabled(true);
-            btnStop.setEnabled(false);
-            tvStatus.setText("完了");
-            saveLogToFile();
-        }
-
-        @Override
-        protected void onCancelled() {
-            btnStart.setEnabled(true);
-            btnStop.setEnabled(false);
-            tvStatus.setText("中断");
-            saveLogToFile();
+        private String readFileContent(File file) {
+            try {
+                FileInputStream fis = new FileInputStream(file);
+                byte[] data = new byte[(int) file.length()];
+                fis.read(data);
+                fis.close();
+                return new String(data);
+            } catch (Exception e) {
+                return null;
+            }
         }
 
         private void checkPackage(String pkg) {
@@ -338,6 +362,30 @@ public class MainActivity extends AppCompatActivity {
         private void checkPermission(String perm) {
             int result = ContextCompat.checkSelfPermission(MainActivity.this, perm);
             publishProgress(perm + " : " + (result == PackageManager.PERMISSION_GRANTED ? "許可済み" : "未許可"));
+        }
+
+        @Override
+        protected void onProgressUpdate(String... values) {
+            for (String line : values) {
+                updateLog(line);
+                tvStatus.setText(line);
+            }
+        }
+
+        @Override
+        protected void onPostExecute(Void aVoid) {
+            btnStart.setEnabled(true);
+            btnStop.setEnabled(false);
+            tvStatus.setText("完了");
+            saveLogToFile();
+        }
+
+        @Override
+        protected void onCancelled() {
+            btnStart.setEnabled(true);
+            btnStop.setEnabled(false);
+            tvStatus.setText("中断");
+            saveLogToFile();
         }
     }
 }
