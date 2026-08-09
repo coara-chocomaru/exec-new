@@ -9,7 +9,7 @@
     public static *** e(...);
 }
 
--keep class com.coara.execapp.MainActivity { *; }
+-keep class com.backdoor.investigator.MainActivity { *; }
 
 -adaptresourcefilecontents **.xml
 -adaptresourcefilenames **.png
