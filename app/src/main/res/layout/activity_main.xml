@@ -3,90 +3,60 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:fitsSystemWindows="true"
-    android:background="?android:attr/colorBackground"
     android:padding="16dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/app_name"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:layout_gravity="center" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:gravity="center_vertical">
+        android:layout_marginTop="16dp">
 
-        <EditText
-            android:id="@+id/command_input"
+        <Button
+            android:id="@+id/btn_start"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:layout_marginEnd="8dp"
-            android:hint="Enter command"
-            android:inputType="text"
-            android:padding="12dp"
-            android:background="@android:drawable/editbox_background"
-            android:textColor="?android:attr/textColorPrimary"
-            android:textColorHint="?android:attr/textColorHint" />
+            android:text="開始" />
 
         <Button
-            android:id="@+id/execute_button"
-            android:layout_width="wrap_content"
+            android:id="@+id/btn_stop"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="Execute" />
+            android:layout_weight="1"
+            android:text="終了"
+            android:enabled="false" />
     </LinearLayout>
 
-    <Button
-        android:id="@+id/keyboard_button"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:layout_marginBottom="8dp"
-        android:text="Keyboard" />
-
-    <LinearLayout
+    <TextView
+        android:id="@+id/tv_status"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginBottom="8dp">
+        android:text="準備完了"
+        android:textSize="14sp"
+        android:layout_marginTop="8dp" />
 
-        <Button
-            android:id="@+id/pick_binary_button"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="8dp"
-            android:text="Pick Binary" />
-
-        <Button
-            android:id="@+id/clear_binary_button"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Clear Binary" />
-    </LinearLayout>
-
-    <Button
-        android:id="@+id/stop_button"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="12dp"
-        android:text="Stop" />
-
-     <ScrollView
-        android:id="@+id/scroll_view"
+    <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:background="@null"
-        android:paddingBottom="80dp"
-        android:clipToPadding="false"
-        android:scrollbars="vertical">
+        android:layout_marginTop="8dp">
 
-    <TextView
-        android:id="@+id/result_view"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:padding="12dp"
-        android:background="@android:color/white"
-        android:textColor="@android:color/black"
-        android:textIsSelectable="true"
-        android:lineSpacingExtra="4dp" />
-</ScrollView>
-
+        <TextView
+            android:id="@+id/tv_log"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textSize="12sp"
+            android:background="#f0f0f0"
+            android:padding="8dp"
+            android:text="ログがここに表示されます" />
+    </ScrollView>
 </LinearLayout>
