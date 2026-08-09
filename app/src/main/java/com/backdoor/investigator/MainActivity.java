@@ -4,6 +4,7 @@ import android.Manifest;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.os.AsyncTask;
@@ -20,7 +21,6 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import androidx.core.content.FileProvider;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -90,7 +90,8 @@ public class MainActivity extends AppCompatActivity {
     private void updateLog(final String line) {
         runOnUiThread(() -> {
             logBuilder.append(line).append("\n");
-            tvLog.append(line).append("\n");
+            tvLog.append(line);
+            tvLog.append("\n");
             final int scrollAmount = tvLog.getLayout() != null ? tvLog.getLayout().getLineTop(tvLog.getLineCount()) - tvLog.getHeight() : 0;
             if (scrollAmount > 0) {
                 tvLog.scrollTo(0, scrollAmount);
