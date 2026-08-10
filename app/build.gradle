@@ -1,23 +1,22 @@
-plugins { 
+plugins {
     id 'com.android.application'
 }
 
 android {
-    compileSdk = 35
-    namespace = 'com.example.xrvdexploit'
+    compileSdk 35
+    namespace 'com.example.xrvdexploit'
 
     defaultConfig {
-        minSdk = 28
-        targetSdk = 30
-        versionCode = 1
-        versionName = "1.0"
-        multiDexEnabled = true
-        proguardFiles += 'proguard-rules.pro'
+        minSdk 28
+        targetSdk 30
+        versionCode 1
+        versionName "1.0"
+        multiDexEnabled true
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_21
-        targetCompatibility JavaVersion.VERSION_21
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 
     signingConfigs {
@@ -30,29 +29,30 @@ android {
     }
 
     buildTypes {
-        configureEach {
-            String variant = new File("release.jks").exists() ? "release" : "debug"
-            signingConfig = signingConfigs[variant]
+        debug {
+            signingConfig signingConfigs.debug
         }
         release {
-            minifyEnabled = true
-            shrinkResources = true
+            minifyEnabled true
+            shrinkResources true
+            signingConfig file('release.jks').exists() ? signingConfigs.release : signingConfigs.debug
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 
     packagingOptions {
-        exclude 'META-INF/LICENSE'
-        exclude 'META-INF/LICENSE.txt'
-        exclude 'META-INF/NOTICE'
+        resources {
+            excludes += ['META-INF/LICENSE', 'META-INF/LICENSE.txt', 'META-INF/NOTICE']
+        }
     }
 
-    lintOptions {
+    lint {
         disable 'ExpiredTargetSdkVersion', 'NewApi', 'Range', 'SetTextI18n', 'ScopedStorage', 'FieldCanBeLocal', 'GradleDependency'
     }
 }
 
 tasks.withType(JavaCompile).configureEach {
-    options.compilerArgs << "-Xlint:deprecation" << "-Xlint:unchecked"
+    options.compilerArgs += ['-Xlint:deprecation', '-Xlint:unchecked']
 }
 
 dependencies {
