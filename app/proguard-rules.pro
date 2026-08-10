@@ -9,7 +9,7 @@
     public static *** e(...);
 }
 
--keep class com.backdoor.investigator.MainActivity { *; }
+-keep class com.example.xrvdexploit.MainActivity { *; }
 
 -adaptresourcefilecontents **.xml
 -adaptresourcefilenames **.png
