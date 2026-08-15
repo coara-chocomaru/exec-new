@@ -5,8 +5,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
-import android.net.LocalSocket;
-import android.net.LocalSocketAddress;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -25,6 +23,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
 import com.qualcomm.qti.qms.connectionsecuritysdk.IRticService;
 import com.qualcomm.qti.qms.connectionsecuritysdk.IServiceManager;
 import com.qualcomm.qti.qms.connectionsecuritysdk.ITlocService;
@@ -195,22 +194,21 @@ public class MainActivity extends AppCompatActivity {
                 ITlocService tloc = ITlocService.Stub.asInterface(tlocBinder);
                 testTloc(tloc);
                 discoverMethods(tlocBinder, "ITlocService");
-                // 追加: 隠しメソッド (code 2) のテスト
                 testTlocHiddenMethod(tlocBinder);
             }
         }
 
-        appendLog("========== PHASE 2: Zygote Injection via WRITE_SECURE_SETTINGS ==========");
+        appendLog("========== PHASE 2: Zygote Injection ==========");
         testZygoteInjection();
 
-        appendLog("========== PHASE 3: TZAccess Socket Connect ==========");
+        appendLog("========== PHASE 3: TZAccess Socket Connect (AIDL) ==========");
         if (mTZServiceBinder != null) {
-            tryConnectViaTZ("/dev/socket/minksocket");
-            tryConnectViaTZ("/dev/socket/ssgqmig");
+            tryConnectViaTZAidl("/dev/socket/minksocket");
+            tryConnectViaTZAidl("/dev/socket/ssgqmig");
         }
 
-        appendLog("========== PHASE 4: File System Exploration ==========");
-        exploreFiles();
+        appendLog("========== PHASE 4: Deep File System Exploration ==========");
+        exploreDeepFiles();
 
         appendLog("========== PHASE 5: Settings Manipulation ==========");
         testSettingsWrite();
@@ -241,7 +239,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void testRticFlags(IRticService rtic) {
-        appendLog("--- Testing RTIC with different flags ---");
+        appendLog("--- Testing RTIC with flags ---");
         long[] flags = {0, 8, 32, 64, 2147483648L, 8|32, 8|64, 32|64, 8|32|64};
         for (long flag : flags) {
             try {
@@ -253,7 +251,6 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("RemoteException for flag " + flag + ": " + e.getMessage());
             }
         }
-        // フォーマット指定
         try {
             int[] status = new int[1];
             int[] ret = new int[1];
@@ -284,7 +281,6 @@ public class MainActivity extends AppCompatActivity {
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(binder.getInterfaceDescriptor());
-            // 適当なデータを書き込んでみる
             data.writeInt(123);
             data.writeString("test");
             boolean success = binder.transact(2, data, reply, 0);
@@ -380,86 +376,83 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void tryConnectViaTZ(String path) {
-        appendLog("Trying TZAccess connect to " + path);
+    private void tryConnectViaTZAidl(String path) {
+        appendLog("Trying TZAccess connect to " + path + " via AIDL");
         if (mTZServiceBinder == null) {
             appendLog("  TZ binder null");
             return;
         }
         try {
-            // IMinkSocketFd クラスを直接インポートして使う（AIDL がコンパイルされていれば）
-            Class<?> cls = Class.forName("com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd");
-            Method asInterface = cls.getMethod("asInterface", IBinder.class);
-            Object proxy = asInterface.invoke(null, mTZServiceBinder);
-            Method aMethod = cls.getMethod("a", String.class, int[].class);
+            IMinkSocketFd service = IMinkSocketFd.Stub.asInterface(mTZServiceBinder);
+            if (service == null) {
+                appendLog("  Failed to cast to IMinkSocketFd");
+                return;
+            }
             int[] iArr = new int[1];
-            ParcelFileDescriptor pfd = (ParcelFileDescriptor) aMethod.invoke(proxy, path, iArr);
+            ParcelFileDescriptor pfd = service.a(path, iArr);
             if (pfd != null) {
                 appendLog("  Got FD: " + iArr[0] + " for " + path);
                 pfd.close();
             } else {
                 appendLog("  Failed to get FD for " + path);
             }
-        } catch (ClassNotFoundException e) {
-            appendLog("  IMinkSocketFd class not found. Ensure AIDL is included.");
+        } catch (ClassCastException e) {
+            appendLog("  ClassCastException: " + e.getMessage());
+        } catch (RemoteException e) {
+            appendLog("  RemoteException: " + e.getMessage());
         } catch (Exception e) {
-            appendLog("  TZ connect error: " + e.getMessage());
+            appendLog("  Error: " + e.getMessage());
         }
     }
 
-    private void exploreFiles() {
-        appendLog("--- File System Exploration ---");
-        // 読み取り可能な proc ファイル
-        String[] procFiles = {
-            "/proc/self/status",
-            "/proc/self/stat",
-            "/proc/self/environ",
-            "/proc/mounts",
-            "/proc/net/dev",
-            "/proc/cmdline",
-            "/proc/version",
-            "/proc/uptime",
-            "/proc/loadavg",
-            "/proc/meminfo",
-            "/proc/cpuinfo"
+    private void exploreDeepFiles() {
+        appendLog("--- Deep File System Exploration ---");
+        // 既に読めた proc ファイルに加えて
+        String[] additionalProc = {
+            "/proc/self/fd",
+            "/proc/self/cwd",
+            "/proc/self/root",
+            "/proc/self/maps",
+            "/proc/self/smaps",
+            "/proc/self/oom_adj",
+            "/proc/self/oom_score",
+            "/proc/self/comm",
+            "/proc/self/auxv",
+            "/proc/self/limits",
+            "/proc/self/sched",
+            "/proc/self/stack",
+            "/proc/self/statm",
+            "/proc/self/wchan",
+            "/proc/self/pagemap",
+            "/proc/self/clear_refs",
+            "/proc/self/timers",
+            "/proc/self/attr/current",
+            "/proc/self/loginuid",
+            "/proc/self/sessionid",
+            "/proc/self/cgroup"
         };
-        for (String path : procFiles) {
+        for (String p : additionalProc) {
             if (stopRequested.get()) break;
-            readFileContent(path);
+            readFileContent(p);
         }
 
-        // /data ディレクトリの読み取り（通常はアクセスできないが試す）
-        File dataDir = new File("/data");
-        if (dataDir.exists() && dataDir.canRead()) {
-            appendLog("Can read /data/");
-            File[] children = dataDir.listFiles();
-            if (children != null) {
-                for (File f : children) {
-                    appendLog("  " + f.getName());
-                }
-            }
-        } else {
-            appendLog("Cannot read /data/ (permission denied)");
+        // 世界読み取り可能なシステムファイル
+        String[] sysFiles = {
+            "/system/build.prop",
+            "/system/etc/hosts",
+            "/system/etc/security/cacerts/",
+            "/vendor/build.prop",
+            "/proc/version"
+        };
+        for (String p : sysFiles) {
+            if (stopRequested.get()) break;
+            readFileContent(p);
         }
 
-        // /dev ディレクトリ（通常は読み取り可能だがファイル一覧は取れない場合あり）
-        File devDir = new File("/dev");
-        if (devDir.exists() && devDir.canRead()) {
-            appendLog("Can read /dev/");
-            File[] children = devDir.listFiles();
-            if (children != null) {
-                for (File f : children) {
-                    appendLog("  " + f.getName());
-                }
-            }
-        } else {
-            appendLog("Cannot read /dev/");
-        }
-
-        // /data/local/tmp は書き込み可能か？
+        // /data/local/tmp 内のファイル一覧（読み取り不可だが、ディレクトリ一覧は取れる？前回は読めなかった）
         File tmpDir = new File("/data/local/tmp");
-        if (tmpDir.exists()) {
-            appendLog("tmp exists, canWrite=" + tmpDir.canWrite() + ", canRead=" + tmpDir.canRead());
+        if (tmpDir.exists() && tmpDir.canRead()) {
+            appendLog("Reading /data/local/tmp contents:");
             File[] children = tmpDir.listFiles();
             if (children != null) {
                 for (File f : children) {
@@ -467,14 +460,40 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         } else {
-            appendLog("/data/local/tmp not exists");
+            appendLog("/data/local/tmp not readable");
+        }
+
+        // 書き込み可能な場所にテストファイルを作成（既にできている）
+        File download = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        if (download.exists() || download.mkdirs()) {
+            File testFile = new File(download, "poc_write_test.txt");
+            try (FileOutputStream fos = new FileOutputStream(testFile)) {
+                fos.write("Deep exploration test\n".getBytes(StandardCharsets.UTF_8));
+                appendLog("Write to " + testFile.getAbsolutePath() + " succeeded");
+            } catch (Exception e) {
+                appendLog("Write failed: " + e.getMessage());
+            }
         }
     }
 
     private void readFileContent(String path) {
         File f = new File(path);
-        if (!f.exists() || !f.canRead()) {
-            appendLog("Cannot read " + path);
+        if (!f.exists()) {
+            appendLog(path + " does not exist");
+            return;
+        }
+        if (!f.canRead()) {
+            appendLog(path + " not readable");
+            return;
+        }
+        if (f.isDirectory()) {
+            appendLog(path + " is a directory, listing contents:");
+            File[] children = f.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    appendLog("  " + child.getName());
+                }
+            }
             return;
         }
         try (FileInputStream fis = new FileInputStream(f)) {
