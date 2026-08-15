@@ -16,7 +16,9 @@ import android.widget.Button;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
+
 import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
@@ -49,6 +51,7 @@ public class MainActivity extends AppCompatActivity {
             enableButtons(false, true);
             new Thread(() -> executeFullTest()).start();
         }
+
         @Override
         public void onServiceDisconnected(ComponentName name) {
             appendLog("Service disconnected");
@@ -67,6 +70,7 @@ public class MainActivity extends AppCompatActivity {
         tvLog = findViewById(R.id.tv_log);
         btnStart = findViewById(R.id.btn_start);
         btnStop = findViewById(R.id.btn_stop);
+
         btnStart.setOnClickListener(v -> {
             if (!isBound && !isTesting) bindService();
         });
@@ -80,6 +84,7 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("--- Test stopped ---");
             }
         });
+
         appendLog("App started. Press 'Start' to begin.");
     }
 
