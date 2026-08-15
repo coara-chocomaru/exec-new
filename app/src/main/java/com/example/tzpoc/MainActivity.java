@@ -382,7 +382,6 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         try {
-            // TZAccess の AIDL インターフェース名は com.qualcomm.qti.qms.api.a.IMinkSocketFd
             Class<?> cls = Class.forName("com.qualcomm.qti.qms.api.a.IMinkSocketFd");
             Method asInterface = cls.getMethod("asInterface", IBinder.class);
             Object proxy = asInterface.invoke(null, mTZServiceBinder);
@@ -393,7 +392,7 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("  Got FD: " + iArr[0] + " for " + path);
                 pfd.close();
             } else {
-                appendLog("  Failed to get FD for " + path");
+                appendLog("  Failed to get FD for " + path);
             }
         } catch (ClassNotFoundException e) {
             appendLog("  IMinkSocketFd class not found. TZAccess may not be using this interface.");
