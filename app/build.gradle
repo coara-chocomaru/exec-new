@@ -4,11 +4,11 @@ plugins {
 
 android {
     compileSdk 35
-    namespace 'com.example.xrvdexploit'
+    namespace 'com.example.tzpoc'
 
     defaultConfig {
-        minSdk 28
-        targetSdk 30
+        minSdk 26
+        targetSdk 28
         versionCode 1
         versionName "1.0"
         multiDexEnabled true
