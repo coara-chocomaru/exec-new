@@ -310,7 +310,7 @@ public class MainActivity extends AppCompatActivity {
                 payload.append("--runtime-args\n");
                 payload.append("--setuid=0\n");
                 payload.append("--setgid=0\n");
-                payload.append("--target-sdk-version=29\n");
+                payload.append("--target-sdk-version=28\n");
                 payload.append("--nice-name=root_" + pkg.replace(".", "_") + "\n");
                 payload.append("--app-data-dir=/data/data/" + pkg + "\n");
                 payload.append("--package-name=" + pkg + "\n");
