@@ -9,7 +9,7 @@
     public static *** e(...);
 }
 
--keep class com.example.xrvdexploit.MainActivity { *; }
+-keep class com.example.tzpoc.MainActivity { *; }
 
 -adaptresourcefilecontents **.xml
 -adaptresourcefilenames **.png
