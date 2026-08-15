@@ -16,7 +16,7 @@ import android.widget.Button;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
-import com.qualcomm.qti.qms.api.a.IMinkSocketFd;
+import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
@@ -29,7 +29,6 @@ import java.util.List;
 import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
-    private static final String TAG = "TZAdvanced";
     private static final String TARGET_PKG = "com.qualcomm.qti.qms.service.trustzoneaccess";
     private static final String TARGET_CLS = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
 
@@ -40,7 +39,6 @@ public class MainActivity extends AppCompatActivity {
     private IMinkSocketFd mRemoteService;
     private boolean isBound = false;
     private boolean isTesting = false;
-    private String logFilePath;
 
     private ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -48,8 +46,7 @@ public class MainActivity extends AppCompatActivity {
             mRemoteService = IMinkSocketFd.Stub.asInterface(service);
             appendLog("Service bound");
             updateStatus("Bound - starting tests");
-            btnStart.setEnabled(false);
-            btnStop.setEnabled(true);
+            enableButtons(false, true);
             new Thread(() -> executeFullTest()).start();
         }
         @Override
@@ -57,8 +54,7 @@ public class MainActivity extends AppCompatActivity {
             appendLog("Service disconnected");
             mRemoteService = null;
             isBound = false;
-            btnStart.setEnabled(true);
-            btnStop.setEnabled(false);
+            enableButtons(true, false);
             updateStatus("Disconnected");
         }
     };
@@ -79,14 +75,12 @@ public class MainActivity extends AppCompatActivity {
                 unbindService(serviceConnection);
                 isBound = false;
                 mRemoteService = null;
-                btnStart.setEnabled(true);
-                btnStop.setEnabled(false);
+                enableButtons(true, false);
                 updateStatus("Stopped by user");
                 appendLog("--- Test stopped ---");
             }
         });
         appendLog("App started. Press 'Start' to begin.");
-        logFilePath = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "exploit_advanced_log.txt").getAbsolutePath();
     }
 
     private void bindService() {
@@ -101,13 +95,20 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 appendLog("bindService returned false");
                 updateStatus("Bind failed");
-                btnStart.setEnabled(true);
+                enableButtons(true, false);
             }
         } catch (Exception e) {
             appendLog("Bind exception: " + e.toString());
             updateStatus("Exception");
-            btnStart.setEnabled(true);
+            enableButtons(true, false);
         }
+    }
+
+    private void enableButtons(boolean startEnabled, boolean stopEnabled) {
+        handler.post(() -> {
+            btnStart.setEnabled(startEnabled);
+            btnStop.setEnabled(stopEnabled);
+        });
     }
 
     private void executeFullTest() {
@@ -145,10 +146,7 @@ public class MainActivity extends AppCompatActivity {
 
         for (String str : testStrings) {
             for (int size : arrSizes) {
-                int[] iArr = null;
-                if (size >= 0) {
-                    iArr = new int[size];
-                }
+                int[] iArr = (size >= 0) ? new int[size] : null;
                 executeTest(str, iArr);
                 try { Thread.sleep(200); } catch (InterruptedException ignored) {}
             }
@@ -156,8 +154,7 @@ public class MainActivity extends AppCompatActivity {
 
         appendLog("========== All tests completed ==========");
         updateStatus("Done");
-        btnStart.setEnabled(true);
-        btnStop.setEnabled(false);
+        enableButtons(true, false);
         isTesting = false;
         saveLog();
     }
