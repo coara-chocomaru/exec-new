@@ -203,13 +203,10 @@ public class MainActivity extends AppCompatActivity {
     private void createLocalServerSocket() {
         try {
             // /data/local/tmp/ にサーバソケットを作成
-            File socketFile = new File("/data/local/tmp/poc_socket");
+            File socketFile = new File("/sdcadrd/download/poc_socket");
             if (socketFile.exists()) socketFile.delete();
             LocalServerSocket server = new LocalServerSocket(socketFile.getAbsolutePath());
             appendLog("Local server socket created at " + socketFile.getAbsolutePath());
-            // サービスが接続できるように、このソケットをテスト文字列に追加
-            // ただし、接続してもデータのやり取りはできないので、単に接続試行の対象とする
-            // ここでは、既に testStrings に /data/local/tmp/socket が含まれているので、それで十分
             server.close();
         } catch (Exception e) {
             appendLog("Failed to create local server socket: " + e.getMessage());
