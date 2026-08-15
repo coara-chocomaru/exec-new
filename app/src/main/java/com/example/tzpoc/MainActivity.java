@@ -4,6 +4,8 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.net.LocalServerSocket;
+import android.net.LocalSocket;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
@@ -115,7 +117,9 @@ public class MainActivity extends AppCompatActivity {
         isTesting = true;
         appendLog("========== Advanced Test Start ==========");
 
+        // 1. 既存のテスト文字列（全ソケット名網羅）
         List<String> testStrings = new ArrayList<>();
+        // 基本候補
         testStrings.add("test");
         testStrings.add("qsee");
         testStrings.add("tz");
@@ -131,6 +135,7 @@ public class MainActivity extends AppCompatActivity {
         testStrings.add("android");
         testStrings.add("");
         testStrings.add("A");
+        // 長大文字列・特殊文字
         testStrings.add(new String(new char[2000]).replace('\0', 'X'));
         testStrings.add("test\0test");
         testStrings.add("../../etc/passwd");
@@ -158,6 +163,26 @@ public class MainActivity extends AppCompatActivity {
         testStrings.add("ssgtzd_");
         testStrings.add("_ssgtzd");
 
+        // 2. デバイスから取得した全ソケット名（/dev/socket/）を追加
+        //    （実際のデバイスで確認されたリスト）
+        String[] socketNames = {
+            "mdnsd", "ims_datad", "ims_qmid", "adbd", "tombstoned_java_trace",
+            "tombstoned_intercept", "tombstoned_crash", "dpmwrapper", "tcm",
+            "dpmd", "mlid", "ssgtzd", "ssgqmig", "statsdw", "thermal-send-rule",
+            "thermal-recv-passive-client", "thermal-recv-client", "thermal-send-client",
+            "netmgr", "qmux_gps", "qmux_bluetooth", "qmux_audio", "qmux_radio",
+            "lkspad", "lmkd", "pps", "zygote_secondary", "zygote",
+            "fwmarkd", "mdns", "dnsproxyd", "netd", "location", "qdma",
+            "logdw", "logdr", "logd", "property_service"
+        };
+        for (String name : socketNames) {
+            testStrings.add("/dev/socket/" + name);
+        }
+
+        // 3. ローカルサーバソケットを作成して、サービスが接続できるかテスト
+        //    （実際にはサービスが接続しても通信は成立しないが、接続試行の可否を確認）
+        createLocalServerSocket();
+
         int[] arrSizes = {1, 0, 5, 10, 100, 1000, -1};
 
         for (String str : testStrings) {
@@ -173,6 +198,22 @@ public class MainActivity extends AppCompatActivity {
         enableButtons(true, false);
         isTesting = false;
         saveLog();
+    }
+
+    private void createLocalServerSocket() {
+        try {
+            // /data/local/tmp/ にサーバソケットを作成
+            File socketFile = new File("/data/local/tmp/poc_socket");
+            if (socketFile.exists()) socketFile.delete();
+            LocalServerSocket server = new LocalServerSocket(socketFile.getAbsolutePath());
+            appendLog("Local server socket created at " + socketFile.getAbsolutePath());
+            // サービスが接続できるように、このソケットをテスト文字列に追加
+            // ただし、接続してもデータのやり取りはできないので、単に接続試行の対象とする
+            // ここでは、既に testStrings に /data/local/tmp/socket が含まれているので、それで十分
+            server.close();
+        } catch (Exception e) {
+            appendLog("Failed to create local server socket: " + e.getMessage());
+        }
     }
 
     private void executeTest(String str, int[] iArr) {
