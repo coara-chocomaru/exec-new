@@ -1,4 +1,4 @@
-package com.qualcomm.qti.qms.api.a;
+package com.qualcomm.qti.qms.api.minksocket;
 
 import android.os.ParcelFileDescriptor;
 
