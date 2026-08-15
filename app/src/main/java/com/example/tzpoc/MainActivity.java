@@ -35,7 +35,7 @@ public class MainActivity extends AppCompatActivity {
 
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
-    private Handler handler = new Handler(Looper.getMainLooper());  // 非推奨警告を解消
+    private Handler handler = new Handler(Looper.getMainLooper());
     private StringBuilder logBuilder = new StringBuilder();
     private IMinkSocketFd mRemoteService;
     private boolean isBound = false;
@@ -141,17 +141,14 @@ public class MainActivity extends AppCompatActivity {
         testStrings.add("keymaster");
         testStrings.add("gatekeeper");
 
-        int[] arrVariants = {1, 0, 5, 10, 100, -1};
-        Object[] iArrOptions = new Object[arrVariants.length + 2];
-        iArrOptions[0] = null;
-        iArrOptions[1] = new int[0];
-        for (int i = 0; i < arrVariants.length; i++) {
-            iArrOptions[i + 2] = new int[arrVariants[i]];
-        }
+        int[] arrSizes = {1, 0, 5, 10, 100, -1};
 
         for (String str : testStrings) {
-            for (Object arrObj : iArrOptions) {
-                int[] iArr = (int[]) arrObj;
+            for (int size : arrSizes) {
+                int[] iArr = null;
+                if (size >= 0) {
+                    iArr = new int[size];
+                }
                 executeTest(str, iArr);
                 try { Thread.sleep(200); } catch (InterruptedException ignored) {}
             }
