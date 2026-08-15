@@ -210,9 +210,9 @@ public class MainActivity extends AppCompatActivity {
                 "list\n",
                 "dump\n",
                 "logcat -d\n",
+                "setenforce 0\n",
+                "id \n",
                 "getLog\n",
-                "shutdown\n",
-                "reboot\n",
                 "exit\n",
                 "\n"
             };
@@ -290,11 +290,6 @@ public class MainActivity extends AppCompatActivity {
 
     private void attemptBlockDeviceAccess() {
         appendLog("--- Attempting block device access via socket (indirect) ---");
-        // 実際には直接アクセスはできないが、logdやproperty_serviceから情報を取得
-        // 例えば、ro.boot.xxx プロパティからパーティション情報を取得
-        // ここでは、既に試したコマンドで得られた情報を解析
-        // 実際には、成功していないので、ここではダミー
-        // ただし、/dev/block/by-name/frp の存在確認を試みる（直接は不可）
         appendLog("  Direct block device access not possible. But we can read system properties from property_service if available.");
         // また、logd から起動ログを取得し、パーティション情報を探す
         appendLog("  Logcat may contain partition info. We already saved logcat_from_socket.txt.");
