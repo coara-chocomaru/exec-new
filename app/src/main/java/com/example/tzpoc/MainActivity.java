@@ -4,16 +4,16 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
-import android.util.Log;
 import android.view.View;
 import android.widget.Button;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 import com.qualcomm.qti.qms.api.a.IMinkSocketFd;
@@ -35,7 +35,7 @@ public class MainActivity extends AppCompatActivity {
 
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
-    private Handler handler = new Handler();
+    private Handler handler = new Handler(Looper.getMainLooper());  // 非推奨警告を解消
     private StringBuilder logBuilder = new StringBuilder();
     private IMinkSocketFd mRemoteService;
     private boolean isBound = false;
@@ -209,7 +209,10 @@ public class MainActivity extends AppCompatActivity {
         logBuilder.append(line);
         handler.post(() -> {
             tvLog.append(line);
-            ((ScrollView) tvLog.getParent()).fullScroll(View.FOCUS_DOWN);
+            View parent = (View) tvLog.getParent();
+            if (parent instanceof ScrollView) {
+                ((ScrollView) parent).fullScroll(View.FOCUS_DOWN);
+            }
         });
     }
 
