@@ -85,10 +85,12 @@ public class MainActivity extends AppCompatActivity {
                 if (testThread != null) {
                     testThread.interrupt();
                 }
-                enableButtons(true, false);
+                enableButtons(false, false);
                 updateStatus("Stopping...");
                 appendLog("--- Stop requested ---");
                 saveLog();
+                enableButtons(true, false);
+                isTesting.set(false);
             }
         });
         appendLog("App started. Press 'Start' to begin.");
@@ -153,8 +155,8 @@ public class MainActivity extends AppCompatActivity {
 
         appendLog("========== All tests completed ==========");
         updateStatus("Done");
-        enableButtons(true, false);
         isTesting.set(false);
+        enableButtons(true, false);
         saveLog();
     }
 
@@ -190,44 +192,26 @@ public class MainActivity extends AppCompatActivity {
             OutputStream os = new FileOutputStream(fdesc);
             InputStream is = new FileInputStream(fdesc);
 
-            // 適切なコマンドリスト
-            List<String> commands = new ArrayList<>();
+            List<String> commands;
             if (path.contains("logd")) {
-                commands.add("getLog");
-                commands.add("clear");
+                commands = new ArrayList<>();
                 commands.add("help");
                 commands.add("status");
                 commands.add("version");
-                commands.add("dump");
-                commands.add("logcat -d");
             } else if (path.contains("property_service")) {
+                commands = new ArrayList<>();
                 commands.add("getprop");
                 commands.add("list");
-                commands.add("help");
-                commands.add("status");
-                commands.add("version");
-                commands.add("dump");
-                commands.add("getprop ro.build.version.sdk");
-                commands.add("getprop ro.build.version.release");
-                commands.add("getprop ro.product.model");
-                commands.add("getprop ro.product.brand");
-                commands.add("getprop ro.product.device");
             } else {
+                commands = new ArrayList<>();
                 commands.add("help");
                 commands.add("status");
                 commands.add("version");
-                commands.add("getprop");
-                commands.add("list");
-                commands.add("dump");
-                commands.add("logcat -d");
-                commands.add("id");
-                commands.add("setenforce 0");
-                commands.add("dmesg");
-                commands.add("exit");
             }
 
+            boolean socketAlive = true;
             for (String cmd : commands) {
-                if (stopRequested.get()) break;
+                if (stopRequested.get() || !socketAlive) break;
                 appendLog("  Sending: " + cmd);
                 try {
                     os.write((cmd + "\n").getBytes(StandardCharsets.UTF_8));
@@ -239,9 +223,14 @@ public class MainActivity extends AppCompatActivity {
                         appendLog("  No response (timeout or empty)");
                     }
                 } catch (Exception e) {
-                    appendLog("  Command failed: " + e.getMessage());
+                    String err = e.getMessage();
+                    appendLog("  Command failed: " + err);
+                    if (err != null && err.contains("EPIPE")) {
+                        appendLog("  Socket closed, stopping interaction");
+                        socketAlive = false;
+                    }
                 }
-                try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
             }
 
             pfd.close();
@@ -254,7 +243,7 @@ public class MainActivity extends AppCompatActivity {
     private String readWithTimeout(InputStream is, int timeoutMs) {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         long start = System.currentTimeMillis();
-        byte[] buffer = new byte[1024];
+        byte[] buffer = new byte[512];
         try {
             while (System.currentTimeMillis() - start < timeoutMs) {
                 if (is.available() > 0) {
@@ -265,7 +254,7 @@ public class MainActivity extends AppCompatActivity {
                         break;
                     }
                 } else {
-                    Thread.sleep(50);
+                    Thread.sleep(30);
                 }
             }
             return baos.toString(StandardCharsets.UTF_8.name());
