@@ -16,9 +16,7 @@ import android.widget.Button;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
-
 import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
-
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
@@ -51,7 +49,6 @@ public class MainActivity extends AppCompatActivity {
             enableButtons(false, true);
             new Thread(() -> executeFullTest()).start();
         }
-
         @Override
         public void onServiceDisconnected(ComponentName name) {
             appendLog("Service disconnected");
@@ -70,7 +67,6 @@ public class MainActivity extends AppCompatActivity {
         tvLog = findViewById(R.id.tv_log);
         btnStart = findViewById(R.id.btn_start);
         btnStop = findViewById(R.id.btn_stop);
-
         btnStart.setOnClickListener(v -> {
             if (!isBound && !isTesting) bindService();
         });
@@ -84,7 +80,6 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("--- Test stopped ---");
             }
         });
-
         appendLog("App started. Press 'Start' to begin.");
     }
 
@@ -146,8 +141,24 @@ public class MainActivity extends AppCompatActivity {
         testStrings.add("tz_app_123");
         testStrings.add("keymaster");
         testStrings.add("gatekeeper");
+        testStrings.add("\0abstract");
+        testStrings.add("\0qsee");
+        testStrings.add("\0minksocket");
+        testStrings.add("\0ssgtzd");
+        testStrings.add("/dev/socket/ssgtzd");
+        testStrings.add("/dev/socket/qseecomd");
+        testStrings.add("/data/local/tmp/socket");
+        testStrings.add("SSGTZD");
+        testStrings.add("ssgtzd\0extra");
+        testStrings.add("ssgtzd\n");
+        testStrings.add("\t");
+        testStrings.add(" ");
+        testStrings.add("  ");
+        testStrings.add("_ssgtzd_");
+        testStrings.add("ssgtzd_");
+        testStrings.add("_ssgtzd");
 
-        int[] arrSizes = {1, 0, 5, 10, 100, -1};
+        int[] arrSizes = {1, 0, 5, 10, 100, 1000, -1};
 
         for (String str : testStrings) {
             for (int size : arrSizes) {
@@ -166,18 +177,20 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeTest(String str, int[] iArr) {
         if (mRemoteService == null) return;
-        String strDisplay = (str == null) ? "null" : "\"" + str + "\"";
+        String strDisplay = (str == null) ? "null" : "\"" + str.replace("\0", "\\0") + "\"";
         String arrDisplay = (iArr == null) ? "null" : "len=" + iArr.length;
         try {
             appendLog("▶ Test: str=" + strDisplay + ", iArr=" + arrDisplay);
+            long start = System.currentTimeMillis();
             ParcelFileDescriptor pfd = mRemoteService.a(str, iArr);
+            long elapsed = System.currentTimeMillis() - start;
             if (pfd == null) {
-                appendLog("  → Result: null");
+                appendLog("  → Result: null, time=" + elapsed + "ms");
                 if (iArr != null && iArr.length > 0) appendLog("     iArr[0]=" + iArr[0]);
                 return;
             }
             int fd = pfd.getFd();
-            appendLog("  ★ SUCCESS! FD=" + fd + " (len=" + iArr.length + ")");
+            appendLog("  ★ SUCCESS! FD=" + fd + " (len=" + iArr.length + "), time=" + elapsed + "ms");
             try {
                 java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
                 if (fdesc != null && fdesc.valid()) {
