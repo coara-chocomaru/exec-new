@@ -191,7 +191,7 @@ public class MainActivity extends AppCompatActivity {
             if (path.contains("logd")) {
                 commands.add("getLog\n".getBytes(StandardCharsets.UTF_8));
                 commands.add("clear\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("help\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("ps\n".getBytes(StandardCharsets.UTF_8));
                 commands.add("status\n".getBytes(StandardCharsets.UTF_8));
                 commands.add("version\n".getBytes(StandardCharsets.UTF_8));
                 commands.add("dump\n".getBytes(StandardCharsets.UTF_8));
@@ -199,7 +199,7 @@ public class MainActivity extends AppCompatActivity {
             } else if (path.contains("property_service")) {
                 commands.add("getprop\n".getBytes(StandardCharsets.UTF_8));
                 commands.add("list\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("help\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("ps\n".getBytes(StandardCharsets.UTF_8));
                 commands.add("status\n".getBytes(StandardCharsets.UTF_8));
                 commands.add("version\n".getBytes(StandardCharsets.UTF_8));
                 commands.add("dump\n".getBytes(StandardCharsets.UTF_8));
@@ -209,7 +209,7 @@ public class MainActivity extends AppCompatActivity {
                 commands.add("getprop ro.product.brand\n".getBytes(StandardCharsets.UTF_8));
                 commands.add("getprop ro.product.device\n".getBytes(StandardCharsets.UTF_8));
             } else {
-                commands.add("help\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("ps\n".getBytes(StandardCharsets.UTF_8));
                 commands.add("status\n".getBytes(StandardCharsets.UTF_8));
                 commands.add("version\n".getBytes(StandardCharsets.UTF_8));
                 commands.add("getprop\n".getBytes(StandardCharsets.UTF_8));
