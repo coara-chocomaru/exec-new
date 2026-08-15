@@ -17,6 +17,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -24,14 +25,13 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TARGET_PKG = "com.qualcomm.qti.qms.service.trustzoneaccess";
@@ -43,8 +43,9 @@ public class MainActivity extends AppCompatActivity {
     private StringBuilder logBuilder = new StringBuilder();
     private IMinkSocketFd mRemoteService;
     private boolean isBound = false;
-    private boolean isTesting = false;
-    private List<String> successfulSockets = new ArrayList<>();
+    private AtomicBoolean isTesting = new AtomicBoolean(false);
+    private AtomicBoolean stopRequested = new AtomicBoolean(false);
+    private Thread testThread;
 
     private ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -53,7 +54,9 @@ public class MainActivity extends AppCompatActivity {
             appendLog("Service bound");
             updateStatus("Bound - starting tests");
             enableButtons(false, true);
-            new Thread(() -> executeFullTest()).start();
+            stopRequested.set(false);
+            testThread = new Thread(() -> executeFullTest());
+            testThread.start();
         }
         @Override
         public void onServiceDisconnected(ComponentName name) {
@@ -74,16 +77,18 @@ public class MainActivity extends AppCompatActivity {
         btnStart = findViewById(R.id.btn_start);
         btnStop = findViewById(R.id.btn_stop);
         btnStart.setOnClickListener(v -> {
-            if (!isBound && !isTesting) bindService();
+            if (!isBound && !isTesting.get()) bindService();
         });
         btnStop.setOnClickListener(v -> {
-            if (isBound) {
-                unbindService(serviceConnection);
-                isBound = false;
-                mRemoteService = null;
+            if (isBound || isTesting.get()) {
+                stopRequested.set(true);
+                if (testThread != null) {
+                    testThread.interrupt();
+                }
                 enableButtons(true, false);
-                updateStatus("Stopped by user");
-                appendLog("--- Test stopped ---");
+                updateStatus("Stopping...");
+                appendLog("--- Stop requested ---");
+                saveLog();
             }
         });
         appendLog("App started. Press 'Start' to begin.");
@@ -118,46 +123,45 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void executeFullTest() {
-        isTesting = true;
+        isTesting.set(true);
         appendLog("========== Socket Discovery Phase ==========");
 
         String[] targetSockets = {
             "mdnsd", "tcm", "fwmarkd", "dnsproxyd", "logd", "property_service"
         };
 
-        int[] arrSizes = {1, 5};
+        List<String> successfulSockets = new ArrayList<>();
 
         for (String name : targetSockets) {
+            if (stopRequested.get()) break;
             String path = "/dev/socket/" + name;
-            boolean success = false;
-            for (int size : arrSizes) {
-                int[] iArr = new int[size];
-                if (tryConnect(path, iArr)) {
-                    success = true;
-                    successfulSockets.add(path);
-                    appendLog("SUCCESS: " + path);
-                    break;
-                }
-                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+            if (tryConnect(path)) {
+                successfulSockets.add(path);
+                appendLog("SUCCESS: " + path);
+            } else {
+                appendLog("FAIL: " + path);
             }
-            if (!success) appendLog("FAIL: " + path);
         }
 
-        appendLog("========== Deep Interaction Phase ==========");
-        for (String path : successfulSockets) {
-            interactWithSocket(path);
+        if (!stopRequested.get()) {
+            appendLog("========== Deep Interaction Phase ==========");
+            for (String path : successfulSockets) {
+                if (stopRequested.get()) break;
+                interactWithSocket(path);
+            }
         }
 
         appendLog("========== All tests completed ==========");
         updateStatus("Done");
         enableButtons(true, false);
-        isTesting = false;
+        isTesting.set(false);
         saveLog();
     }
 
-    private boolean tryConnect(String path, int[] iArr) {
+    private boolean tryConnect(String path) {
         if (mRemoteService == null) return false;
         try {
+            int[] iArr = new int[1];
             ParcelFileDescriptor pfd = mRemoteService.a(path, iArr);
             if (pfd != null) {
                 pfd.close();
@@ -186,55 +190,53 @@ public class MainActivity extends AppCompatActivity {
             OutputStream os = new FileOutputStream(fdesc);
             InputStream is = new FileInputStream(fdesc);
 
-            List<byte[]> commands = new ArrayList<>();
-
+            // 適切なコマンドリスト
+            List<String> commands = new ArrayList<>();
             if (path.contains("logd")) {
-                commands.add("getLog\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("clear\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("ps\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("status\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("version\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("dump\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("logcat -d\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("getLog");
+                commands.add("clear");
+                commands.add("help");
+                commands.add("status");
+                commands.add("version");
+                commands.add("dump");
+                commands.add("logcat -d");
             } else if (path.contains("property_service")) {
-                commands.add("getprop\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("list\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("ps\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("status\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("version\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("dump\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("getprop ro.build.version.sdk\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("getprop ro.build.version.release\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("getprop ro.product.model\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("getprop ro.product.brand\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("getprop ro.product.device\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("getprop");
+                commands.add("list");
+                commands.add("help");
+                commands.add("status");
+                commands.add("version");
+                commands.add("dump");
+                commands.add("getprop ro.build.version.sdk");
+                commands.add("getprop ro.build.version.release");
+                commands.add("getprop ro.product.model");
+                commands.add("getprop ro.product.brand");
+                commands.add("getprop ro.product.device");
             } else {
-                commands.add("ps\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("status\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("version\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("getprop\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("list\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("dump\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("logcat -d\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("id\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("setenforce 0\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("dmesg\n".getBytes(StandardCharsets.UTF_8));
-                commands.add("exit\n".getBytes(StandardCharsets.UTF_8));
+                commands.add("help");
+                commands.add("status");
+                commands.add("version");
+                commands.add("getprop");
+                commands.add("list");
+                commands.add("dump");
+                commands.add("logcat -d");
+                commands.add("id");
+                commands.add("setenforce 0");
+                commands.add("dmesg");
+                commands.add("exit");
             }
 
-            for (byte[] cmd : commands) {
-                String cmdStr = new String(cmd, StandardCharsets.UTF_8).replace("\n", "\\n");
-                appendLog("  Sending: " + cmdStr);
+            for (String cmd : commands) {
+                if (stopRequested.get()) break;
+                appendLog("  Sending: " + cmd);
                 try {
-                    os.write(cmd);
+                    os.write((cmd + "\n").getBytes(StandardCharsets.UTF_8));
                     os.flush();
-                    byte[] buffer = new byte[8192];
-                    int len = is.read(buffer, 0, buffer.length);
-                    if (len > 0) {
-                        String response = new String(buffer, 0, len, StandardCharsets.UTF_8);
+                    String response = readWithTimeout(is, 500);
+                    if (response != null && !response.isEmpty()) {
                         appendLog("  Response: " + response);
                     } else {
-                        appendLog("  No response (len=" + len + ")");
+                        appendLog("  No response (timeout or empty)");
                     }
                 } catch (Exception e) {
                     appendLog("  Command failed: " + e.getMessage());
@@ -246,6 +248,29 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             appendLog("  Interaction exception: " + e.toString());
             if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private String readWithTimeout(InputStream is, int timeoutMs) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        long start = System.currentTimeMillis();
+        byte[] buffer = new byte[1024];
+        try {
+            while (System.currentTimeMillis() - start < timeoutMs) {
+                if (is.available() > 0) {
+                    int len = is.read(buffer);
+                    if (len > 0) {
+                        baos.write(buffer, 0, len);
+                    } else {
+                        break;
+                    }
+                } else {
+                    Thread.sleep(50);
+                }
+            }
+            return baos.toString(StandardCharsets.UTF_8.name());
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -290,6 +315,10 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        stopRequested.set(true);
+        if (testThread != null) {
+            testThread.interrupt();
+        }
         if (isBound) {
             try { unbindService(serviceConnection); } catch (Exception ignored) {}
         }
