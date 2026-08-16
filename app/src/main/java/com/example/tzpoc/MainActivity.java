@@ -243,7 +243,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         if (successSockets.contains(FWMARKD_SOCKET_PATH)) {
-            appendLog("========== Fwmarkd Protocol Fuzzing Test ==========");
+            appendLog("========== Fwmarkd Protocol Fuzzing Test (with timeout) ==========");
             try {
                 testFwmarkdProtocol();
             } catch (IOException e) {
@@ -370,6 +370,26 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    // バイト列をタイムアウト付きで読み取る（指定バイト数）
+    private int readBytesWithTimeout(InputStream is, int timeoutMs, byte[] buffer, int offset, int length) {
+        long start = System.currentTimeMillis();
+        int totalRead = 0;
+        try {
+            while (totalRead < length && System.currentTimeMillis() - start < timeoutMs) {
+                if (is.available() > 0) {
+                    int n = is.read(buffer, offset + totalRead, length - totalRead);
+                    if (n <= 0) break;
+                    totalRead += n;
+                } else {
+                    Thread.sleep(30);
+                }
+            }
+            return totalRead;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
     private void appendLog(final String msg) {
         String ts = new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date());
         final String line = "[" + ts + "] " + msg + "\n";
@@ -465,38 +485,33 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ===== fwmarkd プロトコルファジング試験 =====
+    // ===== fwmarkd プロトコルファジング試験（タイムアウト付き） =====
     private void testFwmarkdProtocol() throws IOException {
-        appendLog("[FW] Starting fwmarkd protocol fuzzing test");
+        appendLog("[FW] Starting fwmarkd protocol fuzzing test (timeout=2000ms)");
 
-        // コマンドID候補（実際の enum 値は不明だが、0-20 をカバー）
         int[] cmdIds = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,20,30,50,100,200,255};
 
-        // 基本構造：16 バイト（cmdId + 12バイトパディング）
         for (int cmdId : cmdIds) {
             if (stopRequested.get()) break;
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            // cmdId (little endian)
             baos.write(cmdId & 0xFF);
             baos.write((cmdId >> 8) & 0xFF);
             baos.write((cmdId >> 16) & 0xFF);
             baos.write((cmdId >> 24) & 0xFF);
-            // 12バイトゼロ（uid, netId, trafficCtrlInfo など）
             for (int i = 0; i < 12; i++) baos.write(0);
             byte[] data = baos.toByteArray();
-            int result = sendFwmarkCommand(data);
+            int result = sendFwmarkCommandWithTimeout(data, 2000);
             appendLog("[FW] cmdId=" + cmdId + " -> result=" + result);
         }
 
-        // ON_CONNECT を想定 (cmdId=1) + connectInfo (sockaddr_storage 128バイト)
+        // ON_CONNECT (cmdId=1) with connectInfo
         {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             baos.write(1 & 0xFF); baos.write((1 >> 8) & 0xFF); baos.write((1 >> 16) & 0xFF); baos.write((1 >> 24) & 0xFF);
             for (int i = 0; i < 12; i++) baos.write(0);
-            // connectInfo: 128バイトのダミー
             byte[] dummyAddr = new byte[128];
-            dummyAddr[0] = 2; // AF_INET
-            dummyAddr[2] = 0x50; // port 80 (big endian)
+            dummyAddr[0] = 2;
+            dummyAddr[2] = 0x50;
             dummyAddr[3] = 0;
             dummyAddr[4] = 127;
             dummyAddr[5] = 0;
@@ -504,44 +519,41 @@ public class MainActivity extends AppCompatActivity {
             dummyAddr[7] = 1;
             baos.write(dummyAddr);
             byte[] data = baos.toByteArray();
-            int result = sendFwmarkCommand(data);
+            int result = sendFwmarkCommandWithTimeout(data, 2000);
             appendLog("[FW] ON_CONNECT with connectInfo -> result=" + result);
         }
 
-        // SELECT_NETWORK (cmdId=6) を想定し、uid を変化させて試験
+        // SELECT_NETWORK (cmdId=6) with various UIDs
         int[] testUids = {android.os.Process.myUid(), 0, 1000, 9999, 10000};
         for (int uid : testUids) {
             if (stopRequested.get()) break;
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             baos.write(6 & 0xFF); baos.write((6 >> 8) & 0xFF); baos.write((6 >> 16) & 0xFF); baos.write((6 >> 24) & 0xFF);
-            // uid
             baos.write(uid & 0xFF); baos.write((uid >> 8) & 0xFF); baos.write((uid >> 16) & 0xFF); baos.write((uid >> 24) & 0xFF);
-            // netId=1
             baos.write(1 & 0xFF); baos.write(0); baos.write(0); baos.write(0);
-            // trafficCtrlInfo=0
             for (int i = 0; i < 4; i++) baos.write(0);
             byte[] data = baos.toByteArray();
-            int result = sendFwmarkCommand(data);
+            int result = sendFwmarkCommandWithTimeout(data, 2000);
             appendLog("[FW] SELECT_NETWORK uid=" + uid + " netId=1 -> result=" + result);
         }
 
-        // 超大データ（1KB）を送信
+        // 1KB random data
         byte[] bigData = new byte[1024];
         for (int i = 0; i < bigData.length; i++) bigData[i] = (byte) (i & 0xFF);
-        int result4 = sendFwmarkCommand(bigData);
+        int result4 = sendFwmarkCommandWithTimeout(bigData, 2000);
         appendLog("[FW] 1KB random data -> result=" + result4);
 
-        // 長さが中途半端なデータ（20 バイト）
+        // 20-byte data
         byte[] midData = new byte[20];
         for (int i = 0; i < midData.length; i++) midData[i] = (byte) (i & 0xFF);
-        int result5 = sendFwmarkCommand(midData);
+        int result5 = sendFwmarkCommandWithTimeout(midData, 2000);
         appendLog("[FW] 20-byte data -> result=" + result5);
 
         appendLog("[FW] fwmarkd protocol fuzzing completed");
     }
 
-    // fwmarkd にコマンドを送信し、応答（int）を返す
-    private int sendFwmarkCommand(byte[] data) {
+    // タイムアウト付きで fwmarkd にコマンドを送信し、応答（int）を返す（タイムアウト時は -5 を返す）
+    private int sendFwmarkCommandWithTimeout(byte[] data, int timeoutMs) {
         ParcelFileDescriptor pfd = null;
         try {
             int[] iArr = new int[1];
@@ -561,15 +573,15 @@ public class MainActivity extends AppCompatActivity {
 
             InputStream is = new FileInputStream(fd);
             byte[] buf = new byte[4];
-            int read = is.read(buf);
+            int read = readBytesWithTimeout(is, timeoutMs, buf, 0, 4);
             if (read == 4) {
-                // little endian
                 return (buf[0] & 0xFF) |
                        ((buf[1] & 0xFF) << 8) |
                        ((buf[2] & 0xFF) << 16) |
                        ((buf[3] & 0xFF) << 24);
             } else {
-                return -3;
+                appendLog("[FW] Read timeout or incomplete response (read " + read + " bytes)");
+                return -5;
             }
         } catch (Exception e) {
             appendLog("[FW] Exception: " + e.getMessage());
