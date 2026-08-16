@@ -32,6 +32,8 @@ import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -165,93 +167,292 @@ public class MainActivity extends AppCompatActivity {
         appendLog("========================================");
         appendLog("========== Socket Information Dump ==========");
 
-        String[][] socketCommands = {
-            {"/dev/socket/mdnsd", "help\n", "status\n", "version\n", "list\n"},
-            {"/dev/socket/tcm", "help\n", "status\n", "version\n", "list\n"},
-            {"/dev/socket/fwmarkd", "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"},
-            {"/dev/socket/dnsproxyd", "help\n", "status\n", "version\n", "list\n"},
-            {"/dev/socket/logd", "help\n", "status\n", "version\n", "list\n"},
-            {"/dev/socket/netd", "help\n", "status\n", "version\n", "list\n"},
-            {"/dev/socket/location", "help\n", "status\n", "version\n", "list\n"}
-        };
-
-        for (String[] entry : socketCommands) {
-            if (stopRequested.get()) break;
-            String path = entry[0];
-            appendLog("[DUMP] Dumping socket: " + path);
-            ParcelFileDescriptor pfd = null;
-            try {
-                int[] iArr = new int[1];
-                pfd = mTZService.a(path, iArr);
-                if (pfd == null) {
-                    appendLog("  [FAIL] Could not open socket");
-                    continue;
-                }
-                java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
-                if (fdesc == null || !fdesc.valid()) {
-                    appendLog("  [FAIL] Invalid FD");
-                    pfd.close();
-                    continue;
-                }
-
-                OutputStream os = new FileOutputStream(fdesc);
-                InputStream is = new FileInputStream(fdesc);
-
-                for (int i = 1; i < entry.length; i++) {
-                    if (stopRequested.get()) break;
-                    String cmd = entry[i];
-                    appendLog("  CMD[" + cmd.trim() + "]");
-                    try {
-                        os.write(cmd.getBytes(StandardCharsets.UTF_8));
-                        os.flush();
-                        byte[] buffer = new byte[2048];
-                        int totalRead = 0;
-                        long startTime = System.currentTimeMillis();
-                        while (totalRead < buffer.length && (System.currentTimeMillis() - startTime) < 1000) {
-                            if (is.available() > 0) {
-                                int n = is.read(buffer, totalRead, buffer.length - totalRead);
-                                if (n <= 0) break;
-                                totalRead += n;
-                            } else {
-                                Thread.sleep(30);
-                            }
-                        }
-                        if (totalRead > 0) {
-                            String response = new String(buffer, 0, totalRead, StandardCharsets.UTF_8);
-                            appendLog("    -> " + response.replace("\n", "\\n").replace("\r", "\\r"));
-                        } else {
-                            appendLog("    -> (no response)");
-                        }
-                    } catch (Exception e) {
-                        appendLog("    -> error: " + e.getMessage());
-                    }
-                    try { Thread.sleep(200); } catch (InterruptedException ignored) {}
-                }
-
-                os.close();
-                is.close();
-                pfd.close();
-            } catch (Exception e) {
-                appendLog("  Error: " + e.toString());
-                if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-            }
-        }
+        // 各ソケットと送信データ（プロトコル別）
+        dumpFwmarkd();
+        dumpDnsProxyd();
+        dumpMdnsd();
+        dumpLogd();
+        dumpNetd();
+        dumpGeneric("/dev/socket/tcm", new String[]{"help\n", "status\n", "version\n"});
+        dumpGeneric("/dev/socket/location", new String[]{"help\n", "status\n", "version\n"});
 
         appendLog("========== System Properties Dump ==========");
+        dumpSystemProperties();
+
+        appendLog("========== /proc Info Dump ==========");
+        dumpProcFiles();
+
+        appendLog("========== DUMP COMPLETED ==========");
+        appendLog("========================================");
+        updateStatus("Done");
+        isTesting.set(false);
+        enableButtons(true, false);
+        saveLog();
+        finishTest();
+    }
+
+    // ===== fwmarkd 専用 (バイナリプロトコル) =====
+    private void dumpFwmarkd() {
+        appendLog("[FW] Dumping fwmarkd");
+        ParcelFileDescriptor pfd = null;
+        try {
+            int[] iArr = new int[1];
+            pfd = mTZService.a("/dev/socket/fwmarkd", iArr);
+            if (pfd == null) {
+                appendLog("[FW] Failed to open");
+                return;
+            }
+            java.io.FileDescriptor fd = pfd.getFileDescriptor();
+            if (fd == null || !fd.valid()) {
+                appendLog("[FW] Invalid FD");
+                pfd.close();
+                return;
+            }
+
+            // SELECT_NETWORK (cmd=6), uid=自身, netId=0, trafficCtrlInfo=0
+            ByteBuffer buf = ByteBuffer.allocate(16);
+            buf.order(ByteOrder.LITTLE_ENDIAN);
+            buf.putInt(6);          // cmdId
+            buf.putInt(android.os.Process.myUid()); // uid
+            buf.putInt(0);          // netId
+            buf.putInt(0);          // trafficCtrlInfo
+
+            OutputStream os = new FileOutputStream(fd);
+            os.write(buf.array());
+            os.flush();
+
+            // 応答は4バイトのエラーコード (int)
+            InputStream is = new FileInputStream(fd);
+            byte[] resp = new byte[4];
+            int read = readBytes(is, resp, 4, 1000);
+            if (read == 4) {
+                int result = ByteBuffer.wrap(resp).order(ByteOrder.LITTLE_ENDIAN).getInt();
+                appendLog("[FW] SELECT_NETWORK response: " + result + " (0=success)");
+            } else {
+                appendLog("[FW] No response or incomplete");
+            }
+
+            os.close();
+            is.close();
+            pfd.close();
+        } catch (Exception e) {
+            appendLog("[FW] Error: " + e.getMessage());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    // ===== dnsproxyd 専用 (DNSクエリ) =====
+    private void dumpDnsProxyd() {
+        appendLog("[DNS] Dumping dnsproxyd");
+        ParcelFileDescriptor pfd = null;
+        try {
+            int[] iArr = new int[1];
+            pfd = mTZService.a("/dev/socket/dnsproxyd", iArr);
+            if (pfd == null) {
+                appendLog("[DNS] Failed to open");
+                return;
+            }
+            java.io.FileDescriptor fd = pfd.getFileDescriptor();
+            if (fd == null || !fd.valid()) {
+                appendLog("[DNS] Invalid FD");
+                pfd.close();
+                return;
+            }
+
+            // DNSクエリ: localhost Aレコード (RFC 1035)
+            byte[] query = buildDnsQuery("localhost", 1); // TYPE A
+            OutputStream os = new FileOutputStream(fd);
+            os.write(query);
+            os.flush();
+
+            InputStream is = new FileInputStream(fd);
+            byte[] resp = new byte[512];
+            int read = readBytes(is, resp, 512, 2000);
+            if (read > 0) {
+                appendLog("[DNS] Response (" + read + " bytes): " + bytesToHex(resp, read));
+                // 簡易パース: ヘッダーから応答コードを抽出
+                int rcode = resp[3] & 0x0F;
+                appendLog("[DNS] RCODE: " + rcode + " (0=no error)");
+            } else {
+                appendLog("[DNS] No response");
+            }
+
+            os.close();
+            is.close();
+            pfd.close();
+        } catch (Exception e) {
+            appendLog("[DNS] Error: " + e.getMessage());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private byte[] buildDnsQuery(String name, int qtype) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        // ヘッダー (12 bytes): ID=0x1234, QR=0, Opcode=0, AA=0, TC=0, RD=1, RA=0, Z=0, RCODE=0, QDCOUNT=1
+        baos.write(0x12); baos.write(0x34); // ID
+        baos.write(0x01); baos.write(0x00); // flags: RD=1
+        baos.write(0x00); baos.write(0x01); // QDCOUNT=1
+        baos.write(0x00); baos.write(0x00); // ANCOUNT=0
+        baos.write(0x00); baos.write(0x00); // NSCOUNT=0
+        baos.write(0x00); baos.write(0x00); // ARCOUNT=0
+
+        // QNAME: ラベルエンコード
+        for (String label : name.split("\\.")) {
+            baos.write(label.length());
+            baos.write(label.getBytes(StandardCharsets.US_ASCII));
+        }
+        baos.write(0); // 終端
+
+        // QTYPE (2 bytes) and QCLASS (2 bytes)
+        baos.write((qtype >> 8) & 0xFF); baos.write(qtype & 0xFF);
+        baos.write(0x00); baos.write(0x01); // IN
+
+        return baos.toByteArray();
+    }
+
+    // ===== mdnsd 専用 (mDNSクエリ) =====
+    private void dumpMdnsd() {
+        appendLog("[MDNS] Dumping mdnsd");
+        ParcelFileDescriptor pfd = null;
+        try {
+            int[] iArr = new int[1];
+            pfd = mTZService.a("/dev/socket/mdnsd", iArr);
+            if (pfd == null) {
+                appendLog("[MDNS] Failed to open");
+                return;
+            }
+            java.io.FileDescriptor fd = pfd.getFileDescriptor();
+            if (fd == null || !fd.valid()) {
+                appendLog("[MDNS] Invalid FD");
+                pfd.close();
+                return;
+            }
+
+            // mDNSクエリ: localhost.local (mDNS uses .local)
+            byte[] query = buildDnsQuery("localhost.local", 1);
+            OutputStream os = new FileOutputStream(fd);
+            os.write(query);
+            os.flush();
+
+            InputStream is = new FileInputStream(fd);
+            byte[] resp = new byte[512];
+            int read = readBytes(is, resp, 512, 2000);
+            if (read > 0) {
+                appendLog("[MDNS] Response (" + read + " bytes): " + bytesToHex(resp, read));
+            } else {
+                appendLog("[MDNS] No response");
+            }
+
+            os.close();
+            is.close();
+            pfd.close();
+        } catch (Exception e) {
+            appendLog("[MDNS] Error: " + e.getMessage());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    // ===== logd 専用 (読み取り試行) =====
+    private void dumpLogd() {
+        appendLog("[LOGD] Dumping logd (attempt read)");
+        ParcelFileDescriptor pfd = null;
+        try {
+            int[] iArr = new int[1];
+            pfd = mTZService.a("/dev/socket/logd", iArr);
+            if (pfd == null) {
+                appendLog("[LOGD] Failed to open");
+                return;
+            }
+            java.io.FileDescriptor fd = pfd.getFileDescriptor();
+            if (fd == null || !fd.valid()) {
+                appendLog("[LOGD] Invalid FD");
+                pfd.close();
+                return;
+            }
+
+            // 何も送信せずに読み取りを試行 (サーバーからデータが来るかも)
+            InputStream is = new FileInputStream(fd);
+            byte[] buf = new byte[4096];
+            int read = readBytes(is, buf, 4096, 1000);
+            if (read > 0) {
+                appendLog("[LOGD] Read " + read + " bytes: " + new String(buf, 0, read, StandardCharsets.UTF_8));
+            } else {
+                appendLog("[LOGD] No data (maybe need to send log message first)");
+            }
+
+            is.close();
+            pfd.close();
+        } catch (Exception e) {
+            appendLog("[LOGD] Error: " + e.getMessage());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    // ===== netd 専用 (テキストコマンド) =====
+    private void dumpNetd() {
+        dumpGeneric("/dev/socket/netd", new String[]{"help\n", "status\n", "version\n", "interface list\n"});
+    }
+
+    // ===== 汎用テキストコマンド =====
+    private void dumpGeneric(String path, String[] commands) {
+        appendLog("[GEN] Dumping " + path);
+        ParcelFileDescriptor pfd = null;
+        try {
+            int[] iArr = new int[1];
+            pfd = mTZService.a(path, iArr);
+            if (pfd == null) {
+                appendLog("[GEN] Failed to open " + path);
+                return;
+            }
+            java.io.FileDescriptor fd = pfd.getFileDescriptor();
+            if (fd == null || !fd.valid()) {
+                appendLog("[GEN] Invalid FD");
+                pfd.close();
+                return;
+            }
+
+            OutputStream os = new FileOutputStream(fd);
+            InputStream is = new FileInputStream(fd);
+
+            for (String cmd : commands) {
+                if (stopRequested.get()) break;
+                appendLog("[GEN] CMD: " + cmd.trim());
+                try {
+                    os.write(cmd.getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                    byte[] buf = new byte[2048];
+                    int read = readBytes(is, buf, 2048, 1000);
+                    if (read > 0) {
+                        String resp = new String(buf, 0, read, StandardCharsets.UTF_8);
+                        appendLog("[GEN] Response: " + resp.replace("\n", "\\n").replace("\r", "\\r"));
+                    } else {
+                        appendLog("[GEN] No response");
+                    }
+                } catch (Exception e) {
+                    appendLog("[GEN] CMD error: " + e.getMessage());
+                }
+                try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+            }
+
+            os.close();
+            is.close();
+            pfd.close();
+        } catch (Exception e) {
+            appendLog("[GEN] Error: " + e.getMessage());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    // ===== システムプロパティ =====
+    private void dumpSystemProperties() {
         try {
             Class<?> spClass = Class.forName("android.os.SystemProperties");
             Method getMethod = spClass.getMethod("get", String.class);
             String[] props = {
-                "ro.build.version.release",
-                "ro.product.model",
-                "ro.product.manufacturer",
-                "ro.build.date",
-                "persist.sys.timezone",
-                "persist.sys.language",
-                "persist.sys.country",
-                "sys.retaildemo.enabled",
-                "ro.boot.hardware",
-                "ro.boot.serialno"
+                "ro.build.version.release", "ro.product.model", "ro.product.manufacturer",
+                "ro.build.date", "persist.sys.timezone", "persist.sys.language",
+                "persist.sys.country", "sys.retaildemo.enabled", "ro.boot.hardware",
+                "ro.boot.serialno", "ro.build.display.id", "ro.build.version.sdk"
             };
             for (String prop : props) {
                 if (stopRequested.get()) break;
@@ -261,16 +462,15 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             appendLog("[PROP] Reflection error: " + e.getMessage());
         }
+    }
 
-        appendLog("========== /proc Info Dump ==========");
-        String[] procFiles = {
-            "/proc/version",
-            "/proc/self/status",
-            "/proc/self/cmdline",
-            "/proc/meminfo",
-            "/proc/cpuinfo"
+    // ===== /proc ファイル =====
+    private void dumpProcFiles() {
+        String[] files = {
+            "/proc/version", "/proc/self/status", "/proc/self/cmdline",
+            "/proc/meminfo", "/proc/cpuinfo", "/proc/uptime", "/proc/loadavg"
         };
-        for (String f : procFiles) {
+        for (String f : files) {
             if (stopRequested.get()) break;
             try {
                 String content = nativeReadFile(f);
@@ -283,16 +483,38 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("[PROC] " + f + " error: " + e.getMessage());
             }
         }
-
-        appendLog("========== DUMP COMPLETED ==========");
-        appendLog("========================================");
-        updateStatus("Done");
-        isTesting.set(false);
-        enableButtons(true, false);
-        saveLog();
-        finishTest();
     }
 
+    // ===== ヘルパー: タイムアウト付きバイト読み取り =====
+    private int readBytes(InputStream is, byte[] buffer, int maxLen, int timeoutMs) {
+        int total = 0;
+        long start = System.currentTimeMillis();
+        try {
+            while (total < maxLen && System.currentTimeMillis() - start < timeoutMs) {
+                if (is.available() > 0) {
+                    int n = is.read(buffer, total, maxLen - total);
+                    if (n <= 0) break;
+                    total += n;
+                } else {
+                    Thread.sleep(20);
+                }
+            }
+            return total;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private String bytesToHex(byte[] bytes, int len) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < len && i < 64; i++) {
+            sb.append(String.format("%02x ", bytes[i]));
+        }
+        if (len > 64) sb.append("...");
+        return sb.toString();
+    }
+
+    // ===== UIログ =====
     private void appendLog(final String msg) {
         String ts = new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date());
         final String line = "[" + ts + "] " + msg + "\n";
