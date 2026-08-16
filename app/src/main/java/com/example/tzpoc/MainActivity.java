@@ -21,6 +21,7 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -171,12 +172,10 @@ public class MainActivity extends AppCompatActivity {
         appendLog("========================================");
         appendLog("========== Advanced TZ POC ==========");
 
-        // 1. Enumerate /dev/socket
         String[] sockets = nativeListDir("/dev/socket");
         if (sockets == null) sockets = new String[0];
         appendLog("[*] Found " + sockets.length + " sockets");
 
-        // 2. High-value targets including /dev/qseecom
         String[] knownTargets = {
                 "/dev/socket/netd",
                 "/dev/socket/dnsproxyd",
@@ -209,7 +208,6 @@ public class MainActivity extends AppCompatActivity {
             if (!allTargets.contains(full)) allTargets.add(full);
         }
 
-        // 3. Test each target
         for (String path : allTargets) {
             if (stopRequested.get()) break;
             appendLog("[+] Testing " + path);
@@ -220,11 +218,7 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // 4. Additional info gathering
-        appendLog("[*] Trying property read/write");
         tryPropertySet();
-
-        appendLog("[*] Reading /proc/self/fd");
         tryReadProcFd();
 
         appendLog("========== EXPLOIT COMPLETED ==========");
@@ -253,7 +247,6 @@ public class MainActivity extends AppCompatActivity {
             }
             appendLog("[+] Opened " + path + " (handle=" + handle[0] + ")");
 
-            // If it's a socket, try to interact; if it's a device file, just read.
             if (path.startsWith("/dev/socket/")) {
                 String base = new File(path).getName();
                 switch (base) {
@@ -269,7 +262,6 @@ public class MainActivity extends AppCompatActivity {
                     default: testGeneric(fd, new String[]{"help\n", "status\n", "version\n", "list\n"});
                 }
             } else {
-                // Device file: read first few bytes
                 InputStream is = new FileInputStream(fd);
                 byte[] buf = new byte[64];
                 int read = readBytes(is, buf, 64, 500);
@@ -428,7 +420,7 @@ public class MainActivity extends AppCompatActivity {
         for (String fd : fds) {
             if (stopRequested.get()) break;
             String link = "/proc/self/fd/" + fd;
-            String target = nativeReadFile(link); // actually readlink, but nativeReadFile reads content; we'll try to read the link target by reading it as file (might fail)
+            String target = nativeReadFile(link);
             appendLog("[PROC] " + link + " -> " + (target != null ? target : "(unreadable)"));
         }
     }
