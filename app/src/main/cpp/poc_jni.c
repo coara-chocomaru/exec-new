@@ -49,3 +49,24 @@ JNIEXPORT jobject JNICALL Java_com_example_tzpoc_MainActivity_nativeConnectSocke
     jobject pfd = (*env)->CallObjectMethod(env, tzService, mid, path, handleArr);
     return pfd;
 }
+
+JNIEXPORT jstring JNICALL Java_com_example_tzpoc_MainActivity_nativeReadFile
+  (JNIEnv* env, jobject thiz, jstring path) {
+    LOGD("nativeReadFile called");
+    if (path == NULL) return NULL;
+    const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
+    if (cpath == NULL) return NULL;
+    int fd = open(cpath, O_RDONLY);
+    (*env)->ReleaseStringUTFChars(env, path, cpath);
+    if (fd < 0) {
+        LOGE("open failed: %s", strerror(errno));
+        return NULL;
+    }
+    char buf[4096];
+    ssize_t len = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (len <= 0) return NULL;
+    buf[len] = '\0';
+    jstring result = (*env)->NewStringUTF(env, buf);
+    return result;
+}
