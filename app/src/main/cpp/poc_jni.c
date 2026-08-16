@@ -9,32 +9,31 @@
 #include <sys/un.h>
 #include <android/log.h>
 
-
 #define LOG_TAG "PocJNI"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 static JavaVM* g_vm = NULL;
-static jobject g_tzService = NULL;
-static jmethodID g_method_a = NULL;
-static jclass g_class_IMinkSocketFd = NULL;
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     g_vm = vm;
-    JNIEnv* env;
-    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
-        return JNI_ERR;
-    }
+    LOGD("JNI_OnLoad called");
     return JNI_VERSION_1_6;
 }
 
 JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
+    LOGD("JNI_OnUnload called");
 }
 
-JNIEXPORT jobject JNICALL Java_com_example_tzpoc_NativeHelper_nativeConnectSocket
-  (JNIEnv* env, jclass clazz, jobject tzService, jstring path, jintArray handleArr) {
+JNIEXPORT jobject JNICALL Java_com_example_tzpoc_MainActivity_nativeConnectSocket
+  (JNIEnv* env, jobject thiz, jobject tzService, jstring path, jintArray handleArr) {
+    LOGD("nativeConnectSocket called");
     if (tzService == NULL) {
         LOGE("tzService is null");
+        return NULL;
+    }
+    if (path == NULL) {
+        LOGE("path is null");
         return NULL;
     }
     jclass cls = (*env)->GetObjectClass(env, tzService);
@@ -51,8 +50,10 @@ JNIEXPORT jobject JNICALL Java_com_example_tzpoc_NativeHelper_nativeConnectSocke
     return pfd;
 }
 
-JNIEXPORT jstring JNICALL Java_com_example_tzpoc_NativeHelper_nativeReadFile
-  (JNIEnv* env, jclass clazz, jstring path) {
+JNIEXPORT jstring JNICALL Java_com_example_tzpoc_MainActivity_nativeReadFile
+  (JNIEnv* env, jobject thiz, jstring path) {
+    LOGD("nativeReadFile called");
+    if (path == NULL) return NULL;
     const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
     if (cpath == NULL) return NULL;
     int fd = open(cpath, O_RDONLY);
@@ -66,5 +67,6 @@ JNIEXPORT jstring JNICALL Java_com_example_tzpoc_NativeHelper_nativeReadFile
     close(fd);
     if (len <= 0) return NULL;
     buf[len] = '\0';
-    return (*env)->NewStringUTF(env, buf);
+    jstring result = (*env)->NewStringUTF(env, buf);
+    return result;
 }
