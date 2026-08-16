@@ -31,7 +31,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
-import java.io.RandomAccessFile;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
@@ -668,11 +667,10 @@ public class MainActivity extends AppCompatActivity {
                     continue;
                 }
 
-                RandomAccessFile raf = new RandomAccessFile(fdesc, "rw");
+                // Read first sector
+                FileInputStream fis = new FileInputStream(fdesc);
                 byte[] buffer = new byte[512];
-
-                raf.seek(0);
-                int len = raf.read(buffer);
+                int len = fis.read(buffer);
                 if (len > 0) {
                     appendLog("  Read " + len + " bytes from start");
                     StringBuilder hex = new StringBuilder();
@@ -681,26 +679,36 @@ public class MainActivity extends AppCompatActivity {
                     }
                     appendLog("  First bytes: " + hex.toString());
 
-                    byte[] orig = new byte[len];
-                    System.arraycopy(buffer, 0, orig, 0, len);
+                    // Save original data
+                    byte[] original = new byte[len];
+                    System.arraycopy(buffer, 0, original, 0, len);
 
+                    // Write marker
                     byte[] marker = "HELLO".getBytes(StandardCharsets.UTF_8);
-                    raf.seek(0);
-                    raf.write(marker);
-                    raf.seek(0);
-                    byte[] check = new byte[5];
-                    raf.read(check);
-                    String checkStr = new String(check, StandardCharsets.UTF_8);
-                    appendLog("  Wrote marker, read back: " + checkStr);
+                    FileOutputStream fos = new FileOutputStream(fdesc);
+                    fos.write(marker);
+                    fos.flush();
+                    appendLog("  Wrote marker 'HELLO' at offset 0");
 
-                    raf.seek(0);
-                    raf.write(orig);
+                    // Read back to verify
+                    fis = new FileInputStream(fdesc);
+                    byte[] check = new byte[5];
+                    int readCheck = fis.read(check);
+                    if (readCheck > 0) {
+                        String checkStr = new String(check, 0, readCheck, StandardCharsets.UTF_8);
+                        appendLog("  Read back: " + checkStr);
+                    }
+
+                    // Restore original
+                    fos = new FileOutputStream(fdesc);
+                    fos.write(original);
+                    fos.flush();
                     appendLog("  Restored original " + len + " bytes");
                 } else {
                     appendLog("  Read returned " + len);
                 }
 
-                raf.close();
+                fis.close();
                 pfd.close();
             } catch (Exception e) {
                 appendLog("  Error: " + e.getMessage());
