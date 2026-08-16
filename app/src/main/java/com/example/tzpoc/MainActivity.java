@@ -239,6 +239,9 @@ public class MainActivity extends AppCompatActivity {
             testPropertyServiceReadOnly();
         }
 
+        appendLog("========== Advanced Device Tests (prop, qseecom, block) ==========");
+        testAdvancedDevices();
+
         appendLog("========== ALL TESTS COMPLETED ==========");
         appendLog("========================================");
         updateStatus("Done");
@@ -509,6 +512,221 @@ public class MainActivity extends AppCompatActivity {
             }
         } catch (Exception e) {
             appendLog("[PROP-READ] Reflection error: " + e.getMessage());
+        }
+    }
+
+    private void testAdvancedDevices() {
+        testPropertiesFs();
+        testQseecom();
+        testBlockDevices();
+    }
+
+    private void testPropertiesFs() {
+        appendLog("[ADV] Testing /dev/__properties__ filesystem");
+        String[] propFiles = {
+            "/dev/__properties__/persist.sys.timezone",
+            "/dev/__properties__/ro.build.version.release",
+            "/dev/__properties__/sys.retaildemo.enabled",
+            "/dev/__properties__/persist.sys.language"
+        };
+
+        for (String path : propFiles) {
+            if (stopRequested.get()) break;
+            appendLog("[PROP-FS] Trying " + path);
+            ParcelFileDescriptor pfd = null;
+            try {
+                int[] iArr = new int[1];
+                pfd = mTZService.a(path, iArr);
+                if (pfd == null) {
+                    appendLog("  Cannot open (null FD)");
+                    continue;
+                }
+                java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
+                if (fdesc == null || !fdesc.valid()) {
+                    appendLog("  Invalid FD");
+                    pfd.close();
+                    continue;
+                }
+
+                // Read
+                FileInputStream fis = new FileInputStream(fdesc);
+                byte[] buffer = new byte[256];
+                int len = fis.read(buffer);
+                if (len > 0) {
+                    String content = new String(buffer, 0, len, StandardCharsets.UTF_8).trim();
+                    appendLog("  Read: " + content);
+                } else {
+                    appendLog("  Read returned " + len);
+                }
+
+                // Write test (preserve original)
+                if (len > 0) {
+                    String original = new String(buffer, 0, len, StandardCharsets.UTF_8).trim();
+                    String newValue = "TEST_" + System.currentTimeMillis();
+                    // Write back original to avoid corruption, but test write capability
+                    // First write new value
+                    FileOutputStream fos = new FileOutputStream(fdesc);
+                    fos.write(newValue.getBytes(StandardCharsets.UTF_8));
+                    fos.flush();
+                    appendLog("  Wrote: " + newValue);
+                    // Read back to verify
+                    fis = new FileInputStream(fdesc);
+                    len = fis.read(buffer);
+                    if (len > 0) {
+                        String readBack = new String(buffer, 0, len, StandardCharsets.UTF_8).trim();
+                        appendLog("  Read back: " + readBack);
+                    }
+                    // Restore original
+                    fos = new FileOutputStream(fdesc);
+                    fos.write(original.getBytes(StandardCharsets.UTF_8));
+                    fos.flush();
+                    appendLog("  Restored original");
+                }
+                fis.close();
+                pfd.close();
+            } catch (Exception e) {
+                appendLog("  Error: " + e.getMessage());
+                if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private void testQseecom() {
+        appendLog("[ADV] Testing /dev/qseecom (dummy I/O)");
+        String path = "/dev/qseecom";
+        ParcelFileDescriptor pfd = null;
+        try {
+            int[] iArr = new int[1];
+            pfd = mTZService.a(path, iArr);
+            if (pfd == null) {
+                appendLog("  Cannot open (null FD)");
+                return;
+            }
+            java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
+            if (fdesc == null || !fdesc.valid()) {
+                appendLog("  Invalid FD");
+                pfd.close();
+                return;
+            }
+
+            OutputStream os = new FileOutputStream(fdesc);
+            InputStream is = new FileInputStream(fdesc);
+
+            // Send dummy commands
+            byte[][] dummies = {
+                "hello".getBytes(StandardCharsets.UTF_8),
+                "status".getBytes(StandardCharsets.UTF_8),
+                "version".getBytes(StandardCharsets.UTF_8),
+                "\x00\x01\x02\x03".getBytes(StandardCharsets.ISO_8859_1)
+            };
+
+            for (byte[] data : dummies) {
+                if (stopRequested.get()) break;
+                try {
+                    os.write(data);
+                    os.flush();
+                    byte[] resp = new byte[64];
+                    int len = is.read(resp);
+                    if (len > 0) {
+                        String respStr = new String(resp, 0, len, StandardCharsets.UTF_8);
+                        appendLog("  Write (" + data.length + " bytes) -> read " + len + " bytes: " + respStr);
+                    } else {
+                        appendLog("  Write (" + data.length + " bytes) -> no response");
+                    }
+                } catch (Exception e) {
+                    appendLog("  I/O error: " + e.getMessage());
+                }
+                try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            }
+
+            os.close();
+            is.close();
+            pfd.close();
+        } catch (Exception e) {
+            appendLog("  Error: " + e.getMessage());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private void testBlockDevices() {
+        String[] blockDevices = {
+            "/dev/block/mmcblk0p29",
+            "/dev/block/mmcblk0p18",
+            "/dev/block/mmcblk0p21"
+        };
+
+        for (String path : blockDevices) {
+            if (stopRequested.get()) break;
+            appendLog("[ADV] Testing block device " + path);
+            ParcelFileDescriptor pfd = null;
+            try {
+                int[] iArr = new int[1];
+                pfd = mTZService.a(path, iArr);
+                if (pfd == null) {
+                    appendLog("  Cannot open (null FD)");
+                    continue;
+                }
+                java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
+                if (fdesc == null || !fdesc.valid()) {
+                    appendLog("  Invalid FD");
+                    pfd.close();
+                    continue;
+                }
+
+                FileInputStream fis = new FileInputStream(fdesc);
+                FileOutputStream fos = new FileOutputStream(fdesc);
+
+                // Read first 512 bytes (sector)
+                byte[] buffer = new byte[512];
+                int len = fis.read(buffer);
+                if (len > 0) {
+                    appendLog("  Read " + len + " bytes from start");
+                    // Show first few bytes as hex
+                    StringBuilder hex = new StringBuilder();
+                    for (int i = 0; i < Math.min(16, len); i++) {
+                        hex.append(String.format("%02x ", buffer[i]));
+                    }
+                    appendLog("  First bytes: " + hex.toString());
+
+                    // Write test: write the same data back (safe)
+                    fos.write(buffer, 0, len);
+                    fos.flush();
+                    appendLog("  Wrote " + len + " bytes back (restored)");
+
+                    // Optionally, try writing a small marker at offset 0 (but restore)
+                    byte[] marker = "HELLO".getBytes(StandardCharsets.UTF_8);
+                    // Save original first 5 bytes
+                    byte[] orig5 = new byte[5];
+                    System.arraycopy(buffer, 0, orig5, 0, 5);
+                    // Write marker
+                    fos = new FileOutputStream(fdesc);
+                    fos.write(marker);
+                    fos.flush();
+                    appendLog("  Wrote marker 'HELLO' at offset 0");
+
+                    // Read back to verify
+                    fis = new FileInputStream(fdesc);
+                    byte[] check = new byte[5];
+                    fis.read(check);
+                    String checkStr = new String(check, StandardCharsets.UTF_8);
+                    appendLog("  Read back: " + checkStr);
+
+                    // Restore original
+                    fos = new FileOutputStream(fdesc);
+                    fos.write(orig5);
+                    fos.flush();
+                    appendLog("  Restored original 5 bytes");
+                } else {
+                    appendLog("  Read returned " + len);
+                }
+
+                fis.close();
+                fos.close();
+                pfd.close();
+            } catch (Exception e) {
+                appendLog("  Error: " + e.getMessage());
+                if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+            }
         }
     }
 }
