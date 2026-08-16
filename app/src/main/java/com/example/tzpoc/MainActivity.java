@@ -40,6 +40,12 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends AppCompatActivity {
@@ -236,7 +242,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         if (!successSockets.isEmpty()) {
-            appendLog("========== Buffer Overflow Test on ALL Sockets via JNI ==========");
+            appendLog("========== Buffer Overflow Test on ALL Sockets (with timeout) ==========");
             testBufferOverflowAllSockets();
         } else {
             appendLog("========== No successful sockets, skipping overflow test ==========");
@@ -370,7 +376,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // バイト列をタイムアウト付きで読み取る（指定バイト数）
     private int readBytesWithTimeout(InputStream is, int timeoutMs, byte[] buffer, int offset, int length) {
         long start = System.currentTimeMillis();
         int totalRead = 0;
@@ -447,10 +452,11 @@ public class MainActivity extends AppCompatActivity {
         saveLog();
     }
 
-    // ===== バッファオーバーフロー試験（全成功ソケット） =====
+    // ===== バッファオーバーフロー試験（全成功ソケット、タイムアウト付き） =====
     private void testBufferOverflowAllSockets() {
         int[] sizes = {1024 * 10, 1024 * 100, 1024 * 512, 1024 * 1024, 1024 * 1024 * 2};
         byte[] pattern = "hellooo".getBytes(StandardCharsets.UTF_8);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
 
         for (String path : successSockets) {
             if (stopRequested.get()) break;
@@ -465,24 +471,48 @@ public class MainActivity extends AppCompatActivity {
                     continue;
                 }
 
+                boolean timeoutOccurred = false;
                 for (int size : sizes) {
-                    if (stopRequested.get()) break;
+                    if (stopRequested.get() || timeoutOccurred) break;
                     appendLog("[BOF] Sending " + size + " bytes to " + path);
                     byte[] payload = new byte[size];
                     for (int i = 0; i < size; i++) {
                         payload[i] = pattern[i % pattern.length];
                     }
-                    int written = nativeSendLongData(pfd, payload, payload.length);
-                    appendLog("[BOF] JNI write returned: " + written + " for size " + size);
+                    final ParcelFileDescriptor pfdFinal = pfd;
+                    final byte[] payloadFinal = payload;
+                    Future<Integer> future = executor.submit(new Callable<Integer>() {
+                        @Override
+                        public Integer call() throws Exception {
+                            return nativeSendLongData(pfdFinal, payloadFinal, payloadFinal.length);
+                        }
+                    });
+                    try {
+                        int written = future.get(5000, TimeUnit.MILLISECONDS);
+                        appendLog("[BOF] JNI write returned: " + written + " for size " + size);
+                    } catch (TimeoutException e) {
+                        appendLog("[BOF] Timeout writing " + size + " bytes to " + path);
+                        future.cancel(true);
+                        timeoutOccurred = true;
+                        // タイムアウトが発生したらこのソケットは諦める
+                        break;
+                    } catch (Exception e) {
+                        appendLog("[BOF] Error: " + e.getMessage());
+                        timeoutOccurred = true;
+                        break;
+                    }
                     try { Thread.sleep(100); } catch (InterruptedException ignored) {}
                 }
             } catch (Exception e) {
                 appendLog("[BOF] Error on " + path + ": " + e.toString());
             } finally {
-                if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+                if (pfd != null) {
+                    try { pfd.close(); } catch (Exception ignored) {}
+                }
             }
             try { Thread.sleep(500); } catch (InterruptedException ignored) {}
         }
+        executor.shutdownNow();
     }
 
     // ===== fwmarkd プロトコルファジング試験（タイムアウト付き） =====
@@ -554,10 +584,10 @@ public class MainActivity extends AppCompatActivity {
 
     // タイムアウト付きで fwmarkd にコマンドを送信し、応答（int）を返す（タイムアウト時は -5 を返す）
     private int sendFwmarkCommandWithTimeout(byte[] data, int timeoutMs) {
-        ParcelFileDescriptor pfd = null;
+        ExecutorService executor = Executors.newSingleThreadExecutor();
         try {
             int[] iArr = new int[1];
-            pfd = mTZService.a(FWMARKD_SOCKET_PATH, iArr);
+            ParcelFileDescriptor pfd = mTZService.a(FWMARKD_SOCKET_PATH, iArr);
             if (pfd == null) {
                 appendLog("[FW] Failed to get FD");
                 return -1;
@@ -565,29 +595,50 @@ public class MainActivity extends AppCompatActivity {
             java.io.FileDescriptor fd = pfd.getFileDescriptor();
             if (fd == null || !fd.valid()) {
                 appendLog("[FW] Invalid FD");
+                pfd.close();
                 return -2;
             }
-            OutputStream os = new FileOutputStream(fd);
-            os.write(data);
-            os.flush();
 
-            InputStream is = new FileInputStream(fd);
-            byte[] buf = new byte[4];
-            int read = readBytesWithTimeout(is, timeoutMs, buf, 0, 4);
-            if (read == 4) {
-                return (buf[0] & 0xFF) |
-                       ((buf[1] & 0xFF) << 8) |
-                       ((buf[2] & 0xFF) << 16) |
-                       ((buf[3] & 0xFF) << 24);
-            } else {
-                appendLog("[FW] Read timeout or incomplete response (read " + read + " bytes)");
+            final ParcelFileDescriptor pfdFinal = pfd;
+            final byte[] dataFinal = data;
+            Future<Integer> future = executor.submit(new Callable<Integer>() {
+                @Override
+                public Integer call() throws Exception {
+                    OutputStream os = new FileOutputStream(pfdFinal.getFileDescriptor());
+                    os.write(dataFinal);
+                    os.flush();
+
+                    InputStream is = new FileInputStream(pfdFinal.getFileDescriptor());
+                    byte[] buf = new byte[4];
+                    int read = readBytesWithTimeout(is, timeoutMs, buf, 0, 4);
+                    if (read == 4) {
+                        return (buf[0] & 0xFF) |
+                               ((buf[1] & 0xFF) << 8) |
+                               ((buf[2] & 0xFF) << 16) |
+                               ((buf[3] & 0xFF) << 24);
+                    } else {
+                        return -5;
+                    }
+                }
+            });
+
+            try {
+                return future.get(timeoutMs, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException e) {
+                appendLog("[FW] Timeout while waiting for response");
+                future.cancel(true);
                 return -5;
+            } catch (Exception e) {
+                appendLog("[FW] Exception: " + e.getMessage());
+                return -4;
+            } finally {
+                pfd.close();
             }
         } catch (Exception e) {
             appendLog("[FW] Exception: " + e.getMessage());
             return -4;
         } finally {
-            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+            executor.shutdownNow();
         }
     }
 }
