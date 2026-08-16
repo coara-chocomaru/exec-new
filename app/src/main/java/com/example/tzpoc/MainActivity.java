@@ -21,7 +21,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
-import com.qualcomm.qti.qms.api.a.IMinkSocketFd;
+import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -30,7 +30,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -47,7 +46,7 @@ public class MainActivity extends AppCompatActivity {
     private Button btnStart, btnStop;
     private Handler handler = new Handler(Looper.getMainLooper());
     private StringBuilder logBuilder = new StringBuilder();
-    private IMinkSocketFd mTZService;
+    private IMinkSocketFd mTZService;         // ← 直接 AIDL インターフェース
     private boolean isBound = false;
     private AtomicBoolean isTesting = new AtomicBoolean(false);
     private AtomicBoolean stopRequested = new AtomicBoolean(false);
@@ -56,20 +55,13 @@ public class MainActivity extends AppCompatActivity {
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
-            try {
-                Class<?> cls = Class.forName("com.qualcomm.qti.qms.api.a.IMinkSocketFd");
-                Method asInterface = cls.getMethod("asInterface", IBinder.class);
-                mTZService = (IMinkSocketFd) asInterface.invoke(null, service);
-                appendLog("TZ Service bound");
-                updateStatus("Bound - starting tests");
-                enableButtons(false, true);
-                stopRequested.set(false);
-                testThread = new Thread(() -> executeFullTest());
-                testThread.start();
-            } catch (Exception e) {
-                appendLog("Failed to get IMinkSocketFd: " + e.getMessage());
-                enableButtons(true, false);
-            }
+            mTZService = IMinkSocketFd.Stub.asInterface(service);
+            appendLog("TZ Service bound");
+            updateStatus("Bound - starting tests");
+            enableButtons(false, true);
+            stopRequested.set(false);
+            testThread = new Thread(() -> executeFullTest());
+            testThread.start();
         }
         @Override
         public void onServiceDisconnected(ComponentName name) {
@@ -238,6 +230,8 @@ public class MainActivity extends AppCompatActivity {
             }
 
             pfd.close();
+        } catch (RemoteException e) {
+            appendLog("  RemoteException: " + e.getMessage());
         } catch (Exception e) {
             appendLog("  Interaction error: " + e.toString());
             if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
