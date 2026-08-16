@@ -226,19 +226,17 @@ public class MainActivity extends AppCompatActivity {
             appendLog("========== Interacting with successful sockets ==========");
             for (String s : successSockets) {
                 if (stopRequested.get()) break;
-                if (s.equals(PROPERTY_SERVICE_PATH)) {
-                    appendLog("[INTERACT] Skipping property_service to avoid corruption");
-                    continue;
-                }
+                if (s.equals(PROPERTY_SERVICE_PATH)) continue;
                 interactWithSocket(s);
             }
         }
 
+        appendLog("========== Hello Tests on Specific Sockets ==========");
+        testHelloOnSockets();
+
         if (successSockets.contains(PROPERTY_SERVICE_PATH)) {
-            appendLog("========== Property Service Specific Tests ==========");
-            testPropertyServiceAdvanced();
-        } else {
-            appendLog("========== Property Service not available, skipping tests ==========");
+            appendLog("========== Property Service Read-Only Test ==========");
+            testPropertyServiceReadOnly();
         }
 
         appendLog("========== ALL TESTS COMPLETED ==========");
@@ -417,193 +415,100 @@ public class MainActivity extends AppCompatActivity {
         saveLog();
     }
 
-    private void testPropertyServiceAdvanced() {
-        String[] testProperties = {
-            "sys.retaildemo.enabled",
-            "sys.retaildemo.enabled",
-            "sys.retaildemo.enabled",
-            "sys.retaildemo.enabled",
-            "sys.retaildemo.enabled",
-            "sys.retaildemo.enabled",
-            "sys.retaildemo.enabled",
-            "sys.retaildemo.enabled",
-            "sys.retaildemo.enabled",
-            "persist.sys.usb.config",
-            "sys.retaildemo.enabled",
-            "persist.sys.timezone",
-            "persist.sys.language",
-            "persist.sys.country"
+    private void testHelloOnSockets() {
+        String[] targetSockets = {
+            "/dev/socket/logd",
+            "/dev/socket/dnsproxyd",
+            "/dev/socket/fwmarkd",
+            "/dev/socket/mdnsd",
+            "/dev/socket/tcm"
         };
 
-        String testValue = "1";
-        boolean anySuccess = false;
-
-        for (String prop : testProperties) {
+        for (String path : targetSockets) {
             if (stopRequested.get()) break;
-            appendLog("[PROP] Trying to set " + prop + " = " + testValue);
-            int resultV2 = trySetPropertyWithResult(prop, testValue, true);
-            String statusV2 = decodeError(resultV2);
-            appendLog("[PROP] V2 result: " + resultV2 + " (" + statusV2 + ")");
-            if (resultV2 == 0) {
-                anySuccess = true;
-                appendLog("[PROP] SUCCESS setting " + prop + " = " + testValue);
-                verifyAndShowHello(prop, testValue);
-                break;
-            }
-            int resultV1 = trySetPropertyWithResult(prop, testValue, false);
-            String statusV1 = decodeError(resultV1);
-            appendLog("[PROP] V1 result: " + resultV1 + " (" + statusV1 + ")");
-            if (resultV1 == 0) {
-                anySuccess = true;
-                appendLog("[PROP] SUCCESS (V1) setting " + prop + " = " + testValue);
-                verifyAndShowHello(prop, testValue);
-                break;
-            }
-        }
-
-        if (!anySuccess) {
-            appendLog("[PROP] No writable property found among tested names.");
+            if (!successSockets.contains(path)) continue;
+            appendLog("[HELLO-TEST] Testing " + path);
+            sendHelloToSocket(path);
         }
     }
 
-    private int trySetPropertyWithResult(String name, String value, boolean useV2) {
+    private void sendHelloToSocket(String path) {
         ParcelFileDescriptor pfd = null;
         try {
             int[] iArr = new int[1];
-            pfd = mTZService.a(PROPERTY_SERVICE_PATH, iArr);
+            pfd = mTZService.a(path, iArr);
             if (pfd == null) {
-                return -1;
+                appendLog("  Failed to get FD");
+                return;
             }
             java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
             if (fdesc == null || !fdesc.valid()) {
-                return -2;
+                appendLog("  Invalid FD");
+                return;
             }
 
-            if (useV2) {
-                return sendPropV2(fdesc, name, value);
-            } else {
-                return sendPropV1(fdesc, name, value);
-            }
-        } catch (Exception e) {
-            appendLog("[PROP] Exception in trySetPropertyWithResult: " + e.getMessage());
-            return -3;
-        } finally {
-            if (pfd != null) {
-                try { pfd.close(); } catch (Exception ignored) {}
-            }
-        }
-    }
+            OutputStream os = new FileOutputStream(fdesc);
+            InputStream is = new FileInputStream(fdesc);
 
-    private int sendPropV1(java.io.FileDescriptor fd, String name, String value) {
-        try {
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            writeUint32LE(baos, 1);
-            byte[] nameBytes = name.getBytes(StandardCharsets.US_ASCII);
-            baos.write(nameBytes);
-            baos.write(0);
-            for (int i = nameBytes.length + 1; i < 32; i++) {
-                baos.write(0);
-            }
-            byte[] valueBytes = value.getBytes(StandardCharsets.UTF_8);
-            baos.write(valueBytes);
-            baos.write(0);
-            for (int i = valueBytes.length + 1; i < 92; i++) {
-                baos.write(0);
-            }
-            byte[] data = baos.toByteArray();
-            OutputStream os = new FileOutputStream(fd);
-            os.write(data);
-            os.flush();
+            String[] commands = {
+                "hello\n",
+                "HELLO\n",
+                "hello world\n",
+                "HELLO WORLD\n"
+            };
 
-            InputStream is = new FileInputStream(fd);
-            byte[] resultBytes = new byte[4];
-            int read = is.read(resultBytes);
-            if (read == 4) {
-                return readUint32LE(resultBytes, 0);
-            }
-            return -4;
-        } catch (Exception e) {
-            return -5;
-        }
-    }
-
-    private int sendPropV2(java.io.FileDescriptor fd, String name, String value) {
-        try {
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            writeUint32LE(baos, 2);
-            int nameLen = name.getBytes(StandardCharsets.UTF_8).length + 1;
-            int valueLen = value.getBytes(StandardCharsets.UTF_8).length + 1;
-            int totalLen = nameLen + valueLen;
-            writeUint32LE(baos, totalLen);
-            baos.write(name.getBytes(StandardCharsets.UTF_8));
-            baos.write(0);
-            baos.write(value.getBytes(StandardCharsets.UTF_8));
-            baos.write(0);
-            byte[] data = baos.toByteArray();
-            OutputStream os = new FileOutputStream(fd);
-            os.write(data);
-            os.flush();
-
-            InputStream is = new FileInputStream(fd);
-            byte[] resultBytes = new byte[4];
-            int read = is.read(resultBytes);
-            if (read == 4) {
-                return readUint32LE(resultBytes, 0);
-            }
-            return -4;
-        } catch (Exception e) {
-            return -5;
-        }
-    }
-
-    private void verifyAndShowHello(final String propName, final String expectedValue) {
-        handler.post(() -> {
-            try {
-                Class<?> systemProperties = Class.forName("android.os.SystemProperties");
-                Method get = systemProperties.getMethod("get", String.class);
-                String actual = (String) get.invoke(null, propName);
-                if (expectedValue.equals(actual)) {
-                    String msg = "Hello World! (Property " + propName + " = " + actual + ")";
-                    appendLog("[HELLO] " + msg);
-                    Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
-                    tvStatus.setText("HELLO WORLD!");
-                } else {
-                    appendLog("[HELLO] Property value mismatch: expected " + expectedValue + ", got " + actual);
+            boolean responded = false;
+            for (String cmd : commands) {
+                if (stopRequested.get()) break;
+                try {
+                    os.write(cmd.getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                    String resp = readWithTimeout(is, 500);
+                    if (resp != null && !resp.isEmpty()) {
+                        appendLog("  CMD[" + cmd.trim() + "] -> " + resp);
+                        responded = true;
+                        break;
+                    } else {
+                        appendLog("  CMD[" + cmd.trim() + "] -> (no response)");
+                    }
+                } catch (Exception e) {
+                    appendLog("  CMD[" + cmd.trim() + "] error: " + e.getMessage());
                 }
-            } catch (Exception e) {
-                appendLog("[HELLO] Reflection error: " + e.getMessage());
-                Toast.makeText(MainActivity.this, "Hello World! (set via property)", Toast.LENGTH_LONG).show();
-                tvStatus.setText("HELLO WORLD (fallback)");
+                try { Thread.sleep(50); } catch (InterruptedException ignored) {}
             }
-        });
-    }
 
-    private String decodeError(int code) {
-        switch (code) {
-            case 0: return "SUCCESS";
-            case 0x1b: return "PROP_ERROR_INVALID_NAME";
-            case 0x1c: return "PROP_ERROR_INVALID_VALUE";
-            case 0x1d: return "PROP_ERROR_PERMISSION_DENIED";
-            case -1: return "Failed to get FD";
-            case -2: return "Invalid FD";
-            case -3: return "Exception";
-            case -4: return "Read error";
-            case -5: return "Write error";
-            default: return "unknown (" + code + ")";
+            if (!responded) {
+                appendLog("  No response to any hello command");
+            }
+
+            os.close();
+            is.close();
+            pfd.close();
+        } catch (Exception e) {
+            appendLog("  Hello test error: " + e.toString());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
         }
     }
 
-    private void writeUint32LE(ByteArrayOutputStream baos, int value) {
-        baos.write(value & 0xFF);
-        baos.write((value >> 8) & 0xFF);
-        baos.write((value >> 16) & 0xFF);
-        baos.write((value >> 24) & 0xFF);
-    }
+    private void testPropertyServiceReadOnly() {
+        appendLog("[PROP-READ] Reading properties via SystemProperties");
+        String[] testProps = {
+            "sys.retaildemo.enabled",
+            "persist.sys.timezone",
+            "ro.build.version.release",
+            "ro.product.model",
+            "persist.sys.language"
+        };
 
-    private int readUint32LE(byte[] data, int offset) {
-        return (data[offset] & 0xFF) |
-               ((data[offset + 1] & 0xFF) << 8) |
-               ((data[offset + 2] & 0xFF) << 16) |
-               ((data[offset + 3] & 0xFF) << 24);
+        try {
+            Class<?> spClass = Class.forName("android.os.SystemProperties");
+            Method getMethod = spClass.getMethod("get", String.class);
+            for (String prop : testProps) {
+                String value = (String) getMethod.invoke(null, prop);
+                appendLog("[PROP] " + prop + " = " + (value != null ? value : "(null)"));
+            }
+        } catch (Exception e) {
+            appendLog("[PROP-READ] Reflection error: " + e.getMessage());
+        }
     }
 }
