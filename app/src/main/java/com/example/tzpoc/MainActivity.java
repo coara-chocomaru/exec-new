@@ -59,6 +59,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public static native ParcelFileDescriptor nativeConnectSocket(IMinkSocketFd tzService, String path, int[] handleArr);
+    public static native String nativeReadFile(String path);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -164,11 +165,10 @@ public class MainActivity extends AppCompatActivity {
         appendLog("========================================");
         appendLog("========== Socket Information Dump ==========");
 
-        // 読み取り対象のソケットと、送信するコマンド（プロトコルが分からないものはダミー）
         String[][] socketCommands = {
             {"/dev/socket/mdnsd", "help\n", "status\n", "version\n", "list\n"},
             {"/dev/socket/tcm", "help\n", "status\n", "version\n", "list\n"},
-            {"/dev/socket/fwmarkd", "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"}, // 16バイトゼロ（ダミー）
+            {"/dev/socket/fwmarkd", "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"},
             {"/dev/socket/dnsproxyd", "help\n", "status\n", "version\n", "list\n"},
             {"/dev/socket/logd", "help\n", "status\n", "version\n", "list\n"},
             {"/dev/socket/netd", "help\n", "status\n", "version\n", "list\n"},
@@ -197,7 +197,6 @@ public class MainActivity extends AppCompatActivity {
                 OutputStream os = new FileOutputStream(fdesc);
                 InputStream is = new FileInputStream(fdesc);
 
-                // 各コマンドを送信して応答を読み取る
                 for (int i = 1; i < entry.length; i++) {
                     if (stopRequested.get()) break;
                     String cmd = entry[i];
@@ -205,7 +204,6 @@ public class MainActivity extends AppCompatActivity {
                     try {
                         os.write(cmd.getBytes(StandardCharsets.UTF_8));
                         os.flush();
-                        // 応答を最大 2KB まで読み取り
                         byte[] buffer = new byte[2048];
                         int totalRead = 0;
                         long startTime = System.currentTimeMillis();
@@ -239,12 +237,10 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // システムプロパティのダンプ（リフレクション経由）
         appendLog("========== System Properties Dump ==========");
         try {
             Class<?> spClass = Class.forName("android.os.SystemProperties");
             Method getMethod = spClass.getMethod("get", String.class);
-            // よく使われるプロパティを列挙
             String[] props = {
                 "ro.build.version.release",
                 "ro.product.model",
@@ -266,7 +262,6 @@ public class MainActivity extends AppCompatActivity {
             appendLog("[PROP] Reflection error: " + e.getMessage());
         }
 
-        // /proc ファイルの読み取り（JNI経由）
         appendLog("========== /proc Info Dump ==========");
         String[] procFiles = {
             "/proc/version",
@@ -297,9 +292,6 @@ public class MainActivity extends AppCompatActivity {
         saveLog();
         finishTest();
     }
-
-    // ファイル読み取り用のJNIヘルパー（nativeReadFileは実装済みと仮定）
-    private native String nativeReadFile(String path);
 
     private void appendLog(final String msg) {
         String ts = new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date());
