@@ -62,7 +62,7 @@ JNIEXPORT jstring JNICALL Java_com_example_tzpoc_MainActivity_nativeReadFile
         LOGE("open failed: %s", strerror(errno));
         return NULL;
     }
-    char buf[4096];
+    char buf[8192];
     ssize_t len = read(fd, buf, sizeof(buf) - 1);
     close(fd);
     if (len <= 0) return NULL;
