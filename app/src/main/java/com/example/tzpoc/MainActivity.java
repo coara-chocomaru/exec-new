@@ -32,6 +32,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -225,6 +226,10 @@ public class MainActivity extends AppCompatActivity {
             appendLog("========== Interacting with successful sockets ==========");
             for (String s : successSockets) {
                 if (stopRequested.get()) break;
+                if (s.equals("/dev/socket/property_service")) {
+                    appendLog("[INTERACT] Skipping property_service to avoid corruption");
+                    continue;
+                }
                 interactWithSocket(s);
             }
         }
@@ -427,17 +432,41 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
 
-            appendLog("[PROP] Test A (hello_a): Sending PROP_MSG_SETPROP...");
-            boolean resultA = testSetPropV1(fdesc, "hello_a", "Hello World from A!");
-            appendLog("[PROP] Test A result: " + (resultA ? "SUCCESS" : "FAIL"));
+            String[] propNames = {"test.hello", "persist.sys.hello", "debug.hello", "vendor.hello"};
+            String propValue = "HelloWorld";
+            boolean anySuccess = false;
 
-            appendLog("[PROP] Test B (hello_b): Sending PROP_MSG_SETPROP2...");
-            boolean resultB = testSetPropV2(fdesc, "hello_b", "Hello World from B! (longer test)");
-            appendLog("[PROP] Test B result: " + (resultB ? "SUCCESS" : "FAIL"));
+            for (String name : propNames) {
+                if (stopRequested.get()) break;
+                appendLog("[PROP] Trying with name: " + name);
+                boolean result = testSetPropV2WithName(fdesc, name, propValue);
+                if (result) {
+                    anySuccess = true;
+                    appendLog("[PROP] SUCCESS setting " + name + " = " + propValue);
+                    showHelloWorld(name, propValue);
+                    break;
+                } else {
+                    appendLog("[PROP] FAILED setting " + name);
+                }
+            }
 
-            appendLog("[PROP] Test C (hello_c): Sending malformed data...");
-            boolean resultC = testMalformed(fdesc);
-            appendLog("[PROP] Test C result: " + (resultC ? "SUCCESS (unexpected?)" : "FAIL (expected)"));
+            if (!anySuccess) {
+                appendLog("[PROP] All attempts failed. Trying old protocol...");
+                for (String name : propNames) {
+                    if (stopRequested.get()) break;
+                    boolean result = testSetPropV1WithName(fdesc, name, propValue);
+                    if (result) {
+                        anySuccess = true;
+                        appendLog("[PROP] V1 SUCCESS setting " + name + " = " + propValue);
+                        showHelloWorld(name, propValue);
+                        break;
+                    }
+                }
+            }
+
+            if (!anySuccess) {
+                appendLog("[PROP] No success. Check permissions or protocol.");
+            }
 
         } catch (Exception e) {
             appendLog("[PROP] Test exception: " + e.toString());
@@ -448,7 +477,43 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private boolean testSetPropV1(java.io.FileDescriptor fd, String name, String value) {
+    private boolean testSetPropV2WithName(java.io.FileDescriptor fd, String name, String value) {
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            writeUint32LE(baos, 2);
+            int nameLen = name.getBytes(StandardCharsets.UTF_8).length + 1;
+            int valueLen = value.getBytes(StandardCharsets.UTF_8).length + 1;
+            int totalLen = nameLen + valueLen;
+            writeUint32LE(baos, totalLen);
+            baos.write(name.getBytes(StandardCharsets.UTF_8));
+            baos.write(0);
+            baos.write(value.getBytes(StandardCharsets.UTF_8));
+            baos.write(0);
+
+            byte[] data = baos.toByteArray();
+            appendLog("[PROP-V2] Sending " + data.length + " bytes: " + bytesToHex(data));
+            OutputStream os = new FileOutputStream(fd);
+            os.write(data);
+            os.flush();
+
+            InputStream is = new FileInputStream(fd);
+            byte[] resultBytes = new byte[4];
+            int read = is.read(resultBytes);
+            if (read == 4) {
+                int result = readUint32LE(resultBytes, 0);
+                appendLog("[PROP-V2] Server returned: " + result + " (0=success)");
+                return result == 0;
+            } else {
+                appendLog("[PROP-V2] Failed to read response, read " + read + " bytes");
+                return false;
+            }
+        } catch (Exception e) {
+            appendLog("[PROP-V2] Error: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean testSetPropV1WithName(java.io.FileDescriptor fd, String name, String value) {
         try {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             writeUint32LE(baos, 1);
@@ -466,6 +531,7 @@ public class MainActivity extends AppCompatActivity {
             }
 
             byte[] data = baos.toByteArray();
+            appendLog("[PROP-V1] Sending " + data.length + " bytes: " + bytesToHex(data));
             OutputStream os = new FileOutputStream(fd);
             os.write(data);
             os.flush();
@@ -475,73 +541,47 @@ public class MainActivity extends AppCompatActivity {
             int read = is.read(resultBytes);
             if (read == 4) {
                 int result = readUint32LE(resultBytes, 0);
-                appendLog("[PROP-A] Server returned: " + result + " (0=" + (result == 0 ? "SUCCESS" : "FAIL") + ")");
+                appendLog("[PROP-V1] Server returned: " + result + " (0=success)");
                 return result == 0;
+            } else {
+                appendLog("[PROP-V1] Failed to read response, read " + read + " bytes");
+                return false;
             }
-            return false;
         } catch (Exception e) {
-            appendLog("[PROP-A] Error: " + e.getMessage());
+            appendLog("[PROP-V1] Error: " + e.getMessage());
             return false;
         }
     }
 
-    private boolean testSetPropV2(java.io.FileDescriptor fd, String name, String value) {
-        try {
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            writeUint32LE(baos, 2);
-            int nameLen = name.getBytes(StandardCharsets.UTF_8).length + 1;
-            int valueLen = value.getBytes(StandardCharsets.UTF_8).length + 1;
-            int totalLen = nameLen + valueLen;
-            writeUint32LE(baos, totalLen);
-            baos.write(name.getBytes(StandardCharsets.UTF_8));
-            baos.write(0);
-            baos.write(value.getBytes(StandardCharsets.UTF_8));
-            baos.write(0);
-
-            byte[] data = baos.toByteArray();
-            OutputStream os = new FileOutputStream(fd);
-            os.write(data);
-            os.flush();
-
-            InputStream is = new FileInputStream(fd);
-            byte[] resultBytes = new byte[4];
-            int read = is.read(resultBytes);
-            if (read == 4) {
-                int result = readUint32LE(resultBytes, 0);
-                appendLog("[PROP-B] Server returned: " + result + " (0=" + (result == 0 ? "SUCCESS" : "FAIL") + ")");
-                return result == 0;
+    private void showHelloWorld(final String propName, final String propValue) {
+        handler.post(() -> {
+            try {
+                Class<?> systemProperties = Class.forName("android.os.SystemProperties");
+                Method get = systemProperties.getMethod("get", String.class);
+                String value = (String) get.invoke(null, propName);
+                if (propValue.equals(value)) {
+                    String message = "Hello World! (Property " + propName + " = " + value + ")";
+                    appendLog("[HELLO] " + message);
+                    Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                    tvStatus.setText("HELLO WORLD!");
+                } else {
+                    appendLog("[HELLO] Property value mismatch: expected " + propValue + ", got " + value);
+                }
+            } catch (Exception e) {
+                appendLog("[HELLO] Reflection error: " + e.getMessage());
+                
+                Toast.makeText(MainActivity.this, "Hello World! (set via property)", Toast.LENGTH_LONG).show();
+                tvStatus.setText("HELLO WORLD (fallback)");
             }
-            return false;
-        } catch (Exception e) {
-            appendLog("[PROP-B] Error: " + e.getMessage());
-            return false;
-        }
+        });
     }
 
-    private boolean testMalformed(java.io.FileDescriptor fd) {
-        try {
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            writeUint32LE(baos, 2);
-            writeUint32LE(baos, 0xFFFFFFFF);
-
-            byte[] data = baos.toByteArray();
-            OutputStream os = new FileOutputStream(fd);
-            os.write(data);
-            os.flush();
-
-            InputStream is = new FileInputStream(fd);
-            byte[] resultBytes = new byte[4];
-            int read = is.read(resultBytes);
-            if (read == 4) {
-                int result = readUint32LE(resultBytes, 0);
-                appendLog("[PROP-C] Server returned: " + result + " (Expected error)");
-                return result != 0;
-            }
-            return false;
-        } catch (Exception e) {
-            appendLog("[PROP-C] Error: " + e.getMessage());
-            return false;
+    private String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02x ", b));
         }
+        return sb.toString();
     }
 
     private void writeUint32LE(ByteArrayOutputStream baos, int value) {
