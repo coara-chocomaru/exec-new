@@ -31,6 +31,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
@@ -234,7 +235,6 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // 全ソケットへのバッファオーバーフロー試験（最大 2MB）
         if (!successSockets.isEmpty()) {
             appendLog("========== Buffer Overflow Test on ALL Sockets via JNI ==========");
             testBufferOverflowAllSockets();
@@ -242,10 +242,13 @@ public class MainActivity extends AppCompatActivity {
             appendLog("========== No successful sockets, skipping overflow test ==========");
         }
 
-        // fwmarkd 専用プロトコル試験
         if (successSockets.contains(FWMARKD_SOCKET_PATH)) {
             appendLog("========== Fwmarkd Protocol Fuzzing Test ==========");
-            testFwmarkdProtocol();
+            try {
+                testFwmarkdProtocol();
+            } catch (IOException e) {
+                appendLog("[FW] IOException: " + e.getMessage());
+            }
         }
 
         appendLog("========== ALL TESTS COMPLETED ==========");
@@ -463,7 +466,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     // ===== fwmarkd プロトコルファジング試験 =====
-    private void testFwmarkdProtocol() {
+    private void testFwmarkdProtocol() throws IOException {
         appendLog("[FW] Starting fwmarkd protocol fuzzing test");
 
         // コマンドID候補（実際の enum 値は不明だが、0-20 をカバー）
@@ -486,45 +489,49 @@ public class MainActivity extends AppCompatActivity {
         }
 
         // ON_CONNECT を想定 (cmdId=1) + connectInfo (sockaddr_storage 128バイト)
-        ByteArrayOutputStream baos2 = new ByteArrayOutputStream();
-        baos2.write(1 & 0xFF); baos2.write((1 >> 8) & 0xFF); baos2.write((1 >> 16) & 0xFF); baos2.write((1 >> 24) & 0xFF);
-        for (int i = 0; i < 12; i++) baos2.write(0);
-        // connectInfo: 128バイトのダミー
-        byte[] dummyAddr = new byte[128];
-        // 適当に IP アドレスっぽいものを設定 (sin_family=AF_INET=2, port=80, address=127.0.0.1)
-        dummyAddr[0] = 2; // AF_INET
-        dummyAddr[2] = 0x50; // port 80 (big endian)
-        dummyAddr[3] = 0;
-        dummyAddr[4] = 127;
-        dummyAddr[5] = 0;
-        dummyAddr[6] = 0;
-        dummyAddr[7] = 1;
-        baos2.write(dummyAddr);
-        byte[] data2 = baos2.toByteArray();
-        int result2 = sendFwmarkCommand(data2);
-        appendLog("[FW] ON_CONNECT with connectInfo -> result=" + result2);
+        {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            baos.write(1 & 0xFF); baos.write((1 >> 8) & 0xFF); baos.write((1 >> 16) & 0xFF); baos.write((1 >> 24) & 0xFF);
+            for (int i = 0; i < 12; i++) baos.write(0);
+            // connectInfo: 128バイトのダミー
+            byte[] dummyAddr = new byte[128];
+            dummyAddr[0] = 2; // AF_INET
+            dummyAddr[2] = 0x50; // port 80 (big endian)
+            dummyAddr[3] = 0;
+            dummyAddr[4] = 127;
+            dummyAddr[5] = 0;
+            dummyAddr[6] = 0;
+            dummyAddr[7] = 1;
+            baos.write(dummyAddr);
+            byte[] data = baos.toByteArray();
+            int result = sendFwmarkCommand(data);
+            appendLog("[FW] ON_CONNECT with connectInfo -> result=" + result);
+        }
 
-        // SELECT_NETWORK (cmdId=6) を想定し、netId=1, uid=自身のuidを設定
-        ByteArrayOutputStream baos3 = new ByteArrayOutputStream();
-        baos3.write(6 & 0xFF); baos3.write((6 >> 8) & 0xFF); baos3.write((6 >> 16) & 0xFF); baos3.write((6 >> 24) & 0xFF);
-        int myUid = android.os.Process.myUid();
-        // uid (little endian)
-        baos3.write(myUid & 0xFF); baos3.write((myUid >> 8) & 0xFF); baos3.write((myUid >> 16) & 0xFF); baos3.write((myUid >> 24) & 0xFF);
-        // netId=1 (4 bytes)
-        baos3.write(1 & 0xFF); baos3.write(0); baos3.write(0); baos3.write(0);
-        // trafficCtrlInfo=0 (4 bytes)
-        for (int i = 0; i < 4; i++) baos3.write(0);
-        byte[] data3 = baos3.toByteArray();
-        int result3 = sendFwmarkCommand(data3);
-        appendLog("[FW] SELECT_NETWORK (netId=1) -> result=" + result3);
+        // SELECT_NETWORK (cmdId=6) を想定し、uid を変化させて試験
+        int[] testUids = {android.os.Process.myUid(), 0, 1000, 9999, 10000};
+        for (int uid : testUids) {
+            if (stopRequested.get()) break;
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            baos.write(6 & 0xFF); baos.write((6 >> 8) & 0xFF); baos.write((6 >> 16) & 0xFF); baos.write((6 >> 24) & 0xFF);
+            // uid
+            baos.write(uid & 0xFF); baos.write((uid >> 8) & 0xFF); baos.write((uid >> 16) & 0xFF); baos.write((uid >> 24) & 0xFF);
+            // netId=1
+            baos.write(1 & 0xFF); baos.write(0); baos.write(0); baos.write(0);
+            // trafficCtrlInfo=0
+            for (int i = 0; i < 4; i++) baos.write(0);
+            byte[] data = baos.toByteArray();
+            int result = sendFwmarkCommand(data);
+            appendLog("[FW] SELECT_NETWORK uid=" + uid + " netId=1 -> result=" + result);
+        }
 
-        // 超大データ（1KB）を送信してエラーハンドリングを確認
+        // 超大データ（1KB）を送信
         byte[] bigData = new byte[1024];
         for (int i = 0; i < bigData.length; i++) bigData[i] = (byte) (i & 0xFF);
         int result4 = sendFwmarkCommand(bigData);
         appendLog("[FW] 1KB random data -> result=" + result4);
 
-        // 長さが中途半端なデータ（例えば 20 バイト）を送信
+        // 長さが中途半端なデータ（20 バイト）
         byte[] midData = new byte[20];
         for (int i = 0; i < midData.length; i++) midData[i] = (byte) (i & 0xFF);
         int result5 = sendFwmarkCommand(midData);
@@ -556,7 +563,7 @@ public class MainActivity extends AppCompatActivity {
             byte[] buf = new byte[4];
             int read = is.read(buf);
             if (read == 4) {
-
+                // little endian
                 return (buf[0] & 0xFF) |
                        ((buf[1] & 0xFF) << 8) |
                        ((buf[2] & 0xFF) << 16) |
