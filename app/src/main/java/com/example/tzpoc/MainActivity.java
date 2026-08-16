@@ -569,7 +569,7 @@ public class MainActivity extends AppCompatActivity {
                 }
             } catch (Exception e) {
                 appendLog("[HELLO] Reflection error: " + e.getMessage());
-                
+                // Fallback: just show a toast
                 Toast.makeText(MainActivity.this, "Hello World! (set via property)", Toast.LENGTH_LONG).show();
                 tvStatus.setText("HELLO WORLD (fallback)");
             }
