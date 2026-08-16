@@ -12,6 +12,7 @@
 #define LOG_TAG "PocJNI"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
 static JavaVM* g_vm = NULL;
 
@@ -69,4 +70,52 @@ JNIEXPORT jstring JNICALL Java_com_example_tzpoc_MainActivity_nativeReadFile
     buf[len] = '\0';
     jstring result = (*env)->NewStringUTF(env, buf);
     return result;
+}
+
+JNIEXPORT jint JNICALL Java_com_example_tzpoc_MainActivity_nativeSendLongData
+  (JNIEnv* env, jclass clazz, jobject pfdObj, jbyteArray data, jint len) {
+    LOGI("nativeSendLongData called, len=%d", len);
+    if (pfdObj == NULL || data == NULL) {
+        LOGE("Invalid parameters");
+        return -1;
+    }
+    jclass pfdClass = (*env)->GetObjectClass(env, pfdObj);
+    jmethodID getFdMethod = (*env)->GetMethodID(env, pfdClass, "getFileDescriptor", "()Ljava/io/FileDescriptor;");
+    if (getFdMethod == NULL) {
+        LOGE("Failed to find getFileDescriptor method");
+        return -1;
+    }
+    jobject fdObj = (*env)->CallObjectMethod(env, pfdObj, getFdMethod);
+    if (fdObj == NULL) {
+        LOGE("Failed to get FileDescriptor");
+        return -1;
+    }
+
+    jclass fdClass = (*env)->GetObjectClass(env, fdObj);
+    jfieldID descField = (*env)->GetFieldID(env, fdClass, "descriptor", "I");
+    if (descField == NULL) {
+        LOGE("Failed to find descriptor field");
+        return -1;
+    }
+    jint fd = (*env)->GetIntField(env, fdObj, descField);
+    if (fd < 0) {
+        LOGE("Invalid FD: %d", fd);
+        return -1;
+    }
+
+    jbyte *buf = (*env)->GetByteArrayElements(env, data, NULL);
+    if (buf == NULL) {
+        LOGE("Failed to get byte array");
+        return -1;
+    }
+
+    ssize_t written = write(fd, buf, len);
+    if (written < 0) {
+        LOGE("write failed: %s", strerror(errno));
+    } else {
+        LOGI("Successfully wrote %zd bytes", written);
+    }
+
+    (*env)->ReleaseByteArrayElements(env, data, buf, JNI_ABORT);
+    return (jint)written;
 }
