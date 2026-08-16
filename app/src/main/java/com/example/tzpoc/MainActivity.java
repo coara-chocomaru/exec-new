@@ -31,6 +31,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.io.RandomAccessFile;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
@@ -447,6 +448,7 @@ public class MainActivity extends AppCompatActivity {
             java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
             if (fdesc == null || !fdesc.valid()) {
                 appendLog("  Invalid FD");
+                pfd.close();
                 return;
             }
 
@@ -548,7 +550,6 @@ public class MainActivity extends AppCompatActivity {
                     continue;
                 }
 
-                // Read
                 FileInputStream fis = new FileInputStream(fdesc);
                 byte[] buffer = new byte[256];
                 int len = fis.read(buffer);
@@ -559,24 +560,19 @@ public class MainActivity extends AppCompatActivity {
                     appendLog("  Read returned " + len);
                 }
 
-                // Write test (preserve original)
                 if (len > 0) {
                     String original = new String(buffer, 0, len, StandardCharsets.UTF_8).trim();
                     String newValue = "TEST_" + System.currentTimeMillis();
-                    // Write back original to avoid corruption, but test write capability
-                    // First write new value
                     FileOutputStream fos = new FileOutputStream(fdesc);
                     fos.write(newValue.getBytes(StandardCharsets.UTF_8));
                     fos.flush();
                     appendLog("  Wrote: " + newValue);
-                    // Read back to verify
                     fis = new FileInputStream(fdesc);
                     len = fis.read(buffer);
                     if (len > 0) {
                         String readBack = new String(buffer, 0, len, StandardCharsets.UTF_8).trim();
                         appendLog("  Read back: " + readBack);
                     }
-                    // Restore original
                     fos = new FileOutputStream(fdesc);
                     fos.write(original.getBytes(StandardCharsets.UTF_8));
                     fos.flush();
@@ -612,12 +608,11 @@ public class MainActivity extends AppCompatActivity {
             OutputStream os = new FileOutputStream(fdesc);
             InputStream is = new FileInputStream(fdesc);
 
-            // Send dummy commands
             byte[][] dummies = {
                 "hello".getBytes(StandardCharsets.UTF_8),
                 "status".getBytes(StandardCharsets.UTF_8),
                 "version".getBytes(StandardCharsets.UTF_8),
-                "\x00\x01\x02\x03".getBytes(StandardCharsets.ISO_8859_1)
+                new byte[]{0x00, 0x01, 0x02, 0x03}
             };
 
             for (byte[] data : dummies) {
@@ -673,55 +668,39 @@ public class MainActivity extends AppCompatActivity {
                     continue;
                 }
 
-                FileInputStream fis = new FileInputStream(fdesc);
-                FileOutputStream fos = new FileOutputStream(fdesc);
-
-                // Read first 512 bytes (sector)
+                RandomAccessFile raf = new RandomAccessFile(fdesc, "rw");
                 byte[] buffer = new byte[512];
-                int len = fis.read(buffer);
+
+                raf.seek(0);
+                int len = raf.read(buffer);
                 if (len > 0) {
                     appendLog("  Read " + len + " bytes from start");
-                    // Show first few bytes as hex
                     StringBuilder hex = new StringBuilder();
                     for (int i = 0; i < Math.min(16, len); i++) {
                         hex.append(String.format("%02x ", buffer[i]));
                     }
                     appendLog("  First bytes: " + hex.toString());
 
-                    // Write test: write the same data back (safe)
-                    fos.write(buffer, 0, len);
-                    fos.flush();
-                    appendLog("  Wrote " + len + " bytes back (restored)");
+                    byte[] orig = new byte[len];
+                    System.arraycopy(buffer, 0, orig, 0, len);
 
-                    // Optionally, try writing a small marker at offset 0 (but restore)
                     byte[] marker = "HELLO".getBytes(StandardCharsets.UTF_8);
-                    // Save original first 5 bytes
-                    byte[] orig5 = new byte[5];
-                    System.arraycopy(buffer, 0, orig5, 0, 5);
-                    // Write marker
-                    fos = new FileOutputStream(fdesc);
-                    fos.write(marker);
-                    fos.flush();
-                    appendLog("  Wrote marker 'HELLO' at offset 0");
-
-                    // Read back to verify
-                    fis = new FileInputStream(fdesc);
+                    raf.seek(0);
+                    raf.write(marker);
+                    raf.seek(0);
                     byte[] check = new byte[5];
-                    fis.read(check);
+                    raf.read(check);
                     String checkStr = new String(check, StandardCharsets.UTF_8);
-                    appendLog("  Read back: " + checkStr);
+                    appendLog("  Wrote marker, read back: " + checkStr);
 
-                    // Restore original
-                    fos = new FileOutputStream(fdesc);
-                    fos.write(orig5);
-                    fos.flush();
-                    appendLog("  Restored original 5 bytes");
+                    raf.seek(0);
+                    raf.write(orig);
+                    appendLog("  Restored original " + len + " bytes");
                 } else {
                     appendLog("  Read returned " + len);
                 }
 
-                fis.close();
-                fos.close();
+                raf.close();
                 pfd.close();
             } catch (Exception e) {
                 appendLog("  Error: " + e.getMessage());
