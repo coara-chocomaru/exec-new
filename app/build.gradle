@@ -14,9 +14,7 @@ android {
         multiDexEnabled false
 
         externalNativeBuild {
-            cmake {
-                cppFlags "-std=c++17"
-                arguments "-DANDROID_STL=c++_shared"
+            ndkBuild {
             }
         }
 
@@ -35,7 +33,7 @@ android {
     }
 
     externalNativeBuild {
-        cmake {
+        ndkBuild {
             path file("src/main/cpp/Android.mk")
         }
     }
