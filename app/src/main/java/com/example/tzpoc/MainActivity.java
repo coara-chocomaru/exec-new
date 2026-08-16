@@ -229,6 +229,13 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
+        if (successSockets.contains("/dev/socket/property_service")) {
+            appendLog("========== Property Service Specific Tests ==========");
+            testPropertyService();
+        } else {
+            appendLog("========== Property Service not available, skipping tests ==========");
+        }
+
         appendLog("========== ALL TESTS COMPLETED ==========");
         appendLog("========================================");
         updateStatus("Done");
@@ -403,5 +410,151 @@ public class MainActivity extends AppCompatActivity {
         if (testThread != null) testThread.interrupt();
         if (isBound) unbindService(tzConnection);
         saveLog();
+    }
+
+    private void testPropertyService() {
+        ParcelFileDescriptor pfd = null;
+        try {
+            int[] iArr = new int[1];
+            pfd = mTZService.a("/dev/socket/property_service", iArr);
+            if (pfd == null) {
+                appendLog("[PROP] Failed to get FD for property_service");
+                return;
+            }
+            java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
+            if (fdesc == null || !fdesc.valid()) {
+                appendLog("[PROP] Invalid FD");
+                return;
+            }
+
+            appendLog("[PROP] Test A (hello_a): Sending PROP_MSG_SETPROP...");
+            boolean resultA = testSetPropV1(fdesc, "hello_a", "Hello World from A!");
+            appendLog("[PROP] Test A result: " + (resultA ? "SUCCESS" : "FAIL"));
+
+            appendLog("[PROP] Test B (hello_b): Sending PROP_MSG_SETPROP2...");
+            boolean resultB = testSetPropV2(fdesc, "hello_b", "Hello World from B! (longer test)");
+            appendLog("[PROP] Test B result: " + (resultB ? "SUCCESS" : "FAIL"));
+
+            appendLog("[PROP] Test C (hello_c): Sending malformed data...");
+            boolean resultC = testMalformed(fdesc);
+            appendLog("[PROP] Test C result: " + (resultC ? "SUCCESS (unexpected?)" : "FAIL (expected)"));
+
+        } catch (Exception e) {
+            appendLog("[PROP] Test exception: " + e.toString());
+        } finally {
+            if (pfd != null) {
+                try { pfd.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private boolean testSetPropV1(java.io.FileDescriptor fd, String name, String value) {
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            writeUint32LE(baos, 1);
+            byte[] nameBytes = name.getBytes(StandardCharsets.US_ASCII);
+            baos.write(nameBytes);
+            baos.write(0);
+            for (int i = nameBytes.length + 1; i < 32; i++) {
+                baos.write(0);
+            }
+            byte[] valueBytes = value.getBytes(StandardCharsets.UTF_8);
+            baos.write(valueBytes);
+            baos.write(0);
+            for (int i = valueBytes.length + 1; i < 92; i++) {
+                baos.write(0);
+            }
+
+            byte[] data = baos.toByteArray();
+            OutputStream os = new FileOutputStream(fd);
+            os.write(data);
+            os.flush();
+
+            InputStream is = new FileInputStream(fd);
+            byte[] resultBytes = new byte[4];
+            int read = is.read(resultBytes);
+            if (read == 4) {
+                int result = readUint32LE(resultBytes, 0);
+                appendLog("[PROP-A] Server returned: " + result + " (0=" + (result == 0 ? "SUCCESS" : "FAIL") + ")");
+                return result == 0;
+            }
+            return false;
+        } catch (Exception e) {
+            appendLog("[PROP-A] Error: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean testSetPropV2(java.io.FileDescriptor fd, String name, String value) {
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            writeUint32LE(baos, 2);
+            int nameLen = name.getBytes(StandardCharsets.UTF_8).length + 1;
+            int valueLen = value.getBytes(StandardCharsets.UTF_8).length + 1;
+            int totalLen = nameLen + valueLen;
+            writeUint32LE(baos, totalLen);
+            baos.write(name.getBytes(StandardCharsets.UTF_8));
+            baos.write(0);
+            baos.write(value.getBytes(StandardCharsets.UTF_8));
+            baos.write(0);
+
+            byte[] data = baos.toByteArray();
+            OutputStream os = new FileOutputStream(fd);
+            os.write(data);
+            os.flush();
+
+            InputStream is = new FileInputStream(fd);
+            byte[] resultBytes = new byte[4];
+            int read = is.read(resultBytes);
+            if (read == 4) {
+                int result = readUint32LE(resultBytes, 0);
+                appendLog("[PROP-B] Server returned: " + result + " (0=" + (result == 0 ? "SUCCESS" : "FAIL") + ")");
+                return result == 0;
+            }
+            return false;
+        } catch (Exception e) {
+            appendLog("[PROP-B] Error: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean testMalformed(java.io.FileDescriptor fd) {
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            writeUint32LE(baos, 2);
+            writeUint32LE(baos, 0xFFFFFFFF);
+
+            byte[] data = baos.toByteArray();
+            OutputStream os = new FileOutputStream(fd);
+            os.write(data);
+            os.flush();
+
+            InputStream is = new FileInputStream(fd);
+            byte[] resultBytes = new byte[4];
+            int read = is.read(resultBytes);
+            if (read == 4) {
+                int result = readUint32LE(resultBytes, 0);
+                appendLog("[PROP-C] Server returned: " + result + " (Expected error)");
+                return result != 0;
+            }
+            return false;
+        } catch (Exception e) {
+            appendLog("[PROP-C] Error: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private void writeUint32LE(ByteArrayOutputStream baos, int value) {
+        baos.write(value & 0xFF);
+        baos.write((value >> 8) & 0xFF);
+        baos.write((value >> 16) & 0xFF);
+        baos.write((value >> 24) & 0xFF);
+    }
+
+    private int readUint32LE(byte[] data, int offset) {
+        return (data[offset] & 0xFF) |
+               ((data[offset + 1] & 0xFF) << 8) |
+               ((data[offset + 2] & 0xFF) << 16) |
+               ((data[offset + 3] & 0xFF) << 24);
     }
 }
