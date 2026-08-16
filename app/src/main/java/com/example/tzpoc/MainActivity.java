@@ -31,6 +31,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -286,7 +287,11 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private byte[] buildDnsQuery(String name, int qtype) {
+    /**
+     * DNSクエリ（RFC 1035）を構築する。
+     * @throws IOException ByteArrayOutputStreamのwriteで発生する可能性（実際には発生しないが、シグネチャに宣言）
+     */
+    private byte[] buildDnsQuery(String name, int qtype) throws IOException {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         // ヘッダー (12 bytes): ID=0x1234, QR=0, Opcode=0, AA=0, TC=0, RD=1, RA=0, Z=0, RCODE=0, QDCOUNT=1
         baos.write(0x12); baos.write(0x34); // ID
