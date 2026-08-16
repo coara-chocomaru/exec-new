@@ -30,7 +30,6 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
-import java.io.ByteArrayOutputStream;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
@@ -58,6 +57,7 @@ public class MainActivity extends AppCompatActivity {
     static {
         System.loadLibrary("pocjni");
     }
+
     public static native ParcelFileDescriptor nativeConnectSocket(IMinkSocketFd tzService, String path, int[] handleArr);
     public static native String nativeReadFile(String path);
 
@@ -165,7 +165,6 @@ public class MainActivity extends AppCompatActivity {
         appendLog("========================================");
         appendLog("========== TZAccess Socket Scan ==========");
 
-        // 候補ソケット (システムソケット)
         String[] allSockets = {
             "/dev/socket/mdnsd",
             "/dev/socket/tcm",
@@ -187,35 +186,42 @@ public class MainActivity extends AppCompatActivity {
         }
 
         appendLog("========== SUCCESSFUL SOCKETS (Java) ==========");
-        for (String s : successSockets) {
-            appendLog("  " + s);
+        if (successSockets.isEmpty()) {
+            appendLog("  No successful sockets");
+        } else {
+            for (String s : successSockets) {
+                appendLog("  " + s);
+            }
         }
 
-        // JNI 経由でも同じテストを実行
         appendLog("========== Testing via JNI ==========");
-        if (mTZService != null) {
+        if (mTZService != null && !successSockets.isEmpty()) {
             for (String path : successSockets) {
                 if (stopRequested.get()) break;
                 testSocketJNI(path);
             }
+        } else {
+            appendLog("  No successful sockets or TZ service null");
         }
 
-        // JNI でファイル読み取りテスト
         appendLog("========== JNI File Read Test ==========");
         String[] files = {"/proc/version", "/proc/self/status"};
         for (String f : files) {
             if (stopRequested.get()) break;
-            String content = nativeReadFile(f);
-            if (content != null) {
-                appendLog("[JNI] Read " + f + ": " + content.substring(0, Math.min(200, content.length())));
-            } else {
-                appendLog("[JNI] Failed to read " + f);
+            try {
+                String content = nativeReadFile(f);
+                if (content != null && !content.isEmpty()) {
+                    appendLog("[JNI] Read " + f + ": " + content.substring(0, Math.min(200, content.length())));
+                } else {
+                    appendLog("[JNI] Failed to read " + f + " (empty or null)");
+                }
+            } catch (Exception e) {
+                appendLog("[JNI] Read " + f + " error: " + e.getMessage());
             }
         }
 
-        // 成功したソケットとの対話（Java）
         if (!successSockets.isEmpty()) {
-            appendLog("========== Interacting with successful sockets (Java) ==========");
+            appendLog("========== Interacting with successful sockets ==========");
             for (String s : successSockets) {
                 if (stopRequested.get()) break;
                 interactWithSocket(s);
