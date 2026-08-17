@@ -33,7 +33,7 @@ Java_com_example_tzpoc_MainActivity_nativeListDir(JNIEnv* env, jclass clazz, jst
     DIR* dir = opendir(cpath);
     (*env)->ReleaseStringUTFChars(env, path, cpath);
     if (dir == NULL) {
-        LOGE("opendir failed: %s", strerror(errno));
+        LOGE("opendir(%s) failed: %s", cpath, strerror(errno));
         return NULL;
     }
 
@@ -45,6 +45,10 @@ Java_com_example_tzpoc_MainActivity_nativeListDir(JNIEnv* env, jclass clazz, jst
     rewinddir(dir);
 
     jclass stringClass = (*env)->FindClass(env, "java/lang/String");
+    if (stringClass == NULL) {
+        closedir(dir);
+        return NULL;
+    }
     jobjectArray result = (*env)->NewObjectArray(env, count, stringClass, NULL);
     if (result == NULL) {
         closedir(dir);
@@ -55,8 +59,10 @@ Java_com_example_tzpoc_MainActivity_nativeListDir(JNIEnv* env, jclass clazz, jst
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_name[0] == '.') continue;
         jstring name = (*env)->NewStringUTF(env, entry->d_name);
-        (*env)->SetObjectArrayElement(env, result, idx++, name);
-        (*env)->DeleteLocalRef(env, name);
+        if (name != NULL) {
+            (*env)->SetObjectArrayElement(env, result, idx++, name);
+            (*env)->DeleteLocalRef(env, name);
+        }
     }
     closedir(dir);
     return result;
@@ -70,7 +76,7 @@ Java_com_example_tzpoc_MainActivity_nativeReadFile(JNIEnv* env, jclass clazz, js
     int fd = open(cpath, O_RDONLY);
     (*env)->ReleaseStringUTFChars(env, path, cpath);
     if (fd < 0) {
-        LOGE("open failed: %s", strerror(errno));
+        LOGE("open(%s) failed: %s", cpath, strerror(errno));
         return NULL;
     }
     char buf[8192];
@@ -78,5 +84,6 @@ Java_com_example_tzpoc_MainActivity_nativeReadFile(JNIEnv* env, jclass clazz, js
     close(fd);
     if (len <= 0) return NULL;
     buf[len] = '\0';
-    return (*env)->NewStringUTF(env, buf);
+    jstring result = (*env)->NewStringUTF(env, buf);
+    return result;
 }
