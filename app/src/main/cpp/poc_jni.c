@@ -30,8 +30,7 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
     LOGD("JNI_OnUnload");
 }
 
-// Helper: read file into string
-static char* read_file(const char* path) {
+static char* read_file_content(const char* path) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) return NULL;
     char* buf = malloc(8192);
@@ -73,8 +72,7 @@ Java_com_example_tzpoc_MainActivity_nativeBinderGetNodeInfo(JNIEnv* env, jclass 
     memset(&info, 0, sizeof(info));
     info.handle = handle;
     if (ioctl(fd, BINDER_GET_NODE_INFO_FOR_REF, &info) == 0) {
-        snprintf(result, sizeof(result), "Node info: strong=%u weak=%u reserved1=%u reserved2=%u reserved3=%u",
-                 info.strong_count, info.weak_count, info.reserved1, info.reserved2, info.reserved3);
+        snprintf(result, sizeof(result), "Node info: strong=%u weak=%u", info.strong_count, info.weak_count);
     } else {
         snprintf(result, sizeof(result), "BINDER_GET_NODE_INFO_FOR_REF failed: %s", strerror(errno));
     }
@@ -87,7 +85,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass 
     struct binder_write_read bwr;
     memset(&bwr, 0, sizeof(bwr));
 
-    // Build transaction command
     struct {
         uint32_t cmd;
         struct binder_transaction_data tdata;
@@ -98,13 +95,10 @@ Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass 
     tx.tdata.flags = flags;
     tx.tdata.data_size = 0;
     tx.tdata.offsets_size = 0;
-    tx.tdata.data.ptr.buffer = 0;
-    tx.tdata.data.ptr.offsets = 0;
 
     bwr.write_size = sizeof(tx);
     bwr.write_buffer = (binder_uintptr_t)&tx;
 
-    // Reserve read buffer for reply
     struct binder_transaction_data reply;
     bwr.read_size = sizeof(reply);
     bwr.read_buffer = (binder_uintptr_t)&reply;
@@ -112,11 +106,9 @@ Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass 
     int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
     if (ret == 0) {
         snprintf(result, sizeof(result), "Transaction sent, read_consumed=%llu", (unsigned long long)bwr.read_consumed);
-        if (bwr.read_consumed > 0) {
-            strcat(result, " (reply received)");
-        }
+        if (bwr.read_consumed > 0) strcat(result, " (reply received)");
     } else {
-        snprintf(result, sizeof(result), "BINDER_WRITE_READ transaction failed: %s", strerror(errno));
+        snprintf(result, sizeof(result), "BINDER_WRITE_READ failed: %s", strerror(errno));
     }
     return (*env)->NewStringUTF(env, result);
 }
@@ -211,7 +203,7 @@ Java_com_example_tzpoc_MainActivity_nativeBinderfsRead(JNIEnv* env, jclass clazz
     if (path == NULL) return NULL;
     const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
     if (cpath == NULL) return NULL;
-    char* content = read_file(cpath);
+    char* content = read_file_content(cpath);
     (*env)->ReleaseStringUTFChars(env, path, cpath);
     if (content == NULL) return NULL;
     jstring result = (*env)->NewStringUTF(env, content);
