@@ -51,10 +51,12 @@ android {
     buildTypes {
         debug {
             debuggable true
+            jniDebuggable true
             signingConfig signingConfigs.debug
         }
         release {
             debuggable true
+            jniDebuggable true
             minifyEnabled false
             shrinkResources false
             signingConfig file('release.jks').exists() ? signingConfigs.release : signingConfigs.debug
