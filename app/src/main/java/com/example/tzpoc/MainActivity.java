@@ -219,19 +219,23 @@ public class MainActivity extends AppCompatActivity {
         appendLog("[*] Testing /proc/self/oom_score_adj");
         testOomScoreAdj();
 
-        // 5. Bruteforce /sys readable files
+        // 5. SELinux and kptr related files readability
+        appendLog("[*] Testing SELinux and kptr related files");
+        exploreSelinuxAndKptr();
+
+        // 6. Bruteforce /sys for readable files (enhanced)
         appendLog("[*] Bruteforcing /sys for readable files");
         bruteforceSys();
 
-        // 6. Bruteforce /dev/block (mmcblk0p1 ~ p28, loop0~7)
-        appendLog("[*] Bruteforcing /dev/block for readable partitions (limited dump)");
+        // 7. Bruteforce /dev/block (all partitions)
+        appendLog("[*] Bruteforcing /dev/block for readable partitions (30MB dump)");
         bruteforceBlock();
 
-        // 7. Bruteforce /data for copyable files
+        // 8. Bruteforce /data for copyable files (depth limited)
         appendLog("[*] Bruteforcing /data for copyable files (depth limited)");
         bruteforceData();
 
-        // 8. Direct device open test (ion, hwbinder)
+        // 9. Direct device open test (ion, hwbinder)
         appendLog("[*] Testing direct open of /dev/ion");
         int ionFd = nativeOpenDevice("/dev/ion");
         appendLog("[DEV] /dev/ion open returned fd=" + ionFd);
@@ -257,7 +261,7 @@ public class MainActivity extends AppCompatActivity {
         finishTest();
     }
 
-    // ===== Socket test =====
+    // ===== Socket test (unchanged) =====
     private void testSocket(String path) {
         ParcelFileDescriptor pfd = null;
         try {
@@ -461,7 +465,6 @@ public class MainActivity extends AppCompatActivity {
 
     // ===== Property Service (AOSP 9) =====
     private void testPropertyServiceDeep() {
-        // Open new connection for property_service
         ParcelFileDescriptor pfd = null;
         try {
             int[] handle = new int[1];
@@ -477,12 +480,11 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
 
-            // Test cases based on property_service.cpp and property_type.h
             String[][] tests = {
                     {"persist.test.poc", "1"},
                     {"persist.test.poc", "2"},
                     {"test.prop", "value"},
-                    {"persist.test.long", "a".repeat(150)} // > PROP_VALUE_MAX (92) triggers error
+                    {"persist.test.long", "a".repeat(150)} // > 92 chars should fail
             };
 
             for (String[] test : tests) {
@@ -493,7 +495,6 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("[PROP] Set " + name + "=" + value + " => result: " + result + " (" + getPropertyErrorString(result) + ")");
             }
 
-            // Old format (PROP_MSG_SETPROP) - fixed length buffers
             int oldResult = sendPropertySet1(fd, "persist.test.old", "1");
             appendLog("[PROP] Old format set persist.test.old=1 => result: " + oldResult);
 
@@ -578,7 +579,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ===== Proc FD Exploration & Dumping (streaming up to 30MB) =====
+    // ===== Proc FD Exploration & Dumping =====
     private void exploreAndDumpProcFd() {
         File dumpDir = getDumpDir();
         if (dumpDir == null) {
@@ -601,13 +602,11 @@ public class MainActivity extends AppCompatActivity {
 
             appendLog("[PROC] " + link + " -> " + target);
 
-            // Try to read content if it's a file (skip pipes, sockets, anon_inodes)
             if (!target.startsWith("pipe:") && !target.startsWith("socket:") && !target.startsWith("anon_inode:")) {
                 String content = nativeReadFile(link);
                 if (content != null && !content.isEmpty()) {
                     appendLog("[PROC] " + link + " content (first 100): " + content.substring(0, Math.min(100, content.length())));
                 }
-                // Dump file to Download
                 String fileName = "fd_" + fdStr + "_" + new File(target).getName() + ".bin";
                 File outFile = new File(dumpDir, fileName);
                 boolean dumped = dumpFileToDownload(link, outFile, maxDumpSize);
@@ -669,13 +668,72 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ===== Bruteforce /sys =====
+    // ===== SELinux and kptr =====
+    private void exploreSelinuxAndKptr() {
+        String[] paths = {
+                "/proc/kallsyms",
+                "/proc/kptr_restrict",
+                "/proc/self/attr/current",
+                "/proc/self/attr/prev",
+                "/proc/self/attr/keycreate",
+                "/proc/self/attr/exec",
+                "/proc/self/attr/fscreate",
+                "/sys/kernel/security/",
+                "/sys/fs/selinux/policy",
+                "/sys/fs/selinux/status",
+                "/sys/fs/selinux/booleans/",
+                "/sys/fs/selinux/enforce",
+                "/sys/fs/selinux/load",
+                "/sys/kernel/debug/kptr_restrict",
+                "/sys/kernel/security/lsm"
+        };
+        for (String p : paths) {
+            if (stopRequested.get()) break;
+            File f = new File(p);
+            String result;
+            if (f.isDirectory()) {
+                String[] children = nativeListDir(p);
+                if (children != null) {
+                    appendLog("[SELINUX] " + p + " (dir) entries: " + children.length + " files");
+                    for (String child : children) {
+                        if (stopRequested.get()) break;
+                        String childPath = p + (p.endsWith("/") ? "" : "/") + child;
+                        String content = safeReadFile(childPath);
+                        if (content != null && !content.isEmpty()) {
+                            appendLog("[SELINUX] " + childPath + " = " + content.substring(0, Math.min(100, content.length())));
+                        }
+                    }
+                } else {
+                    appendLog("[SELINUX] " + p + " (dir) unreadable");
+                }
+            } else {
+                String content = safeReadFile(p);
+                if (content != null) {
+                    appendLog("[SELINUX] " + p + " = " + content.substring(0, Math.min(100, content.length())));
+                } else {
+                    appendLog("[SELINUX] " + p + " (unreadable)");
+                }
+            }
+        }
+    }
+
+    private String safeReadFile(String path) {
+        try {
+            return nativeReadFile(path);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // ===== Bruteforce /sys (enhanced) =====
     private void bruteforceSys() {
         String[] bases = {
                 "/sys/class/power_supply/battery/",
                 "/sys/devices/system/cpu/cpu0/cpufreq/",
                 "/sys/kernel/debug/",
-                "/sys/fs/"
+                "/sys/fs/",
+                "/sys/class/",
+                "/sys/devices/"
         };
         for (String base : bases) {
             if (stopRequested.get()) break;
@@ -693,54 +751,97 @@ public class MainActivity extends AppCompatActivity {
                             appendLog("[SYS] " + f.getAbsolutePath() + " (empty/unreadable)");
                         }
                     } catch (Exception e) {
-                        appendLog("[SYS] Error reading " + f.getAbsolutePath());
+                        // ignore
                     }
                 }
             }
         }
     }
 
-    // ===== Bruteforce /dev/block =====
+    // ===== Bruteforce /dev/block (all partitions) =====
     private void bruteforceBlock() {
         File dumpDir = getDumpDir();
         if (dumpDir == null) return;
 
-        for (int i = 1; i <= 28; i++) {
-            if (stopRequested.get()) break;
+        // mmcblk0p1~p30, mmcblk1p1~p16, sda1~sda16, dm-0~dm-15, loop0~loop15
+        String[] patterns = {
+                "mmcblk0p", 1, 30,
+                "mmcblk1p", 1, 16,
+                "sda", 1, 16,
+                "sdb", 1, 16,
+                "dm-", 0, 15,
+                "loop", 0, 15
+        };
+        // We'll implement loops programmatically.
+        for (int i = 1; i <= 30; i++) {
             String path = "/dev/block/mmcblk0p" + i;
-            File f = new File(path);
-            if (f.exists() && f.canRead()) {
-                appendLog("[BLK] Found " + path + ", size=" + f.length());
-                File out = new File(dumpDir, "mmcblk0p" + i + ".bin");
-                if (dumpFileToDownload(path, out, 30 * 1024 * 1024)) {
-                    appendLog("[BLK] Dumped first 30MB of " + path + " to " + out.getAbsolutePath());
-                } else {
-                    appendLog("[BLK] Failed to dump " + path);
-                }
-            }
+            tryDumpBlock(path, dumpDir);
         }
-        for (int i = 0; i <= 7; i++) {
-            String path = "/dev/block/loop" + i;
-            if (new File(path).exists()) {
-                appendLog("[BLK] Found " + path);
-                File out = new File(dumpDir, "loop" + i + ".bin");
-                dumpFileToDownload(path, out, 30 * 1024 * 1024);
+        for (int i = 1; i <= 16; i++) {
+            String path = "/dev/block/mmcblk1p" + i;
+            tryDumpBlock(path, dumpDir);
+        }
+        for (int i = 1; i <= 16; i++) {
+            String path = "/dev/block/sda" + i;
+            tryDumpBlock(path, dumpDir);
+            path = "/dev/block/sdb" + i;
+            tryDumpBlock(path, dumpDir);
+        }
+        for (int i = 0; i <= 15; i++) {
+            String path = "/dev/block/dm-" + i;
+            tryDumpBlock(path, dumpDir);
+            path = "/dev/block/loop" + i;
+            tryDumpBlock(path, dumpDir);
+        }
+        // Also try /dev/block/by-name/* symlinks
+        File byName = new File("/dev/block/by-name/");
+        if (byName.exists() && byName.isDirectory()) {
+            String[] links = byName.list();
+            if (links != null) {
+                for (String link : links) {
+                    if (stopRequested.get()) break;
+                    String path = "/dev/block/by-name/" + link;
+                    String target = nativeReadLink(path);
+                    if (target != null) {
+                        String realPath = "/dev/block/" + target;
+                        tryDumpBlock(realPath, dumpDir);
+                    }
+                }
             }
         }
     }
 
-    // ===== Bruteforce /data =====
+    private void tryDumpBlock(String path, File dumpDir) {
+        if (stopRequested.get()) return;
+        File f = new File(path);
+        if (f.exists() && f.canRead()) {
+            appendLog("[BLK] Found " + path + ", size=" + f.length());
+            String fileName = new File(path).getName() + ".bin";
+            File out = new File(dumpDir, fileName);
+            if (dumpFileToDownload(path, out, 30 * 1024 * 1024)) {
+                appendLog("[BLK] Dumped first 30MB of " + path + " to " + out.getAbsolutePath());
+            } else {
+                appendLog("[BLK] Failed to dump " + path);
+            }
+        }
+    }
+
+    // ===== Bruteforce /data (enhanced) =====
     private void bruteforceData() {
         String[] bases = {
                 "/data/local/tmp/",
-                "/data/data/com.example.tzpoc/",
-                "/data/misc/"
+                "/data/data/",
+                "/data/misc/",
+                "/data/system/",
+                "/data/apex/",
+                "/data/vendor/",
+                "/data/user/0/"
         };
         for (String base : bases) {
             if (stopRequested.get()) break;
             File dir = new File(base);
             if (!dir.exists()) continue;
-            List<File> files = listFilesRecursive(dir, 0, 2);
+            List<File> files = listFilesRecursive(dir, 0, 3); // depth 3 to avoid excessive recursion
             for (File f : files) {
                 if (stopRequested.get()) break;
                 if (f.isFile() && f.canRead()) {
