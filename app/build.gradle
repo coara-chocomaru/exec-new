@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    compileSdk 35
+    compileSdk 33
     namespace 'com.example.tzpoc'
 
     defaultConfig {
