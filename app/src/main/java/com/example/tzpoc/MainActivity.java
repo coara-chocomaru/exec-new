@@ -383,7 +383,6 @@ public class MainActivity extends AppCompatActivity {
             byte[] payload1 = buildCborLengthOverflow();
             byte[] resp1 = sendBinary(fd, payload1, 512, 2000);
             appendLog("[CBOR] Length overflow response: " + (resp1 != null ? "received " + resp1.length + " bytes" : "none"));
-
             byte[] payload2 = buildCborNestedArray(500);
             byte[] resp2 = sendBinary(fd, payload2, 512, 2000);
             appendLog("[CBOR] Nested array response: " + (resp2 != null ? "received " + resp2.length + " bytes" : "none"));
@@ -759,7 +758,8 @@ public class MainActivity extends AppCompatActivity {
             "/proc/self/attr/keycreate", "/proc/self/attr/exec", "/proc/self/attr/fscreate",
             "/sys/kernel/security/", "/sys/fs/selinux/policy", "/sys/fs/selinux/status",
             "/sys/fs/selinux/booleans/", "/sys/fs/selinux/enforce", "/sys/fs/selinux/load",
-            "/sys/kernel/debug/kptr_restrict", "/sys/kernel/security/lsm"
+            "/sys/kernel/debug/kptr_restrict", "/sys/kernel/security/lsm",
+            "/sys/fs/selinux/avc/cache_stats", "/sys/fs/selinux/avc/hash_stats"
         };
         for (String p : paths) {
             if (stopRequested.get()) break;
@@ -787,6 +787,60 @@ public class MainActivity extends AppCompatActivity {
                     appendLog("[SELINUX] " + p + " (unreadable)");
                 }
             }
+        }
+
+        // 追加：/sys/fs/selinux/ 以下を再帰的に探索
+        String selinuxPath = "/sys/fs/selinux";
+        File selinuxDir = new File(selinuxPath);
+        if (selinuxDir.exists() && selinuxDir.isDirectory()) {
+            appendLog("[SELINUX] Exploring " + selinuxPath);
+            List<File> files = listFilesRecursive(selinuxDir, 0, 2);
+            for (File f : files) {
+                if (stopRequested.get()) break;
+                if (f.isFile() && f.canRead()) {
+                    String content = safeReadFile(f.getAbsolutePath());
+                    if (content != null && !content.isEmpty()) {
+                        appendLog("[SELINUX] " + f.getAbsolutePath() + " = " + content.substring(0, Math.min(200, content.length())));
+                    } else {
+                        appendLog("[SELINUX] " + f.getAbsolutePath() + " (empty/unreadable)");
+                    }
+                }
+            }
+        } else {
+            appendLog("[SELINUX] " + selinuxPath + " does not exist or not accessible");
+        }
+
+        // SELinux enforce 書き込みテスト
+        try {
+            String result = nativeWriteFile("/sys/fs/selinux/enforce", "0");
+            appendLog("[SELINUX] Write enforce 0 result: " + result);
+            if ("OK".equals(result)) {
+                String newVal = nativeReadFile("/sys/fs/selinux/enforce");
+                appendLog("[SELINUX] New enforce: " + (newVal != null ? newVal.trim() : "null"));
+                // 元に戻す
+                nativeWriteFile("/sys/fs/selinux/enforce", "1");
+            }
+        } catch (Exception e) {
+            appendLog("[SELINUX] Write enforce failed: " + e.getMessage());
+        }
+
+        // SELinux access インターフェーステスト
+        testSelinuxAccess();
+    }
+
+    private void testSelinuxAccess() {
+        String accessPath = "/sys/fs/selinux/access";
+        try {
+            // 適当なコンテキストペア（システムコンテキストを想定）
+            String query = "system_u:system_r:kernel_t system_u:system_r:kernel_t process";
+            String writeResult = nativeWriteFile(accessPath, query);
+            appendLog("[SELINUX] Write access query result: " + writeResult);
+            if ("OK".equals(writeResult)) {
+                String result = nativeReadFile(accessPath);
+                appendLog("[SELINUX] Access result: " + (result != null ? result : "(null)"));
+            }
+        } catch (Exception e) {
+            appendLog("[SELINUX] Access test failed: " + e.getMessage());
         }
     }
 
