@@ -17,15 +17,12 @@
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// ===== ION definitions (inline, since NDK lacks linux/ion.h) =====
+// ION definitions
 #define ION_IOC_MAGIC 'I'
-
 #define ION_IOC_ALLOC _IOWR(ION_IOC_MAGIC, 0, struct ion_allocation_data)
 #define ION_IOC_FREE _IOWR(ION_IOC_MAGIC, 1, struct ion_handle_data)
 #define ION_IOC_MAP _IOWR(ION_IOC_MAGIC, 7, struct ion_fd_data)
-
 #define ION_HEAP_SYSTEM 25
-#define ION_HEAP_QSECOM 27
 
 struct ion_allocation_data {
     size_t len;
@@ -34,17 +31,15 @@ struct ion_allocation_data {
     unsigned int flags;
     unsigned int handle;
 };
-
 struct ion_fd_data {
     unsigned int handle;
     int fd;
 };
-
 struct ion_handle_data {
     unsigned int handle;
 };
 
-// ===== Binder definitions (inline) =====
+// Binder definitions
 #define BINDER_WRITE_READ _IOWR('b', 1, struct binder_write_read)
 #define BINDER_VERSION _IOWR('b', 9, struct binder_version)
 
@@ -217,8 +212,6 @@ Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, 
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jint fd) {
     char result[256] = {0};
-
-    // Reference: CVE-2016-6683 / CVE-2017-13218 - ion heap overflow
     struct ion_allocation_data alloc_data = {
         .len = 4096,
         .align = 4096,
@@ -226,17 +219,12 @@ Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jin
         .flags = 0,
         .handle = 0
     };
-
     int ret = ioctl(fd, ION_IOC_ALLOC, &alloc_data);
     if (ret < 0) {
         snprintf(result, sizeof(result), "ION_IOC_ALLOC failed: %s", strerror(errno));
         return (*env)->NewStringUTF(env, result);
     }
-
-    struct ion_fd_data fd_data = {
-        .handle = alloc_data.handle,
-        .fd = 0
-    };
+    struct ion_fd_data fd_data = { .handle = alloc_data.handle, .fd = 0 };
     ret = ioctl(fd, ION_IOC_MAP, &fd_data);
     if (ret < 0) {
         snprintf(result, sizeof(result), "ION_IOC_MAP failed: %s", strerror(errno));
@@ -244,11 +232,9 @@ Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jin
         ioctl(fd, ION_IOC_FREE, &handle_data);
         return (*env)->NewStringUTF(env, result);
     }
-
     close(fd_data.fd);
     struct ion_handle_data handle_data = { .handle = alloc_data.handle };
     ioctl(fd, ION_IOC_FREE, &handle_data);
-
     snprintf(result, sizeof(result), "ION test succeeded: allocated and mapped 4096 bytes (vulnerability may be exploitable)");
     return (*env)->NewStringUTF(env, result);
 }
@@ -256,12 +242,9 @@ Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jin
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeHwbinderTest(JNIEnv* env, jclass clazz, jint fd) {
     char result[256] = {0};
-
-    // Reference: CVE-2020-0041 / CVE-2020-0069 - binder use-after-free
     struct binder_write_read bwr = {0};
     int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
     if (ret < 0) {
-        // Expected to fail; try to read version
         struct binder_version version;
         ret = ioctl(fd, BINDER_VERSION, &version);
         if (ret == 0) {
@@ -272,6 +255,82 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderTest(JNIEnv* env, jclass clazz
         }
     } else {
         snprintf(result, sizeof(result), "Unexpected success in BINDER_WRITE_READ");
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeHwbinderFurther(JNIEnv* env, jclass clazz, jint fd) {
+    char result[512] = {0};
+    // Try to get binder version first
+    struct binder_version version;
+    if (ioctl(fd, BINDER_VERSION, &version) == 0) {
+        snprintf(result, sizeof(result), "Binder protocol: %d. ", version.protocol_version);
+    } else {
+        snprintf(result, sizeof(result), "BINDER_VERSION failed: %s. ", strerror(errno));
+    }
+
+    // Try to send a simple transaction (using a dummy handle 0)
+    // This is known to work on some devices and may cause kernel log messages
+    struct binder_transaction_data {
+        void *data;
+        size_t data_size;
+        void *offsets;
+        size_t offsets_size;
+        uint64_t buffer;
+        uint64_t flags;
+        uint64_t sender_pid;
+        uint64_t sender_euid;
+        uint64_t target_handle;
+    } __attribute__((packed));
+
+    // We'll use a small buffer to try to write
+    int buf[1] = {0};
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_buffer = (void*)buf;
+    bwr.write_size = sizeof(buf);
+    bwr.write_consumed = 0;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    if (ret < 0) {
+        strcat(result, "WRITE_READ (dummy) failed (expected): ");
+        strcat(result, strerror(errno));
+    } else {
+        strcat(result, "WRITE_READ succeeded (unexpected)");
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeGetKernelInfo(JNIEnv* env, jclass clazz) {
+    char result[4096] = {0};
+    const char* files[] = {
+        "/proc/version", "/proc/cmdline", "/proc/meminfo", "/proc/iomem", "/proc/modules",
+        "/proc/sys/kernel/ostype", "/proc/sys/kernel/osrelease",
+        "/sys/kernel/debug/kallsyms", "/sys/kernel/security/lsm",
+        "/proc/self/status", "/proc/self/stat"
+    };
+    char buf[1024];
+    for (size_t i = 0; i < sizeof(files)/sizeof(files[0]); i++) {
+        int fd = open(files[i], O_RDONLY);
+        if (fd >= 0) {
+            ssize_t n = read(fd, buf, sizeof(buf)-1);
+            close(fd);
+            if (n > 0) {
+                buf[n] = '\0';
+                strcat(result, files[i]);
+                strcat(result, ": ");
+                strcat(result, buf);
+                strcat(result, "\n");
+            } else {
+                strcat(result, files[i]);
+                strcat(result, ": (empty)\n");
+            }
+        } else {
+            strcat(result, files[i]);
+            strcat(result, ": (unreadable)\n");
+        }
     }
     return (*env)->NewStringUTF(env, result);
 }
