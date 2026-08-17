@@ -13,7 +13,6 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
-// Include the binder header from kernel sources (placed in jni directory)
 #include "binder.h"
 
 #define LOG_TAG "PocJNI"
@@ -22,7 +21,6 @@
 
 static JavaVM* g_vm = NULL;
 
-// ION definitions (still needed)
 #define ION_IOC_MAGIC 'I'
 #define ION_IOC_ALLOC _IOWR(ION_IOC_MAGIC, 0, struct ion_allocation_data)
 #define ION_IOC_FREE _IOWR(ION_IOC_MAGIC, 1, struct ion_handle_data)
@@ -54,7 +52,6 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
     LOGD("JNI_OnUnload");
 }
 
-// ---------- existing functions (unchanged) ----------
 JNIEXPORT jobjectArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeListDir(JNIEnv* env, jclass clazz, jstring path) {
     if (path == NULL) return NULL;
@@ -194,7 +191,6 @@ Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, 
     return fd;
 }
 
-// Ion test (unchanged)
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jint fd) {
     char result[256] = {0};
@@ -225,7 +221,6 @@ Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jin
     return (*env)->NewStringUTF(env, result);
 }
 
-// Simple hwbinder test (unchanged)
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeHwbinderTest(JNIEnv* env, jclass clazz, jint fd) {
     char result[256] = {0};
@@ -239,7 +234,6 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderTest(JNIEnv* env, jclass clazz
     return (*env)->NewStringUTF(env, result);
 }
 
-// Further hwbinder test (unchanged)
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeHwbinderFurther(JNIEnv* env, jclass clazz, jint fd) {
     char result[512] = {0};
@@ -250,11 +244,6 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderFurther(JNIEnv* env, jclass cl
         snprintf(result, sizeof(result), "BINDER_VERSION failed: %s. ", strerror(errno));
     }
 
-    // Try to send a dummy transaction
-    struct binder_write_read bwr;
-    memset(&bwr, 0, sizeof(bwr));
-    // We'll just try to write a small command (BC_NOOP?) but we'll use a simple write of 0 bytes.
-    // Actually, we can try BINDER_SET_MAX_THREADS first.
     int max_threads = 10;
     if (ioctl(fd, BINDER_SET_MAX_THREADS, &max_threads) == 0) {
         strcat(result, "BINDER_SET_MAX_THREADS succeeded. ");
@@ -264,7 +253,6 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderFurther(JNIEnv* env, jclass cl
         strcat(result, ". ");
     }
 
-    // Try to get node info for handle 0 (context manager) - this usually fails without permission
     struct binder_node_info_for_ref info;
     memset(&info, 0, sizeof(info));
     info.handle = 0;
@@ -283,7 +271,6 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderFurther(JNIEnv* env, jclass cl
     return (*env)->NewStringUTF(env, result);
 }
 
-// Kernel info (unchanged)
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeGetKernelInfo(JNIEnv* env, jclass clazz) {
     char result[4096] = {0};
@@ -317,13 +304,11 @@ Java_com_example_tzpoc_MainActivity_nativeGetKernelInfo(JNIEnv* env, jclass claz
     return (*env)->NewStringUTF(env, result);
 }
 
-// Advanced binder test using kernel structures from binder.h
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass clazz, jint fd) {
     char result[1024] = {0};
     int ret;
 
-    // 1. Check version
     struct binder_version version;
     if (ioctl(fd, BINDER_VERSION, &version) == 0) {
         snprintf(result, sizeof(result), "Binder protocol version: %d\n", version.protocol_version);
@@ -332,7 +317,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass
         return (*env)->NewStringUTF(env, result);
     }
 
-    // 2. Try to set max threads (allowed for any process)
     int max_threads = 10;
     if (ioctl(fd, BINDER_SET_MAX_THREADS, &max_threads) == 0) {
         strcat(result, "BINDER_SET_MAX_THREADS succeeded (set to 10).\n");
@@ -342,7 +326,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass
         strcat(result, "\n");
     }
 
-    // 3. Try to get node info for handle 0 (context manager) - likely permission denied
     struct binder_node_info_for_ref info;
     memset(&info, 0, sizeof(info));
     info.handle = 0;
@@ -356,11 +339,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass
         strcat(result, " (expected without permission)\n");
     }
 
-    // 4. Try to send a transaction to handle 0 (context manager)
-    // We'll construct a simple BC_TRANSACTION command.
-    // The buffer will contain: BC_TRANSACTION (uint32) followed by binder_transaction_data.
-    // We'll set target.handle = 0, code = 0, flags = 0, data_size = 0, offsets_size = 0.
-    // We'll allocate a small buffer on stack and use BINDER_WRITE_READ.
     struct {
         uint32_t cmd;
         struct binder_transaction_data tdata;
@@ -385,7 +363,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass
     bwr.write_size = sizeof(tx);
     bwr.write_buffer = (binder_uintptr_t)&tx;
 
-    // Allocate a read buffer for potential reply
     struct binder_transaction_data reply_data;
     bwr.read_size = sizeof(reply_data);
     bwr.read_buffer = (binder_uintptr_t)&reply_data;
@@ -393,7 +370,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass
     ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
     if (ret == 0) {
         strcat(result, "BINDER_WRITE_READ with transaction succeeded (unexpected). ");
-        // Check if we got a reply
         if (bwr.read_consumed > 0) {
             strcat(result, "Reply received.\n");
         }
@@ -403,7 +379,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass
         strcat(result, " (expected, permission denied or handle invalid)\n");
     }
 
-    // 5. Try to get node debug info (requires root usually)
     struct binder_node_debug_info debug_info;
     memset(&debug_info, 0, sizeof(debug_info));
     if (ioctl(fd, BINDER_GET_NODE_DEBUG_INFO, &debug_info) == 0) {
@@ -418,5 +393,190 @@ Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass
         strcat(result, " (likely requires root)\n");
     }
 
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeHwbinderOverflowTest(JNIEnv* env, jclass clazz, jint fd) {
+    char result[512] = {0};
+    size_t huge_size = 1024 * 1024 * 64;
+    char* huge_buf = malloc(huge_size);
+    if (!huge_buf) {
+        snprintf(result, sizeof(result), "Overflow test: failed to allocate %zu bytes", huge_size);
+        return (*env)->NewStringUTF(env, result);
+    }
+    memset(huge_buf, 0x41, huge_size);
+
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = huge_size;
+    bwr.write_buffer = (binder_uintptr_t)huge_buf;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    free(huge_buf);
+    if (ret == 0) {
+        snprintf(result, sizeof(result), "Overflow test: BINDER_WRITE_READ with huge buffer succeeded (unexpected)");
+    } else {
+        snprintf(result, sizeof(result), "Overflow test: BINDER_WRITE_READ with huge buffer failed: %s (expected error)", strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeHwbinderWriteTest(JNIEnv* env, jclass clazz, jint fd) {
+    char result[256] = {0};
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx = {
+        .cmd = BC_TRANSACTION,
+        .tdata = {
+            .target.handle = 1,
+            .cookie = 0,
+            .code = 0,
+            .flags = 0,
+            .sender_pid = 0,
+            .sender_euid = 0,
+            .data_size = 0,
+            .offsets_size = 0,
+            .data.ptr.buffer = 0,
+            .data.ptr.offsets = 0
+        }
+    };
+
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    if (ret == 0) {
+        snprintf(result, sizeof(result), "Write test: BINDER_WRITE_READ with BC_TRANSACTION succeeded (handle 1)");
+    } else {
+        snprintf(result, sizeof(result), "Write test: BINDER_WRITE_READ with BC_TRANSACTION failed: %s", strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeHwbinderHalCommand(JNIEnv* env, jclass clazz, jint fd) {
+    char result[512] = {0};
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx = {
+        .cmd = BC_TRANSACTION,
+        .tdata = {
+            .target.handle = 0,
+            .cookie = 0,
+            .code = 0,
+            .flags = TF_ONE_WAY,
+            .sender_pid = 0,
+            .sender_euid = 0,
+            .data_size = 0,
+            .offsets_size = 0,
+            .data.ptr.buffer = 0,
+            .data.ptr.offsets = 0
+        }
+    };
+
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+
+    struct binder_transaction_data reply;
+    bwr.read_size = sizeof(reply);
+    bwr.read_buffer = (binder_uintptr_t)&reply;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    if (ret == 0) {
+        strcat(result, "HAL command test: BINDER_WRITE_READ with BC_TRANSACTION (handle 0, oneway) succeeded. ");
+        if (bwr.read_consumed > 0) {
+            strcat(result, "Reply received (unexpected for oneway).");
+        } else {
+            strcat(result, "No reply (as expected for oneway).");
+        }
+    } else {
+        strcat(result, "HAL command test: BINDER_WRITE_READ failed: ");
+        strcat(result, strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeHwbinderReadTest(JNIEnv* env, jclass clazz, jint fd) {
+    char result[512] = {0};
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx = {
+        .cmd = BC_TRANSACTION,
+        .tdata = {
+            .target.handle = 0,
+            .cookie = 0,
+            .code = 0,
+            .flags = 0,
+            .sender_pid = 0,
+            .sender_euid = 0,
+            .data_size = 0,
+            .offsets_size = 0,
+            .data.ptr.buffer = 0,
+            .data.ptr.offsets = 0
+        }
+    };
+
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+
+    struct binder_transaction_data reply;
+    bwr.read_size = sizeof(reply);
+    bwr.read_buffer = (binder_uintptr_t)&reply;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    if (ret == 0) {
+        strcat(result, "Read test: BINDER_WRITE_READ succeeded. ");
+        if (bwr.read_consumed > 0) {
+            strcat(result, "Reply data read (");
+            char tmp[32];
+            sprintf(tmp, "%llu", (unsigned long long)bwr.read_consumed);
+            strcat(result, tmp);
+            strcat(result, " bytes).");
+        } else {
+            strcat(result, "No reply data.");
+        }
+    } else {
+        strcat(result, "Read test: BINDER_WRITE_READ failed: ");
+        strcat(result, strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderGetVersion(JNIEnv* env, jclass clazz, jint fd) {
+    char result[128] = {0};
+    struct binder_version version;
+    if (ioctl(fd, BINDER_VERSION, &version) == 0) {
+        snprintf(result, sizeof(result), "Protocol version: %d", version.protocol_version);
+    } else {
+        snprintf(result, sizeof(result), "BINDER_VERSION failed: %s", strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderIoctlTest(JNIEnv* env, jclass clazz, jint fd, jint cmd, jlong arg) {
+    char result[256] = {0};
+    int ret = ioctl(fd, cmd, (unsigned long)arg);
+    if (ret == 0) {
+        snprintf(result, sizeof(result), "ioctl(0x%x) succeeded", cmd);
+    } else {
+        snprintf(result, sizeof(result), "ioctl(0x%x) failed: %s", cmd, strerror(errno));
+    }
     return (*env)->NewStringUTF(env, result);
 }
