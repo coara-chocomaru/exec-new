@@ -24,6 +24,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.lang.reflect.Method;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -61,26 +62,42 @@ public class MainActivity extends AppCompatActivity {
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
-            tzService = IMinkSocketFd.Stub.asInterface(service);
-            if (tzService != null) {
-                appendLog("[TZ] Service bound via AIDL");
-                updateStatus("Bound - running tests");
-                enableButtons(false, true);
-                stopRequested.set(false);
-                testThread = new Thread(() -> executeTests());
-                testThread.start();
-            } else {
-                appendLog("[TZ] Failed to cast to IMinkSocketFd");
+            appendLog("[TZ] onServiceConnected: " + name);
+            try {
+                tzService = IMinkSocketFd.Stub.asInterface(service);
+                if (tzService != null) {
+                    appendLog("[TZ] Service bound via AIDL, descriptor=" + tzService.asBinder().getInterfaceDescriptor());
+                    updateStatus("Bound - running tests");
+                    enableButtons(false, true);
+                    stopRequested.set(false);
+                    testThread = new Thread(() -> executeTests());
+                    testThread.start();
+                } else {
+                    appendLog("[TZ] Failed to cast to IMinkSocketFd (null)");
+                    enableButtons(true, false);
+                }
+            } catch (Exception e) {
+                appendLog("[TZ] Exception during cast: " + e);
                 enableButtons(true, false);
             }
         }
 
         @Override
         public void onServiceDisconnected(ComponentName name) {
+            appendLog("[TZ] onServiceDisconnected: " + name);
             tzService = null;
             isBound = false;
             enableButtons(true, false);
             updateStatus("Disconnected");
+        }
+
+        @Override
+        public void onBindingDied(ComponentName name) {
+            appendLog("[TZ] onBindingDied: " + name);
+            tzService = null;
+            isBound = false;
+            enableButtons(true, false);
+            updateStatus("Binding died");
         }
     };
 
@@ -138,9 +155,10 @@ public class MainActivity extends AppCompatActivity {
         try {
             Intent intent = new Intent();
             intent.setClassName(TARGET_PKG, TARGET_CLS);
+            appendLog("Binding service with intent: " + intent);
             boolean ret = bindService(intent, tzConnection, Context.BIND_AUTO_CREATE);
             if (ret) {
-                appendLog("Binding service...");
+                appendLog("bindService returned true");
                 updateStatus("Binding...");
                 isBound = true;
             } else {
@@ -165,19 +183,42 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private ParcelFileDescriptor openTzDevice(String path) {
-        if (tzService == null) return null;
+        if (tzService == null) {
+            appendLog("[TZ] Service is null, cannot open " + path);
+            return null;
+        }
         try {
             int[] handle = new int[1];
+            appendLog("[TZ] Calling a(\"" + path + "\", handle)");
             ParcelFileDescriptor pfd = tzService.a(path, handle);
-            if (pfd != null && handle[0] >= 0) {
-                appendLog("[TZ] Opened " + path + " handle=" + handle[0]);
+            if (pfd != null) {
+                appendLog("[TZ] Opened " + path + " handle=" + handle[0] + " fd=" + pfd.getFd());
                 return pfd;
             } else {
-                appendLog("[TZ] Failed to open " + path + " handle=" + (handle != null ? handle[0] : "null"));
+                appendLog("[TZ] a() returned null for " + path + ", handle=" + handle[0]);
+                // フォールバック: リフレクションで openSocket を試す（念のため）
+                try {
+                    Method m = tzService.getClass().getMethod("openSocket", String.class, int[].class);
+                    appendLog("[TZ] Fallback: trying openSocket via reflection");
+                    pfd = (ParcelFileDescriptor) m.invoke(tzService, path, handle);
+                    if (pfd != null) {
+                        appendLog("[TZ] Fallback succeeded: fd=" + pfd.getFd());
+                        return pfd;
+                    } else {
+                        appendLog("[TZ] Fallback also returned null");
+                    }
+                } catch (Exception re) {
+                    appendLog("[TZ] Fallback reflection failed: " + re);
+                }
                 return null;
             }
         } catch (RemoteException e) {
             appendLog("[TZ] RemoteException: " + e);
+            e.printStackTrace();
+            return null;
+        } catch (Exception e) {
+            appendLog("[TZ] Unexpected exception: " + e);
+            e.printStackTrace();
             return null;
         }
     }
@@ -185,6 +226,16 @@ public class MainActivity extends AppCompatActivity {
     private void executeTests() {
         appendLog("========================================");
         appendLog("========== BINDER POC ==========");
+
+        // 最初に /dev/null を開いてサービスが正常に動作するかテスト
+        appendLog("[*] Testing service with /dev/null");
+        ParcelFileDescriptor nullPfd = openTzDevice("/dev/null");
+        if (nullPfd != null) {
+            appendLog("[+] /dev/null opened successfully, fd=" + nullPfd.getFd());
+            try { nullPfd.close(); } catch (Exception ignored) {}
+        } else {
+            appendLog("[!] Service cannot even open /dev/null - check service binding!");
+        }
 
         String[] devices = {"/dev/binder", "/dev/hwbinder"};
         for (String dev : devices) {
