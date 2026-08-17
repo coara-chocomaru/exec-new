@@ -35,7 +35,6 @@ struct QSEECom_ion_fd_info {
 
 #define ION_HEAP_SYSTEM 25
 #define ION_HEAP_QSECOM 27
-
 #define ION_HEAP(heap_id) (1 << (heap_id))
 
 struct ion_allocation_data {
@@ -389,4 +388,24 @@ cleanup:
     }
 
     return (*env)->NewStringUTF(env, result_buf);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeTestFd(JNIEnv* env, jclass clazz, jint fd) {
+    char buf[256] = {0};
+    int flags = fcntl(fd, F_GETFL);
+    if (flags < 0) {
+        snprintf(buf, sizeof(buf), "fcntl failed: %s", strerror(errno));
+        return (*env)->NewStringUTF(env, buf);
+    }
+    int type = flags & O_ACCMODE;
+    const char* type_str;
+    switch(type) {
+        case O_RDONLY: type_str = "RDONLY"; break;
+        case O_WRONLY: type_str = "WRONLY"; break;
+        case O_RDWR: type_str = "RDWR"; break;
+        default: type_str = "UNKNOWN";
+    }
+    snprintf(buf, sizeof(buf), "flags=0x%x (%s), nonblock=%d", flags, type_str, (flags & O_NONBLOCK)?1:0);
+    return (*env)->NewStringUTF(env, buf);
 }
