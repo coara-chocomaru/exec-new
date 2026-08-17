@@ -168,7 +168,7 @@ public class MainActivity extends AppCompatActivity {
         if (tzService == null) return null;
         try {
             int[] handle = new int[1];
-            ParcelFileDescriptor pfd = tzService.openSocket(path, handle);
+            ParcelFileDescriptor pfd = tzService.a(path, handle);
             if (pfd != null && handle[0] >= 0) {
                 appendLog("[TZ] Opened " + path + " handle=" + handle[0]);
                 return pfd;
