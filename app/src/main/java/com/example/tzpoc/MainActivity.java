@@ -262,7 +262,7 @@ public class MainActivity extends AppCompatActivity {
         appendLog("[*] Hwbinder read test (read back written data)");
         testHwbinderRead();
 
-        appendLog("[*] Binder debugfs information gathering");
+        appendLog("[*] Binder debugfs and sysfs information gathering");
         testBinderDebugfs();
 
         appendLog("[*] Testing /dev/binder device");
@@ -270,6 +270,9 @@ public class MainActivity extends AppCompatActivity {
 
         appendLog("[*] Additional /proc file reading and dumping");
         testProcFiles();
+
+        appendLog("[*] ID command capture via /proc/self/exe and /proc/self/status");
+        testIdCommand();
 
         appendLog("========== EXPLOIT COMPLETED ==========");
         appendLog("========================================");
@@ -973,6 +976,29 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("[BINDER_DEBUG] " + path + " not accessible");
             }
         }
+
+        String sysfsBinder = "/sys/fs/binder";
+        File sysfsDir = new File(sysfsBinder);
+        if (sysfsDir.exists() && sysfsDir.isDirectory()) {
+            String[] children = nativeListDir(sysfsBinder);
+            if (children != null) {
+                appendLog("[BINDER_SYS] " + sysfsBinder + " entries: " + children.length);
+                for (String child : children) {
+                    if (stopRequested.get()) break;
+                    String childPath = sysfsBinder + "/" + child;
+                    String content = safeReadFile(childPath);
+                    if (content != null && !content.isEmpty()) {
+                        appendLog("[BINDER_SYS] " + childPath + " = " + content.substring(0, Math.min(200, content.length())));
+                    } else {
+                        appendLog("[BINDER_SYS] " + childPath + " (empty/unreadable)");
+                    }
+                }
+            } else {
+                appendLog("[BINDER_SYS] " + sysfsBinder + " unreadable");
+            }
+        } else {
+            appendLog("[BINDER_SYS] " + sysfsBinder + " does not exist");
+        }
     }
 
     private void testBinderDevice() {
@@ -1046,6 +1072,38 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         }
+    }
+
+    private void testIdCommand() {
+        appendLog("[ID] === ID command capture ===");
+        String exePath = nativeReadLink("/proc/self/exe");
+        if (exePath != null) {
+            appendLog("[ID] exe path: " + exePath);
+        } else {
+            appendLog("[ID] exe path: unable to read");
+        }
+
+        String status = safeReadFile("/proc/self/status");
+        if (status != null && !status.isEmpty()) {
+            String[] lines = status.split("\n");
+            for (String line : lines) {
+                if (line.startsWith("Uid:") || line.startsWith("Gid:") || line.startsWith("Groups:")) {
+                    appendLog("[ID] " + line);
+                }
+            }
+        } else {
+            appendLog("[ID] Could not read /proc/self/status");
+        }
+
+        String cmdline = safeReadFile("/proc/self/cmdline");
+        if (cmdline != null && cmdline.length() > 0) {
+            String clean = cmdline.replace("\0", " ");
+            appendLog("[ID] cmdline: " + clean);
+        } else {
+            appendLog("[ID] cmdline: (empty)");
+        }
+
+        appendLog("[ID] === end ===");
     }
 
     private List<File> listFilesRecursive(File dir, int depth, int maxDepth) {
