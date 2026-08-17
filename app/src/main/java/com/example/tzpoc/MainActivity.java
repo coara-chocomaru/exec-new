@@ -198,7 +198,11 @@ public class MainActivity extends AppCompatActivity {
                 "/dev/qseecom",
                 "/dev/ion",
                 "/dev/ashmem",
-                "/dev/kgsl-3d0"
+                "/dev/kgsl-3d0",
+                "/dev/tty",
+                "/dev/console",
+                "/dev/null",
+                "/data/local/tmp/test"
         };
 
         List<String> allTargets = new ArrayList<>();
@@ -300,7 +304,8 @@ public class MainActivity extends AppCompatActivity {
                 "dns resolver flushnet 0\n",
                 "network create 101\n",
                 "network interface add 101 wlan0\n",
-                "network route add 101 wlan0 0.0.0.0/0 192.168.1.1\n"
+                "network route add 101 wlan0 0.0.0.0/0 192.168.1.1\n",
+                "network destroy 101\n"
         };
         for (String cmd : cmds) {
             if (stopRequested.get()) break;
