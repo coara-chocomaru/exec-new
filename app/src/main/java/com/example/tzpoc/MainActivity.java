@@ -261,7 +261,7 @@ public class MainActivity extends AppCompatActivity {
         finishTest();
     }
 
-    // ===== Socket test (unchanged) =====
+    // ===== Socket test =====
     private void testSocket(String path) {
         ParcelFileDescriptor pfd = null;
         try {
@@ -763,16 +763,7 @@ public class MainActivity extends AppCompatActivity {
         File dumpDir = getDumpDir();
         if (dumpDir == null) return;
 
-        // mmcblk0p1~p30, mmcblk1p1~p16, sda1~sda16, dm-0~dm-15, loop0~loop15
-        String[] patterns = {
-                "mmcblk0p", 1, 30,
-                "mmcblk1p", 1, 16,
-                "sda", 1, 16,
-                "sdb", 1, 16,
-                "dm-", 0, 15,
-                "loop", 0, 15
-        };
-        // We'll implement loops programmatically.
+        // Explicit loops for each device pattern
         for (int i = 1; i <= 30; i++) {
             String path = "/dev/block/mmcblk0p" + i;
             tryDumpBlock(path, dumpDir);
