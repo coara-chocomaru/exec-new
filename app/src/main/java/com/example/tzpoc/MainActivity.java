@@ -16,16 +16,11 @@ import android.widget.Button;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
-
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-
 import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
-
 import java.io.File;
-import java.io.FileDescriptor;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
@@ -69,7 +64,7 @@ public class MainActivity extends AppCompatActivity {
             tzService = IMinkSocketFd.Stub.asInterface(service);
             if (tzService != null) {
                 appendLog("[TZ] Service bound via AIDL");
-                updateStatus("Bound - starting tests");
+                updateStatus("Bound - running tests");
                 enableButtons(false, true);
                 stopRequested.set(false);
                 testThread = new Thread(() -> executeTests());
@@ -173,7 +168,7 @@ public class MainActivity extends AppCompatActivity {
         if (tzService == null) return null;
         try {
             int[] handle = new int[1];
-            ParcelFileDescriptor pfd = tzService.a(path, handle);
+            ParcelFileDescriptor pfd = tzService.openSocket(path, handle);
             if (pfd != null && handle[0] >= 0) {
                 appendLog("[TZ] Opened " + path + " handle=" + handle[0]);
                 return pfd;
@@ -191,14 +186,15 @@ public class MainActivity extends AppCompatActivity {
         appendLog("========================================");
         appendLog("========== BINDER POC ==========");
 
-        // 1. /dev/binder
-        testBinderDevice("/dev/binder");
+        String[] devices = {"/dev/binder", "/dev/hwbinder"};
+        for (String dev : devices) {
+            if (stopRequested.get()) break;
+            testBinderDevice(dev);
+        }
 
-        // 2. /dev/hwbinder
-        testBinderDevice("/dev/hwbinder");
-
-        // 3. /dev/binderfs (if present)
-        testBinderfs();
+        if (!stopRequested.get()) {
+            testBinderfs();
+        }
 
         appendLog("========== BINDER POC COMPLETED ==========");
         appendLog("========================================");
@@ -216,41 +212,33 @@ public class MainActivity extends AppCompatActivity {
             appendLog("[!] Could not open " + devicePath);
             return;
         }
-        FileDescriptor fdObj = pfd.getFileDescriptor();
-        if (fdObj == null || !fdObj.valid()) {
+        int fd = pfd.getFd();
+        if (fd < 0) {
             appendLog("[!] Invalid FD for " + devicePath);
             try { pfd.close(); } catch (Exception ignored) {}
             return;
         }
-        int fd = pfd.getFd();
         appendLog("[+] Opened " + devicePath + " fd=" + fd);
 
-        // 1. Get version
         String version = nativeBinderVersion(fd);
         appendLog("[VERSION] " + version);
 
-        // 2. Set max threads
         String setMax = nativeBinderSetMaxThreads(fd, 15);
         appendLog("[SET_MAX_THREADS] " + setMax);
 
-        // 3. Get node info for handle 0 (context manager)
         String nodeInfo = nativeBinderGetNodeInfo(fd, 0);
         appendLog("[NODE_INFO] " + nodeInfo);
 
-        // 4. Send transaction (handle 0, flags 0)
         String txn = nativeBinderTransaction(fd, 0, 0);
         appendLog("[TRANSACTION] " + txn);
 
-        // 5. Send one-way transaction
-        String txnOneway = nativeBinderTransaction(fd, 0, 1); // TF_ONE_WAY = 1
+        String txnOneway = nativeBinderTransaction(fd, 0, 1);
         appendLog("[TRANSACTION_ONEWAY] " + txnOneway);
 
-        // 6. Overflow test (64MB buffer)
         String overflow = nativeBinderOverflow(fd, 64 * 1024 * 1024);
         appendLog("[OVERFLOW] " + overflow);
 
-        // 7. Additional ioctl tests (BINDER_WRITE_READ with empty read/write)
-        String ioctlTest = nativeBinderIoctlTest(fd, 0x40046201, 0); // BINDER_VERSION
+        String ioctlTest = nativeBinderIoctlTest(fd, 0x40046201, 0);
         appendLog("[IOCTL_TEST] " + ioctlTest);
 
         try { pfd.close(); } catch (Exception ignored) {}
@@ -274,6 +262,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         for (String entry : entries) {
+            if (stopRequested.get()) break;
             appendLog("[BINDERFS] " + entry);
             String fullPath = binderfsPath + "/" + entry;
             String content = nativeBinderfsRead(fullPath);
