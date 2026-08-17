@@ -86,8 +86,7 @@ Java_com_example_tzpoc_MainActivity_nativeReadFile(JNIEnv* env, jclass clazz, js
     close(fd);
     if (len <= 0) return NULL;
     buf[len] = '\0';
-    jstring result = (*env)->NewStringUTF(env, buf);
-    return result;
+    return (*env)->NewStringUTF(env, buf);
 }
 
 JNIEXPORT jstring JNICALL
@@ -100,7 +99,7 @@ Java_com_example_tzpoc_MainActivity_nativeWriteFile(JNIEnv* env, jclass clazz, j
         if (ccontent) (*env)->ReleaseStringUTFChars(env, content, ccontent);
         return NULL;
     }
-    int fd = open(cpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = open(cpath, O_WRONLY);
     if (fd < 0) {
         LOGE("open(%s) for write failed: %s", cpath, strerror(errno));
         (*env)->ReleaseStringUTFChars(env, path, cpath);
@@ -111,9 +110,7 @@ Java_com_example_tzpoc_MainActivity_nativeWriteFile(JNIEnv* env, jclass clazz, j
     close(fd);
     (*env)->ReleaseStringUTFChars(env, path, cpath);
     (*env)->ReleaseStringUTFChars(env, content, ccontent);
-    if (written < 0) {
-        return (*env)->NewStringUTF(env, strerror(errno));
-    }
+    if (written < 0) return (*env)->NewStringUTF(env, strerror(errno));
     return (*env)->NewStringUTF(env, "OK");
 }
 
@@ -158,7 +155,7 @@ Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, 
     if (path == NULL) return -1;
     const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
     if (cpath == NULL) return -1;
-    int fd = open(cpath, O_RDWR);
+    int fd = open(cpath, O_RDONLY);
     if (fd < 0) {
         LOGE("open(%s) failed: %s", cpath, strerror(errno));
         (*env)->ReleaseStringUTFChars(env, path, cpath);
