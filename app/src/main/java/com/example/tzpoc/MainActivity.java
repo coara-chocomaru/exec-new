@@ -271,7 +271,7 @@ public class MainActivity extends AppCompatActivity {
             }
             appendLog("[+] Opened " + path + " (handle=" + handle[0] + ")");
 
-            // handle[0] にエラーコードが入っている場合がある
+    
             if (handle[0] < 0) {
                 String errMsg = getErrorString(handle[0]);
                 appendLog("[!] Service returned error: " + handle[0] + " (" + errMsg + ")");
@@ -279,7 +279,6 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
 
-            // FDの属性をJNIでチェック
             String fdInfo = nativeTestFd(pfd.getFd());
             appendLog("[FD] " + fdInfo);
 
@@ -298,7 +297,6 @@ public class MainActivity extends AppCompatActivity {
                     default: testGeneric(fd, new String[]{"help\n", "status\n", "version\n", "list\n", "dump\n"});
                 }
             } else {
-                // デバイスファイル読み取り
                 InputStream is = new FileInputStream(fd);
                 byte[] buf = new byte[64];
                 int read = readBytes(is, buf, 64, 500);
