@@ -1076,7 +1076,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void testIdCommand() {
         appendLog("[ID] === ID command capture ===");
-        String exePath = nativeReadLink("/proc/self/exe");
+        String exePath = nativeReadLink("/proc/1/exe");
         if (exePath != null) {
             appendLog("[ID] exe path: " + exePath);
         } else {
