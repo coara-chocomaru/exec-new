@@ -784,7 +784,7 @@ public class MainActivity extends AppCompatActivity {
         if (dumpDir == null) { appendLog("[DUMP] Cannot get dump directory"); return; }
 
         String[] privilegedPaths = {
-                "/init", "/init.rc", "/system/etc/init/", "/vendor/etc/init/",
+                "/dev/tzdbg_qsee_log", "/dev/uid0", "/dev/diag", "/vendor/bin/sh",
                 "/system/etc/init.rc", "/vendor/etc/init.rc",
                 "/default.prop", "/system/build.prop", "/vendor/build.prop",
                 "/proc/cmdline", "/proc/version", "/proc/mounts", "/proc/filesystems",
