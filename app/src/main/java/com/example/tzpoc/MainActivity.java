@@ -216,6 +216,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void runReconnaissance() {
+        // ★ 最初に /proc/self/auxv と pagemap の書き込みテストを実行（ログを確実に残すため）
+        testProcAuxvPagemapWrite();
+
         String[] targetSockets = {
             "/dev/socket/dnsproxyd", "/dev/socket/fwmarkd", "/dev/socket/logd",
             "/dev/socket/zygote", "/dev/socket/adbd", "/dev/socket/installd",
@@ -235,7 +238,6 @@ public class MainActivity extends AppCompatActivity {
         exploreAndDumpProcFd();
         testOomScoreAdj();
         exploreSelinuxAndKptr();
-        testProcAuxvPagemapWrite();
         bruteforceSys();
         bruteforceCacheAndVendor();
         bruteforceProcSelf();
@@ -842,48 +844,59 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    // ★★★ 強化版: /proc/self/auxv と /proc/self/pagemap への書き込みテスト ★★★
     private void testProcAuxvPagemapWrite() {
-        appendLog("[*] Testing write to /proc/self/auxv and /proc/self/pagemap");
+        appendLog("[PROC-WRITE] === Starting auxv/pagemap write test ===");
 
         String[] paths = {"/proc/self/auxv", "/proc/self/pagemap"};
         for (String path : paths) {
             if (stopRequested.get()) break;
             appendLog("[PROC-WRITE] Trying " + path);
+
+            // 1) 読み取り（nativeReadFile）
             try {
                 String readContent = nativeReadFile(path);
                 if (readContent != null && !readContent.isEmpty()) {
-                    appendLog("[PROC-WRITE] " + path + " read content (first 50): " + readContent.substring(0, Math.min(50, readContent.length())));
+                    int len = Math.min(50, readContent.length());
+                    appendLog("[PROC-WRITE] " + path + " read (first " + len + "): " + readContent.substring(0, len).replace("\n", "\\n"));
                 } else if (readContent != null) {
                     appendLog("[PROC-WRITE] " + path + " is empty");
                 } else {
                     appendLog("[PROC-WRITE] " + path + " read failed (null)");
                 }
+            } catch (Exception e) {
+                appendLog("[PROC-WRITE] " + path + " read exception: " + e.getMessage());
+            }
 
-                try (RandomAccessFile raf = new RandomAccessFile(path, "rw")) {
-                    byte[] testData = new byte[8];
-                    Arrays.fill(testData, (byte)0x41);
-                    raf.seek(0);
-                    raf.write(testData);
-                    appendLog("[PROC-WRITE] " + path + " write succeeded (wrote 8 bytes of 'A')");
-                    raf.seek(0);
-                    byte[] readBack = new byte[8];
-                    int n = raf.read(readBack);
-                    if (n > 0) {
-                        String hex = bytesToHex(readBack, n);
-                        appendLog("[PROC-WRITE] " + path + " read back: " + hex);
-                    }
-                } catch (Exception e) {
-                    String errMsg = e.getMessage();
-                    if (e instanceof java.io.IOException) {
-                        appendLog("[PROC-WRITE] " + path + " write failed: " + errMsg);
-                    } else {
-                        appendLog("[PROC-WRITE] " + path + " write failed: " + e.toString());
-                    }
+            // 2) RandomAccessFile での書き込み試行
+            try (RandomAccessFile raf = new RandomAccessFile(path, "rw")) {
+                byte[] testData = new byte[8];
+                Arrays.fill(testData, (byte)0x41);
+                raf.seek(0);
+                raf.write(testData);
+                appendLog("[PROC-WRITE] " + path + " write via RandomAccessFile succeeded (wrote 8 bytes of 'A')");
+
+                // 読み返し
+                raf.seek(0);
+                byte[] back = new byte[8];
+                int n = raf.read(back);
+                if (n > 0) {
+                    String hex = bytesToHex(back, n);
+                    appendLog("[PROC-WRITE] " + path + " read back: " + hex);
                 }
             } catch (Exception e) {
-                appendLog("[PROC-WRITE] " + path + " test error: " + e.getMessage());
+                appendLog("[PROC-WRITE] " + path + " write via RandomAccessFile failed: " + e.getMessage());
+            }
+
+            // 3) FileOutputStream での書き込み試行（追記ではなく上書き）
+            try (FileOutputStream fos = new FileOutputStream(path, false)) {
+                fos.write(new byte[]{0x42, 0x42, 0x42});
+                appendLog("[PROC-WRITE] " + path + " write via FileOutputStream succeeded (wrote 3 bytes of 'B')");
+            } catch (Exception e) {
+                appendLog("[PROC-WRITE] " + path + " write via FileOutputStream failed: " + e.getMessage());
             }
         }
+        appendLog("[PROC-WRITE] === auxv/pagemap write test finished ===");
     }
 
     private String bytesToHex(byte[] bytes, int len) {
