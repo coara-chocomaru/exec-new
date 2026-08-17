@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <android/log.h>
 #include <sys/stat.h>
+#include <limits.h>
 
 #define LOG_TAG "PocJNI"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
@@ -150,4 +151,19 @@ Java_com_example_tzpoc_MainActivity_nativeTestFd(JNIEnv* env, jclass clazz, jint
     }
     snprintf(buf, sizeof(buf), "flags=0x%x (%s), nonblock=%d", flags, type_str, (flags & O_NONBLOCK)?1:0);
     return (*env)->NewStringUTF(env, buf);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, jstring path) {
+    if (path == NULL) return -1;
+    const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
+    if (cpath == NULL) return -1;
+    int fd = open(cpath, O_RDWR);
+    if (fd < 0) {
+        LOGE("open(%s) failed: %s", cpath, strerror(errno));
+        (*env)->ReleaseStringUTFChars(env, path, cpath);
+        return -errno;
+    }
+    (*env)->ReleaseStringUTFChars(env, path, cpath);
+    return fd;
 }
