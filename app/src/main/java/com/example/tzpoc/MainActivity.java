@@ -35,6 +35,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -234,7 +235,7 @@ public class MainActivity extends AppCompatActivity {
         exploreAndDumpProcFd();
         testOomScoreAdj();
         exploreSelinuxAndKptr();
-        testProcAuxvPagemapWrite();  // ★ 追加
+        testProcAuxvPagemapWrite();
         bruteforceSys();
         bruteforceCacheAndVendor();
         bruteforceProcSelf();
@@ -841,7 +842,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ★ 追加: /proc/self/auxv と /proc/self/pagemap への書き込みテスト
     private void testProcAuxvPagemapWrite() {
         appendLog("[*] Testing write to /proc/self/auxv and /proc/self/pagemap");
 
@@ -850,7 +850,6 @@ public class MainActivity extends AppCompatActivity {
             if (stopRequested.get()) break;
             appendLog("[PROC-WRITE] Trying " + path);
             try {
-                // 読み取り可能か確認
                 String readContent = nativeReadFile(path);
                 if (readContent != null && !readContent.isEmpty()) {
                     appendLog("[PROC-WRITE] " + path + " read content (first 50): " + readContent.substring(0, Math.min(50, readContent.length())));
@@ -860,15 +859,12 @@ public class MainActivity extends AppCompatActivity {
                     appendLog("[PROC-WRITE] " + path + " read failed (null)");
                 }
 
-                // 書き込み試行（JavaのFileOutputStreamを使うとより細かいエラー取得可能）
                 try (RandomAccessFile raf = new RandomAccessFile(path, "rw")) {
-                    // ダミーデータ（0x41 = 'A'）を先頭に書き込む
                     byte[] testData = new byte[8];
                     Arrays.fill(testData, (byte)0x41);
                     raf.seek(0);
                     raf.write(testData);
                     appendLog("[PROC-WRITE] " + path + " write succeeded (wrote 8 bytes of 'A')");
-                    // 読み返して確認
                     raf.seek(0);
                     byte[] readBack = new byte[8];
                     int n = raf.read(readBack);
@@ -879,7 +875,6 @@ public class MainActivity extends AppCompatActivity {
                 } catch (Exception e) {
                     String errMsg = e.getMessage();
                     if (e instanceof java.io.IOException) {
-                        // IOException から errno を取得するのは難しいが、メッセージに含まれる場合がある
                         appendLog("[PROC-WRITE] " + path + " write failed: " + errMsg);
                     } else {
                         appendLog("[PROC-WRITE] " + path + " write failed: " + e.toString());
@@ -899,7 +894,6 @@ public class MainActivity extends AppCompatActivity {
         return sb.toString();
     }
 
-    // 以下は既存のメソッド（変更なし）
     private String safeReadFile(String path) {
         try { return nativeReadFile(path); } catch (Exception e) { return null; }
     }
