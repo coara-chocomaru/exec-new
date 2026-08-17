@@ -12,25 +12,35 @@
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <stdint.h>   // for uint64_t, uintptr_t
 
-// 包含 binder 相关定义（需确保 binder.h 存在，此处提供核心结构）
-#ifndef BINDER_VERSION
-#define BINDER_VERSION _IOWR('b', 9, struct binder_version)
-#define BINDER_SET_MAX_THREADS _IOW('b', 5, int)
+#define LOG_TAG "PocJNI"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+static JavaVM* g_vm = NULL;
+
+/* ---------- Binder 相关定义（兼容 arm64） ---------- */
+// 使用 uint64_t 表示内核中的 binder_uintptr_t
+typedef uint64_t binder_uintptr_t;
+
+#define BINDER_VERSION          _IOWR('b', 9, struct binder_version)
+#define BINDER_SET_MAX_THREADS  _IOW('b', 5, int)
 #define BINDER_GET_NODE_INFO_FOR_REF _IOWR('b', 11, struct binder_node_info_for_ref)
-#define BINDER_WRITE_READ _IOWR('b', 1, struct binder_write_read)
+#define BINDER_WRITE_READ       _IOWR('b', 1, struct binder_write_read)
 #define BINDER_GET_NODE_DEBUG_INFO _IOWR('b', 12, struct binder_node_debug_info)
-#define BC_TRANSACTION 0x40000000
-#define TF_ONE_WAY 0x01
+
+#define BC_TRANSACTION          0x40000000
+#define TF_ONE_WAY              0x01
 
 struct binder_version {
     int protocol_version;
 };
 
 struct binder_node_info_for_ref {
-    unsigned int handle;
-    unsigned int strong_count;
-    unsigned int weak_count;
+    uint32_t handle;
+    uint32_t strong_count;
+    uint32_t weak_count;
 };
 
 struct binder_transaction_data {
@@ -58,32 +68,26 @@ struct binder_transaction_data {
 };
 
 struct binder_write_read {
-    signed long long write_size;
-    signed long long write_consumed;
-    unsigned long write_buffer;
-    signed long long read_size;
-    signed long long read_consumed;
-    unsigned long read_buffer;
+    uint64_t write_size;
+    uint64_t write_consumed;
+    uint64_t write_buffer;
+    uint64_t read_size;
+    uint64_t read_consumed;
+    uint64_t read_buffer;
 };
 
 struct binder_node_debug_info {
-    void *ptr;
-    void *cookie;
+    uint64_t ptr;
+    uint64_t cookie;
     uint32_t has_strong_ref;
     uint32_t has_weak_ref;
 };
-#endif
 
-#define LOG_TAG "PocJNI"
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-
-static JavaVM* g_vm = NULL;
-
+/* ---------- ION 相关定义 ---------- */
 #define ION_IOC_MAGIC 'I'
 #define ION_IOC_ALLOC _IOWR(ION_IOC_MAGIC, 0, struct ion_allocation_data)
-#define ION_IOC_FREE _IOWR(ION_IOC_MAGIC, 1, struct ion_handle_data)
-#define ION_IOC_MAP _IOWR(ION_IOC_MAGIC, 7, struct ion_fd_data)
+#define ION_IOC_FREE  _IOWR(ION_IOC_MAGIC, 1, struct ion_handle_data)
+#define ION_IOC_MAP   _IOWR(ION_IOC_MAGIC, 7, struct ion_fd_data)
 #define ION_HEAP_SYSTEM 25
 
 struct ion_allocation_data {
@@ -101,6 +105,7 @@ struct ion_handle_data {
     unsigned int handle;
 };
 
+/* ---------- JNI 入口 ---------- */
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     g_vm = vm;
     LOGD("JNI_OnLoad");
@@ -111,9 +116,7 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
     LOGD("JNI_OnUnload");
 }
 
-// --------------------------------------------------------------------
-// 现有辅助函数（目录列表、读文件、写文件、读链接、测试 fd、打开设备、ION、HWBinder 等）
-// --------------------------------------------------------------------
+/* ---------- 基础文件/目录操作 ---------- */
 JNIEXPORT jobjectArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeListDir(JNIEnv* env, jclass clazz, jstring path) {
     if (path == NULL) return NULL;
@@ -253,6 +256,7 @@ Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, 
     return fd;
 }
 
+/* ---------- ION 测试 ---------- */
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jint fd) {
     char result[256] = {0};
@@ -283,6 +287,7 @@ Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jin
     return (*env)->NewStringUTF(env, result);
 }
 
+/* ---------- Binder 测试函数 ---------- */
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeHwbinderTest(JNIEnv* env, jclass clazz, jint fd) {
     char result[256] = {0};
@@ -366,6 +371,7 @@ Java_com_example_tzpoc_MainActivity_nativeGetKernelInfo(JNIEnv* env, jclass claz
     return (*env)->NewStringUTF(env, result);
 }
 
+// 高级 Binder 测试（包含所有涉及 binder_uintptr_t 的地方）
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass clazz, jint fd) {
     char result[1024] = {0};
@@ -423,11 +429,11 @@ Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass
     struct binder_write_read bwr;
     memset(&bwr, 0, sizeof(bwr));
     bwr.write_size = sizeof(tx);
-    bwr.write_buffer = (binder_uintptr_t)&tx;
+    bwr.write_buffer = (uintptr_t)&tx;       // 使用 uintptr_t 替代 binder_uintptr_t
 
     struct binder_transaction_data reply_data;
     bwr.read_size = sizeof(reply_data);
-    bwr.read_buffer = (binder_uintptr_t)&reply_data;
+    bwr.read_buffer = (uintptr_t)&reply_data;
 
     ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
     if (ret == 0) {
@@ -472,7 +478,7 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderOverflowTest(JNIEnv* env, jcla
     struct binder_write_read bwr;
     memset(&bwr, 0, sizeof(bwr));
     bwr.write_size = huge_size;
-    bwr.write_buffer = (binder_uintptr_t)huge_buf;
+    bwr.write_buffer = (uintptr_t)huge_buf;
 
     int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
     free(huge_buf);
@@ -510,7 +516,7 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderWriteTest(JNIEnv* env, jclass 
     };
 
     bwr.write_size = sizeof(tx);
-    bwr.write_buffer = (binder_uintptr_t)&tx;
+    bwr.write_buffer = (uintptr_t)&tx;
 
     int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
     if (ret == 0) {
@@ -547,11 +553,11 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderHalCommand(JNIEnv* env, jclass
     };
 
     bwr.write_size = sizeof(tx);
-    bwr.write_buffer = (binder_uintptr_t)&tx;
+    bwr.write_buffer = (uintptr_t)&tx;
 
     struct binder_transaction_data reply;
     bwr.read_size = sizeof(reply);
-    bwr.read_buffer = (binder_uintptr_t)&reply;
+    bwr.read_buffer = (uintptr_t)&reply;
 
     int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
     if (ret == 0) {
@@ -594,11 +600,11 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderReadTest(JNIEnv* env, jclass c
     };
 
     bwr.write_size = sizeof(tx);
-    bwr.write_buffer = (binder_uintptr_t)&tx;
+    bwr.write_buffer = (uintptr_t)&tx;
 
     struct binder_transaction_data reply;
     bwr.read_size = sizeof(reply);
-    bwr.read_buffer = (binder_uintptr_t)&reply;
+    bwr.read_buffer = (uintptr_t)&reply;
 
     int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
     if (ret == 0) {
