@@ -84,6 +84,7 @@ public class MainActivity extends AppCompatActivity {
     public static native String nativeHwbinderTest(int fd);
     public static native String nativeHwbinderFurther(int fd);
     public static native String nativeGetKernelInfo();
+    public static native String nativeBinderAdvancedTest(int fd);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -211,11 +212,11 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // 2. property_service deep test (already known to fail, but keep for completeness)
+        // 2. property_service deep test (already known to fail)
         appendLog("[*] Deep property service testing (AOSP 9 protocol)");
         testPropertyServiceDeep();
 
-        // 3. /proc/self/fd exploration and dumping (up to 30MB)
+        // 3. /proc/self/fd exploration and dumping
         appendLog("[*] Exploring and dumping /proc/self/fd to /sdcard/Download");
         exploreAndDumpProcFd();
 
@@ -223,35 +224,35 @@ public class MainActivity extends AppCompatActivity {
         appendLog("[*] Testing /proc/self/oom_score_adj");
         testOomScoreAdj();
 
-        // 5. SELinux and kptr related files readability
+        // 5. SELinux and kptr related files
         appendLog("[*] Testing SELinux and kptr related files");
         exploreSelinuxAndKptr();
 
-        // 6. Bruteforce /sys for readable files (enhanced)
+        // 6. Bruteforce /sys for readable files
         appendLog("[*] Bruteforcing /sys for readable files");
         bruteforceSys();
 
-        // 7. Bruteforce /cache and /vendor/bin for copyable files
+        // 7. Bruteforce /cache and /vendor/bin
         appendLog("[*] Bruteforcing /cache and /vendor/bin for copyable files");
         bruteforceCacheAndVendor();
 
-        // 8. Bruteforce /proc/self/ for all files (excluding fd which we already did)
+        // 8. Bruteforce /proc/self/
         appendLog("[*] Bruteforcing /proc/self/ for all files (recursive)");
         bruteforceProcSelf();
 
-        // 9. Dump privileged files (/init, /init.rc, etc.)
-        appendLog("[*] Attempting to dump privileged files (/init, /init.rc, /system/etc/init/*, /vendor/etc/init/*)");
+        // 9. Dump privileged files
+        appendLog("[*] Attempting to dump privileged files");
         dumpPrivilegedFiles();
 
-        // 10. Kernel information gathering (version, cmdline, meminfo, iomem, modules)
+        // 10. Kernel information
         appendLog("[*] Gathering kernel information");
         getKernelInfo();
 
-        // 11. Further hwbinder investigation (attempt to read binder debugfs, try transaction)
-        appendLog("[*] Further hwbinder investigation");
-        testHwbinderFurther();
+        // 11. Advanced binder tests using kernel headers
+        appendLog("[*] Advanced hwbinder test using kernel structures");
+        testBinderAdvanced();
 
-        // 12. Direct device open test (ion, hwbinder) with CVE/POC references
+        // 12. Direct device open test (ion, hwbinder)
         appendLog("[*] Testing direct open of /dev/ion and hwbinder with vulnerability checks");
         testIonAndHwbinder();
 
@@ -466,7 +467,7 @@ public class MainActivity extends AppCompatActivity {
         return baos.toByteArray();
     }
 
-    // ===== Property Service (AOSP 9) with per-test socket reopen =====
+    // ===== Property Service =====
     private void testPropertyServiceDeep() {
         String[][] testCases = {
                 {"persist.sys.timezone", "Asia/Tokyo"},
@@ -496,13 +497,9 @@ public class MainActivity extends AppCompatActivity {
         try {
             int[] handle = new int[1];
             pfd = openSocket("/dev/socket/property_service", handle);
-            if (pfd == null) {
-                return -3;
-            }
+            if (pfd == null) return -3;
             FileDescriptor fd = pfd.getFileDescriptor();
-            if (fd == null || !fd.valid()) {
-                return -4;
-            }
+            if (fd == null || !fd.valid()) return -4;
             int result = sendPropertySet2(fd, name, value);
             pfd.close();
             return result;
@@ -554,7 +551,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ===== Proc FD Exploration & Dumping =====
+    // ===== Proc FD Exploration =====
     private void exploreAndDumpProcFd() {
         File dumpDir = getDumpDir();
         if (dumpDir == null) { appendLog("[DUMP] Cannot get dump directory"); return; }
@@ -615,7 +612,7 @@ public class MainActivity extends AppCompatActivity {
         return getFilesDir();
     }
 
-    // ===== oom_score_adj multi-angle =====
+    // ===== oom_score_adj =====
     private void testOomScoreAdj() {
         String path = "/proc/self/oom_score_adj";
         String current = nativeReadFile(path);
@@ -676,7 +673,7 @@ public class MainActivity extends AppCompatActivity {
         try { return nativeReadFile(path); } catch (Exception e) { return null; }
     }
 
-    // ===== Bruteforce /sys (enhanced) =====
+    // ===== Bruteforce /sys =====
     private void bruteforceSys() {
         String[] bases = {
                 "/sys/class/power_supply/battery/", "/sys/devices/system/cpu/cpu0/cpufreq/",
@@ -735,13 +732,12 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ===== Bruteforce /proc/self/ (excluding fd which we did) =====
+    // ===== Bruteforce /proc/self/ =====
     private void bruteforceProcSelf() {
         String[] entries = nativeListDir("/proc/self");
         if (entries == null) { appendLog("[PROC] Could not list /proc/self"); return; }
         for (String entry : entries) {
             if (stopRequested.get()) break;
-            // Skip fd, attr, cwd, root, exe (symlinks that may cause loops)
             if (entry.equals("fd") || entry.equals("attr") || entry.equals("cwd") || entry.equals("root") || entry.equals("exe") || entry.equals("task")) {
                 continue;
             }
@@ -754,7 +750,6 @@ public class MainActivity extends AppCompatActivity {
                 } else {
                     appendLog("[PROC-SELF] " + fullPath + " (empty/unreadable)");
                 }
-                // Dump if not huge
                 if (f.length() < 10 * 1024 * 1024) {
                     File dumpDir = getDumpDir();
                     if (dumpDir != null) {
@@ -764,7 +759,6 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
             } else if (f.isDirectory()) {
-                // If it's a subdirectory, list contents
                 String[] sub = nativeListDir(fullPath);
                 if (sub != null) {
                     appendLog("[PROC-SELF] " + fullPath + " (dir) contains " + sub.length + " entries");
@@ -775,7 +769,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ===== Dump privileged files =====
+    // ===== Privileged files =====
     private void dumpPrivilegedFiles() {
         File dumpDir = getDumpDir();
         if (dumpDir == null) { appendLog("[DUMP] Cannot get dump directory"); return; }
@@ -800,7 +794,6 @@ public class MainActivity extends AppCompatActivity {
                 } else {
                     appendLog("[PRIV] " + path + " (empty/unreadable)");
                 }
-                // Dump the file
                 if (f.length() < 20 * 1024 * 1024) {
                     String fileName = "priv_" + path.replace('/', '_') + ".bin";
                     File out = new File(dumpDir, fileName);
@@ -814,44 +807,24 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ===== Kernel information =====
+    // ===== Kernel info =====
     private void getKernelInfo() {
         String result = nativeGetKernelInfo();
         appendLog("[KERNEL] " + result);
     }
 
-    // ===== Further hwbinder investigation =====
-    private void testHwbinderFurther() {
-        // First try to open /dev/hwbinder
+    // ===== Advanced binder test =====
+    private void testBinderAdvanced() {
         int fd = nativeOpenDevice("/dev/hwbinder");
         if (fd < 0) {
-            appendLog("[HWBINDER] Failed to open /dev/hwbinder: " + fd);
+            appendLog("[BINDER] Failed to open /dev/hwbinder: " + fd);
             return;
         }
-        String result = nativeHwbinderFurther(fd);
-        appendLog("[HWBINDER] Further test result: " + result);
-        // Also try to read /sys/kernel/debug/binder/ if it exists
-        File debugBinder = new File("/sys/kernel/debug/binder/");
-        if (debugBinder.exists() && debugBinder.isDirectory()) {
-            String[] files = nativeListDir("/sys/kernel/debug/binder/");
-            if (files != null) {
-                for (String f : files) {
-                    if (stopRequested.get()) break;
-                    String path = "/sys/kernel/debug/binder/" + f;
-                    String content = safeReadFile(path);
-                    if (content != null && !content.isEmpty()) {
-                        appendLog("[HWBINDER-DEBUG] " + path + " = " + content.substring(0, Math.min(100, content.length())));
-                    } else {
-                        appendLog("[HWBINDER-DEBUG] " + path + " (unreadable/empty)");
-                    }
-                }
-            }
-        } else {
-            appendLog("[HWBINDER-DEBUG] /sys/kernel/debug/binder/ not found or not accessible");
-        }
+        String result = nativeBinderAdvancedTest(fd);
+        appendLog("[BINDER] Advanced test result: " + result);
     }
 
-    // ===== Ion and Hwbinder vulnerability checks =====
+    // ===== Ion and Hwbinder =====
     private void testIonAndHwbinder() {
         int ionFd = nativeOpenDevice("/dev/ion");
         appendLog("[DEV] /dev/ion open returned fd=" + ionFd);
@@ -872,6 +845,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    // ===== List files recursively =====
     private List<File> listFilesRecursive(File dir, int depth, int maxDepth) {
         List<File> result = new ArrayList<>();
         if (depth > maxDepth) return result;
@@ -891,7 +865,7 @@ public class MainActivity extends AppCompatActivity {
         return result;
     }
 
-    // ===== Utils =====
+    // ===== Logging =====
     private void appendLog(final String msg) {
         String ts = new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date());
         final String line = "[" + ts + "] " + msg + "\n";
