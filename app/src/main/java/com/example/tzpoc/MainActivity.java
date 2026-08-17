@@ -59,6 +59,7 @@ public class MainActivity extends AppCompatActivity {
 
     public static native String[] nativeListDir(String path);
     public static native String nativeReadFile(String path);
+    public static native String nativeTestQSEECom();
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -171,6 +172,10 @@ public class MainActivity extends AppCompatActivity {
     private void executeExploit() {
         appendLog("========================================");
         appendLog("========== Advanced TZ POC ==========");
+
+        appendLog("[*] Testing QSEECom vulnerability...");
+        String qseeResult = nativeTestQSEECom();
+        appendLog("[QSEECom] Result: " + qseeResult);
 
         String[] sockets = nativeListDir("/dev/socket");
         if (sockets == null) sockets = new String[0];
