@@ -29,6 +29,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -233,6 +234,7 @@ public class MainActivity extends AppCompatActivity {
         exploreAndDumpProcFd();
         testOomScoreAdj();
         exploreSelinuxAndKptr();
+        testProcAuxvPagemapWrite();  // ★ 追加
         bruteforceSys();
         bruteforceCacheAndVendor();
         bruteforceProcSelf();
@@ -789,7 +791,6 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // 追加：/sys/fs/selinux/ 以下を再帰的に探索
         String selinuxPath = "/sys/fs/selinux";
         File selinuxDir = new File(selinuxPath);
         if (selinuxDir.exists() && selinuxDir.isDirectory()) {
@@ -810,28 +811,24 @@ public class MainActivity extends AppCompatActivity {
             appendLog("[SELINUX] " + selinuxPath + " does not exist or not accessible");
         }
 
-        // SELinux enforce 書き込みテスト
         try {
             String result = nativeWriteFile("/sys/fs/selinux/enforce", "0");
             appendLog("[SELINUX] Write enforce 0 result: " + result);
             if ("OK".equals(result)) {
                 String newVal = nativeReadFile("/sys/fs/selinux/enforce");
                 appendLog("[SELINUX] New enforce: " + (newVal != null ? newVal.trim() : "null"));
-                // 元に戻す
                 nativeWriteFile("/sys/fs/selinux/enforce", "1");
             }
         } catch (Exception e) {
             appendLog("[SELINUX] Write enforce failed: " + e.getMessage());
         }
 
-        // SELinux access インターフェーステスト
         testSelinuxAccess();
     }
 
     private void testSelinuxAccess() {
         String accessPath = "/sys/fs/selinux/access";
         try {
-            // 適当なコンテキストペア（システムコンテキストを想定）
             String query = "system_u:system_r:kernel_t system_u:system_r:kernel_t process";
             String writeResult = nativeWriteFile(accessPath, query);
             appendLog("[SELINUX] Write access query result: " + writeResult);
@@ -844,6 +841,65 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    // ★ 追加: /proc/self/auxv と /proc/self/pagemap への書き込みテスト
+    private void testProcAuxvPagemapWrite() {
+        appendLog("[*] Testing write to /proc/self/auxv and /proc/self/pagemap");
+
+        String[] paths = {"/proc/self/auxv", "/proc/self/pagemap"};
+        for (String path : paths) {
+            if (stopRequested.get()) break;
+            appendLog("[PROC-WRITE] Trying " + path);
+            try {
+                // 読み取り可能か確認
+                String readContent = nativeReadFile(path);
+                if (readContent != null && !readContent.isEmpty()) {
+                    appendLog("[PROC-WRITE] " + path + " read content (first 50): " + readContent.substring(0, Math.min(50, readContent.length())));
+                } else if (readContent != null) {
+                    appendLog("[PROC-WRITE] " + path + " is empty");
+                } else {
+                    appendLog("[PROC-WRITE] " + path + " read failed (null)");
+                }
+
+                // 書き込み試行（JavaのFileOutputStreamを使うとより細かいエラー取得可能）
+                try (RandomAccessFile raf = new RandomAccessFile(path, "rw")) {
+                    // ダミーデータ（0x41 = 'A'）を先頭に書き込む
+                    byte[] testData = new byte[8];
+                    Arrays.fill(testData, (byte)0x41);
+                    raf.seek(0);
+                    raf.write(testData);
+                    appendLog("[PROC-WRITE] " + path + " write succeeded (wrote 8 bytes of 'A')");
+                    // 読み返して確認
+                    raf.seek(0);
+                    byte[] readBack = new byte[8];
+                    int n = raf.read(readBack);
+                    if (n > 0) {
+                        String hex = bytesToHex(readBack, n);
+                        appendLog("[PROC-WRITE] " + path + " read back: " + hex);
+                    }
+                } catch (Exception e) {
+                    String errMsg = e.getMessage();
+                    if (e instanceof java.io.IOException) {
+                        // IOException から errno を取得するのは難しいが、メッセージに含まれる場合がある
+                        appendLog("[PROC-WRITE] " + path + " write failed: " + errMsg);
+                    } else {
+                        appendLog("[PROC-WRITE] " + path + " write failed: " + e.toString());
+                    }
+                }
+            } catch (Exception e) {
+                appendLog("[PROC-WRITE] " + path + " test error: " + e.getMessage());
+            }
+        }
+    }
+
+    private String bytesToHex(byte[] bytes, int len) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < len; i++) {
+            sb.append(String.format("%02x ", bytes[i]));
+        }
+        return sb.toString();
+    }
+
+    // 以下は既存のメソッド（変更なし）
     private String safeReadFile(String path) {
         try { return nativeReadFile(path); } catch (Exception e) { return null; }
     }
