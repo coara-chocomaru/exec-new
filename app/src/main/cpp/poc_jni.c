@@ -10,15 +10,58 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include <sys/ioctl.h>
-#include <linux/ion.h>
-#include <linux/msm_ion.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <linux/binder.h>
 
 #define LOG_TAG "PocJNI"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+// ===== ION definitions (inline, since NDK lacks linux/ion.h) =====
+#define ION_IOC_MAGIC 'I'
+
+#define ION_IOC_ALLOC _IOWR(ION_IOC_MAGIC, 0, struct ion_allocation_data)
+#define ION_IOC_FREE _IOWR(ION_IOC_MAGIC, 1, struct ion_handle_data)
+#define ION_IOC_MAP _IOWR(ION_IOC_MAGIC, 7, struct ion_fd_data)
+
+#define ION_HEAP_SYSTEM 25
+#define ION_HEAP_QSECOM 27
+
+struct ion_allocation_data {
+    size_t len;
+    size_t align;
+    unsigned int heap_id_mask;
+    unsigned int flags;
+    unsigned int handle;
+};
+
+struct ion_fd_data {
+    unsigned int handle;
+    int fd;
+};
+
+struct ion_handle_data {
+    unsigned int handle;
+};
+
+// ===== Binder definitions (inline) =====
+#define BINDER_WRITE_READ _IOWR('b', 1, struct binder_write_read)
+#define BINDER_VERSION _IOWR('b', 9, struct binder_version)
+
+struct binder_version {
+    int32_t protocol_version;
+};
+
+struct binder_write_read {
+    void *write_buffer;
+    size_t write_size;
+    size_t write_consumed;
+    void *read_buffer;
+    size_t read_size;
+    size_t read_consumed;
+    uint64_t write_buffer_ptr;
+    uint64_t read_buffer_ptr;
+};
 
 static JavaVM* g_vm = NULL;
 
@@ -174,21 +217,22 @@ Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, 
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jint fd) {
     char result[256] = {0};
+
     // Reference: CVE-2016-6683 / CVE-2017-13218 - ion heap overflow
-    // Attempt to allocate a small ION buffer
     struct ion_allocation_data alloc_data = {
         .len = 4096,
         .align = 4096,
-        .heap_id_mask = ION_HEAP_SYSTEM,
+        .heap_id_mask = 1 << ION_HEAP_SYSTEM,
         .flags = 0,
         .handle = 0
     };
+
     int ret = ioctl(fd, ION_IOC_ALLOC, &alloc_data);
     if (ret < 0) {
         snprintf(result, sizeof(result), "ION_IOC_ALLOC failed: %s", strerror(errno));
         return (*env)->NewStringUTF(env, result);
     }
-    // If success, try to map it (simulate)
+
     struct ion_fd_data fd_data = {
         .handle = alloc_data.handle,
         .fd = 0
@@ -196,15 +240,15 @@ Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jin
     ret = ioctl(fd, ION_IOC_MAP, &fd_data);
     if (ret < 0) {
         snprintf(result, sizeof(result), "ION_IOC_MAP failed: %s", strerror(errno));
-        // Still try to free the handle
         struct ion_handle_data handle_data = { .handle = alloc_data.handle };
         ioctl(fd, ION_IOC_FREE, &handle_data);
         return (*env)->NewStringUTF(env, result);
     }
-    // Cleanup
+
     close(fd_data.fd);
     struct ion_handle_data handle_data = { .handle = alloc_data.handle };
     ioctl(fd, ION_IOC_FREE, &handle_data);
+
     snprintf(result, sizeof(result), "ION test succeeded: allocated and mapped 4096 bytes (vulnerability may be exploitable)");
     return (*env)->NewStringUTF(env, result);
 }
@@ -212,14 +256,12 @@ Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jin
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeHwbinderTest(JNIEnv* env, jclass clazz, jint fd) {
     char result[256] = {0};
+
     // Reference: CVE-2020-0041 / CVE-2020-0069 - binder use-after-free
-    // Try to send a simple transaction (will likely fail with EINVAL)
     struct binder_write_read bwr = {0};
-    // We'll just test ioctl with a dummy command
     int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
     if (ret < 0) {
-        snprintf(result, sizeof(result), "BINDER_WRITE_READ failed (expected): %s", strerror(errno));
-        // This is expected, but we can also try to read version
+        // Expected to fail; try to read version
         struct binder_version version;
         ret = ioctl(fd, BINDER_VERSION, &version);
         if (ret == 0) {
