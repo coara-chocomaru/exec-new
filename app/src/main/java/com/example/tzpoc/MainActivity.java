@@ -82,6 +82,8 @@ public class MainActivity extends AppCompatActivity {
     public static native int nativeOpenDevice(String path);
     public static native String nativeIonTest(int fd);
     public static native String nativeHwbinderTest(int fd);
+    public static native String nativeHwbinderFurther(int fd);
+    public static native String nativeGetKernelInfo();
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -209,7 +211,7 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // 2. property_service deep test with per-test socket reopen
+        // 2. property_service deep test (already known to fail, but keep for completeness)
         appendLog("[*] Deep property service testing (AOSP 9 protocol)");
         testPropertyServiceDeep();
 
@@ -233,7 +235,23 @@ public class MainActivity extends AppCompatActivity {
         appendLog("[*] Bruteforcing /cache and /vendor/bin for copyable files");
         bruteforceCacheAndVendor();
 
-        // 8. Direct device open test (ion, hwbinder) with CVE/POC references
+        // 8. Bruteforce /proc/self/ for all files (excluding fd which we already did)
+        appendLog("[*] Bruteforcing /proc/self/ for all files (recursive)");
+        bruteforceProcSelf();
+
+        // 9. Dump privileged files (/init, /init.rc, etc.)
+        appendLog("[*] Attempting to dump privileged files (/init, /init.rc, /system/etc/init/*, /vendor/etc/init/*)");
+        dumpPrivilegedFiles();
+
+        // 10. Kernel information gathering (version, cmdline, meminfo, iomem, modules)
+        appendLog("[*] Gathering kernel information");
+        getKernelInfo();
+
+        // 11. Further hwbinder investigation (attempt to read binder debugfs, try transaction)
+        appendLog("[*] Further hwbinder investigation");
+        testHwbinderFurther();
+
+        // 12. Direct device open test (ion, hwbinder) with CVE/POC references
         appendLog("[*] Testing direct open of /dev/ion and hwbinder with vulnerability checks");
         testIonAndHwbinder();
 
@@ -450,7 +468,6 @@ public class MainActivity extends AppCompatActivity {
 
     // ===== Property Service (AOSP 9) with per-test socket reopen =====
     private void testPropertyServiceDeep() {
-        // Known writable persist properties
         String[][] testCases = {
                 {"persist.sys.timezone", "Asia/Tokyo"},
                 {"persist.sys.language", "ja"},
@@ -469,7 +486,6 @@ public class MainActivity extends AppCompatActivity {
             appendLog("[PROP] Result: " + result + " (" + getPropertyErrorString(result) + ")");
             if (result == PROP_SUCCESS) {
                 appendLog("[PROP] SUCCESS! Property " + name + " set to " + value);
-                // Try to read back via system property? We'll just note success.
             }
             try { Thread.sleep(100); } catch (Exception ignored) {}
         }
@@ -481,19 +497,16 @@ public class MainActivity extends AppCompatActivity {
             int[] handle = new int[1];
             pfd = openSocket("/dev/socket/property_service", handle);
             if (pfd == null) {
-                appendLog("[PROP] Failed to open property_service for " + name);
                 return -3;
             }
             FileDescriptor fd = pfd.getFileDescriptor();
             if (fd == null || !fd.valid()) {
-                appendLog("[PROP] Invalid FD for " + name);
                 return -4;
             }
             int result = sendPropertySet2(fd, name, value);
             pfd.close();
             return result;
         } catch (Exception e) {
-            appendLog("[PROP] Exception: " + e.getMessage());
             if (pfd != null) try { pfd.close(); } catch (Exception ignored) {}
             return -2;
         }
@@ -503,16 +516,14 @@ public class MainActivity extends AppCompatActivity {
         try {
             ByteBuffer buf = ByteBuffer.allocate(4 + 4 + name.length() + 4 + value.length());
             buf.order(ByteOrder.LITTLE_ENDIAN);
-            buf.putInt(2); // PROP_MSG_SETPROP2
+            buf.putInt(2);
             buf.putInt(name.length());
             buf.put(name.getBytes(StandardCharsets.UTF_8));
             buf.putInt(value.length());
             buf.put(value.getBytes(StandardCharsets.UTF_8));
             byte[] data = buf.array();
             OutputStream os = new FileOutputStream(fd);
-            os.write(data);
-            os.flush();
-            os.close();
+            os.write(data); os.flush(); os.close();
 
             InputStream is = new FileInputStream(fd);
             byte[] resp = new byte[4];
@@ -546,17 +557,11 @@ public class MainActivity extends AppCompatActivity {
     // ===== Proc FD Exploration & Dumping =====
     private void exploreAndDumpProcFd() {
         File dumpDir = getDumpDir();
-        if (dumpDir == null) {
-            appendLog("[DUMP] Cannot get dump directory");
-            return;
-        }
+        if (dumpDir == null) { appendLog("[DUMP] Cannot get dump directory"); return; }
         String[] fds = nativeListDir("/proc/self/fd");
-        if (fds == null) {
-            appendLog("[PROC] Could not read fd directory");
-            return;
-        }
+        if (fds == null) { appendLog("[PROC] Could not read fd directory"); return; }
 
-        int maxDumpSize = 30 * 1024 * 1024; // 30MB
+        int maxDumpSize = 30 * 1024 * 1024;
 
         for (String fdStr : fds) {
             if (stopRequested.get()) break;
@@ -573,8 +578,7 @@ public class MainActivity extends AppCompatActivity {
                 }
                 String fileName = "fd_" + fdStr + "_" + new File(target).getName() + ".bin";
                 File outFile = new File(dumpDir, fileName);
-                boolean dumped = dumpFileToDownload(link, outFile, maxDumpSize);
-                if (dumped) {
+                if (dumpFileToDownload(link, outFile, maxDumpSize)) {
                     appendLog("[DUMP] Dumped " + link + " to " + outFile.getAbsolutePath());
                 } else {
                     appendLog("[DUMP] Failed to dump " + link);
@@ -597,9 +601,7 @@ public class MainActivity extends AppCompatActivity {
                 totalRead += read;
             }
             return true;
-        } catch (Exception e) {
-            return false;
-        } finally {
+        } catch (Exception e) { return false; } finally {
             try { if (fis != null) fis.close(); } catch (Exception ignored) {}
             try { if (fos != null) fos.close(); } catch (Exception ignored) {}
         }
@@ -635,21 +637,11 @@ public class MainActivity extends AppCompatActivity {
     // ===== SELinux and kptr =====
     private void exploreSelinuxAndKptr() {
         String[] paths = {
-                "/proc/kallsyms",
-                "/proc/kptr_restrict",
-                "/proc/self/attr/current",
-                "/proc/self/attr/prev",
-                "/proc/self/attr/keycreate",
-                "/proc/self/attr/exec",
-                "/proc/self/attr/fscreate",
-                "/sys/kernel/security/",
-                "/sys/fs/selinux/policy",
-                "/sys/fs/selinux/status",
-                "/sys/fs/selinux/booleans/",
-                "/sys/fs/selinux/enforce",
-                "/sys/fs/selinux/load",
-                "/sys/kernel/debug/kptr_restrict",
-                "/sys/kernel/security/lsm"
+                "/proc/kallsyms", "/proc/kptr_restrict", "/proc/self/attr/current", "/proc/self/attr/prev",
+                "/proc/self/attr/keycreate", "/proc/self/attr/exec", "/proc/self/attr/fscreate",
+                "/sys/kernel/security/", "/sys/fs/selinux/policy", "/sys/fs/selinux/status",
+                "/sys/fs/selinux/booleans/", "/sys/fs/selinux/enforce", "/sys/fs/selinux/load",
+                "/sys/kernel/debug/kptr_restrict", "/sys/kernel/security/lsm"
         };
         for (String p : paths) {
             if (stopRequested.get()) break;
@@ -681,22 +673,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private String safeReadFile(String path) {
-        try {
-            return nativeReadFile(path);
-        } catch (Exception e) {
-            return null;
-        }
+        try { return nativeReadFile(path); } catch (Exception e) { return null; }
     }
 
     // ===== Bruteforce /sys (enhanced) =====
     private void bruteforceSys() {
         String[] bases = {
-                "/sys/class/power_supply/battery/",
-                "/sys/devices/system/cpu/cpu0/cpufreq/",
-                "/sys/kernel/debug/",
-                "/sys/fs/",
-                "/sys/class/",
-                "/sys/devices/"
+                "/sys/class/power_supply/battery/", "/sys/devices/system/cpu/cpu0/cpufreq/",
+                "/sys/kernel/debug/", "/sys/fs/", "/sys/class/", "/sys/devices/"
         };
         for (String base : bases) {
             if (stopRequested.get()) break;
@@ -713,9 +697,7 @@ public class MainActivity extends AppCompatActivity {
                         } else {
                             appendLog("[SYS] " + f.getAbsolutePath() + " (empty/unreadable)");
                         }
-                    } catch (Exception e) {
-                        // ignore
-                    }
+                    } catch (Exception e) {}
                 }
             }
         }
@@ -730,10 +712,7 @@ public class MainActivity extends AppCompatActivity {
         for (String root : roots) {
             if (stopRequested.get()) break;
             File dir = new File(root);
-            if (!dir.exists()) {
-                appendLog("[BRUTE] " + root + " does not exist");
-                continue;
-            }
+            if (!dir.exists()) { appendLog("[BRUTE] " + root + " does not exist"); continue; }
             List<File> files = listFilesRecursive(dir, 0, 3);
             for (File f : files) {
                 if (stopRequested.get()) break;
@@ -743,7 +722,6 @@ public class MainActivity extends AppCompatActivity {
                         if (content != null && !content.isEmpty()) {
                             appendLog("[BRUTE] " + f.getAbsolutePath() + " = " + content.substring(0, Math.min(100, content.length())));
                         }
-                        // Dump the file if it's not too large
                         if (f.length() < 10 * 1024 * 1024) {
                             String fileName = "brute_" + f.getName().replace('/', '_') + ".bin";
                             File out = new File(dumpDir, fileName);
@@ -751,11 +729,146 @@ public class MainActivity extends AppCompatActivity {
                                 appendLog("[BRUTE] Dumped " + f.getAbsolutePath() + " to " + out.getAbsolutePath());
                             }
                         }
-                    } catch (Exception e) {
-                        // ignore
+                    } catch (Exception e) {}
+                }
+            }
+        }
+    }
+
+    // ===== Bruteforce /proc/self/ (excluding fd which we did) =====
+    private void bruteforceProcSelf() {
+        String[] entries = nativeListDir("/proc/self");
+        if (entries == null) { appendLog("[PROC] Could not list /proc/self"); return; }
+        for (String entry : entries) {
+            if (stopRequested.get()) break;
+            // Skip fd, attr, cwd, root, exe (symlinks that may cause loops)
+            if (entry.equals("fd") || entry.equals("attr") || entry.equals("cwd") || entry.equals("root") || entry.equals("exe") || entry.equals("task")) {
+                continue;
+            }
+            String fullPath = "/proc/self/" + entry;
+            File f = new File(fullPath);
+            if (f.isFile() && f.canRead()) {
+                String content = safeReadFile(fullPath);
+                if (content != null && !content.isEmpty()) {
+                    appendLog("[PROC-SELF] " + fullPath + " = " + content.substring(0, Math.min(100, content.length())));
+                } else {
+                    appendLog("[PROC-SELF] " + fullPath + " (empty/unreadable)");
+                }
+                // Dump if not huge
+                if (f.length() < 10 * 1024 * 1024) {
+                    File dumpDir = getDumpDir();
+                    if (dumpDir != null) {
+                        String fileName = "procself_" + entry + ".bin";
+                        File out = new File(dumpDir, fileName);
+                        dumpFileToDownload(fullPath, out, 30 * 1024 * 1024);
+                    }
+                }
+            } else if (f.isDirectory()) {
+                // If it's a subdirectory, list contents
+                String[] sub = nativeListDir(fullPath);
+                if (sub != null) {
+                    appendLog("[PROC-SELF] " + fullPath + " (dir) contains " + sub.length + " entries");
+                } else {
+                    appendLog("[PROC-SELF] " + fullPath + " (dir) unreadable");
+                }
+            }
+        }
+    }
+
+    // ===== Dump privileged files =====
+    private void dumpPrivilegedFiles() {
+        File dumpDir = getDumpDir();
+        if (dumpDir == null) { appendLog("[DUMP] Cannot get dump directory"); return; }
+
+        String[] privilegedPaths = {
+                "/init", "/init.rc", "/system/etc/init/", "/vendor/etc/init/",
+                "/system/etc/init.rc", "/vendor/etc/init.rc",
+                "/default.prop", "/system/build.prop", "/vendor/build.prop",
+                "/proc/cmdline", "/proc/version", "/proc/mounts", "/proc/filesystems",
+                "/proc/self/status", "/proc/self/stat", "/proc/self/stack", "/proc/self/wchan",
+                "/sys/kernel/security/lsm", "/sys/kernel/debug/kallsyms", "/sys/kernel/debug/binder/",
+                "/data/misc/wifi/wpa_supplicant.conf", "/data/system/packages.list", "/data/system/packages.xml"
+        };
+
+        for (String path : privilegedPaths) {
+            if (stopRequested.get()) break;
+            File f = new File(path);
+            if (f.exists() && f.canRead()) {
+                String content = safeReadFile(path);
+                if (content != null && !content.isEmpty()) {
+                    appendLog("[PRIV] " + path + " = " + content.substring(0, Math.min(200, content.length())));
+                } else {
+                    appendLog("[PRIV] " + path + " (empty/unreadable)");
+                }
+                // Dump the file
+                if (f.length() < 20 * 1024 * 1024) {
+                    String fileName = "priv_" + path.replace('/', '_') + ".bin";
+                    File out = new File(dumpDir, fileName);
+                    if (dumpFileToDownload(path, out, 30 * 1024 * 1024)) {
+                        appendLog("[PRIV] Dumped " + path + " to " + out.getAbsolutePath());
+                    }
+                }
+            } else {
+                appendLog("[PRIV] " + path + " does not exist or not readable");
+            }
+        }
+    }
+
+    // ===== Kernel information =====
+    private void getKernelInfo() {
+        String result = nativeGetKernelInfo();
+        appendLog("[KERNEL] " + result);
+    }
+
+    // ===== Further hwbinder investigation =====
+    private void testHwbinderFurther() {
+        // First try to open /dev/hwbinder
+        int fd = nativeOpenDevice("/dev/hwbinder");
+        if (fd < 0) {
+            appendLog("[HWBINDER] Failed to open /dev/hwbinder: " + fd);
+            return;
+        }
+        String result = nativeHwbinderFurther(fd);
+        appendLog("[HWBINDER] Further test result: " + result);
+        // Also try to read /sys/kernel/debug/binder/ if it exists
+        File debugBinder = new File("/sys/kernel/debug/binder/");
+        if (debugBinder.exists() && debugBinder.isDirectory()) {
+            String[] files = nativeListDir("/sys/kernel/debug/binder/");
+            if (files != null) {
+                for (String f : files) {
+                    if (stopRequested.get()) break;
+                    String path = "/sys/kernel/debug/binder/" + f;
+                    String content = safeReadFile(path);
+                    if (content != null && !content.isEmpty()) {
+                        appendLog("[HWBINDER-DEBUG] " + path + " = " + content.substring(0, Math.min(100, content.length())));
+                    } else {
+                        appendLog("[HWBINDER-DEBUG] " + path + " (unreadable/empty)");
                     }
                 }
             }
+        } else {
+            appendLog("[HWBINDER-DEBUG] /sys/kernel/debug/binder/ not found or not accessible");
+        }
+    }
+
+    // ===== Ion and Hwbinder vulnerability checks =====
+    private void testIonAndHwbinder() {
+        int ionFd = nativeOpenDevice("/dev/ion");
+        appendLog("[DEV] /dev/ion open returned fd=" + ionFd);
+        if (ionFd >= 0) {
+            String info = nativeTestFd(ionFd);
+            appendLog("[DEV] /dev/ion fd info: " + info);
+            String ionResult = nativeIonTest(ionFd);
+            appendLog("[DEV] ion test result: " + ionResult);
+        }
+
+        int hwbinderFd = nativeOpenDevice("/dev/hwbinder");
+        appendLog("[DEV] /dev/hwbinder open returned fd=" + hwbinderFd);
+        if (hwbinderFd >= 0) {
+            String info = nativeTestFd(hwbinderFd);
+            appendLog("[DEV] /dev/hwbinder fd info: " + info);
+            String hwbinderResult = nativeHwbinderTest(hwbinderFd);
+            appendLog("[DEV] hwbinder test result: " + hwbinderResult);
         }
     }
 
@@ -776,31 +889,6 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception ignored) {}
         }
         return result;
-    }
-
-    // ===== Ion and Hwbinder vulnerability checks =====
-    private void testIonAndHwbinder() {
-        // Open /dev/ion
-        int ionFd = nativeOpenDevice("/dev/ion");
-        appendLog("[DEV] /dev/ion open returned fd=" + ionFd);
-        if (ionFd >= 0) {
-            String info = nativeTestFd(ionFd);
-            appendLog("[DEV] /dev/ion fd info: " + info);
-            // Test ion allocation (ioctl)
-            String ionResult = nativeIonTest(ionFd);
-            appendLog("[DEV] ion test result: " + ionResult);
-        }
-
-        // Open /dev/hwbinder
-        int hwbinderFd = nativeOpenDevice("/dev/hwbinder");
-        appendLog("[DEV] /dev/hwbinder open returned fd=" + hwbinderFd);
-        if (hwbinderFd >= 0) {
-            String info = nativeTestFd(hwbinderFd);
-            appendLog("[DEV] /dev/hwbinder fd info: " + info);
-            // Test hwbinder transaction (simple ioctl)
-            String hwbinderResult = nativeHwbinderTest(hwbinderFd);
-            appendLog("[DEV] hwbinder test result: " + hwbinderResult);
-        }
     }
 
     // ===== Utils =====
