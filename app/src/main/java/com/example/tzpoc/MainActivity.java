@@ -86,6 +86,8 @@ public class MainActivity extends AppCompatActivity {
     public static native String nativeGetKernelInfo();
     public static native String nativeBinderAdvancedTest(int fd);
     public static native String nativeHwbinderOverflowTest(int fd);
+    public static native String nativeBinderGetVersion(int fd);
+    public static native String nativeBinderIoctlTest(int fd, int cmd, long arg);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -247,6 +249,12 @@ public class MainActivity extends AppCompatActivity {
 
         appendLog("[*] Hwbinder overflow verification test");
         testHwbinderOverflow();
+
+        appendLog("[*] Binder debugfs information gathering");
+        testBinderDebugfs();
+
+        appendLog("[*] Testing /dev/binder device");
+        testBinderDevice();
 
         appendLog("========== EXPLOIT COMPLETED ==========");
         appendLog("========================================");
@@ -842,6 +850,61 @@ public class MainActivity extends AppCompatActivity {
             appendLog("[OVERFLOW] native method not implemented: " + ule.getMessage());
         } catch (Exception e) {
             appendLog("[OVERFLOW] Exception: " + e.getMessage());
+        } finally {
+            if (fd >= 0) {
+                try {
+                    android.system.Os.close(fd);
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private void testBinderDebugfs() {
+        String[] debugFiles = {
+                "/sys/kernel/debug/binder/state",
+                "/sys/kernel/debug/binder/stats",
+                "/sys/kernel/debug/binder/transactions",
+                "/sys/kernel/debug/binder/transaction_log",
+                "/sys/kernel/debug/binder/failed_transaction_log"
+        };
+        for (String path : debugFiles) {
+            if (stopRequested.get()) break;
+            File f = new File(path);
+            if (f.exists() && f.canRead()) {
+                String content = safeReadFile(path);
+                if (content != null && !content.isEmpty()) {
+                    appendLog("[BINDER_DEBUG] " + path + " =\n" + content);
+                } else {
+                    appendLog("[BINDER_DEBUG] " + path + " (empty/unreadable)");
+                }
+            } else {
+                appendLog("[BINDER_DEBUG] " + path + " not accessible");
+            }
+        }
+    }
+
+    private void testBinderDevice() {
+        int fd = -1;
+        try {
+            fd = nativeOpenDevice("/dev/binder");
+            appendLog("[BINDER_DEV] /dev/binder open returned fd=" + fd);
+            if (fd >= 0) {
+                String version = nativeBinderGetVersion(fd);
+                appendLog("[BINDER_DEV] Version info: " + version);
+
+                int cmd = 0x40046201; // BINDER_VERSION (from binder.h)
+                String ioctlResult = nativeBinderIoctlTest(fd, cmd, 0);
+                appendLog("[BINDER_DEV] Ioctl test result: " + ioctlResult);
+
+                String info = nativeTestFd(fd);
+                appendLog("[BINDER_DEV] fd info: " + info);
+            } else {
+                appendLog("[BINDER_DEV] Failed to open /dev/binder");
+            }
+        } catch (UnsatisfiedLinkError ule) {
+            appendLog("[BINDER_DEV] native method not implemented: " + ule.getMessage());
+        } catch (Exception e) {
+            appendLog("[BINDER_DEV] Exception: " + e.getMessage());
         } finally {
             if (fd >= 0) {
                 try {
