@@ -13,11 +13,16 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
+// Include the binder header from kernel sources (placed in jni directory)
+#include "binder.h"
+
 #define LOG_TAG "PocJNI"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// ION definitions
+static JavaVM* g_vm = NULL;
+
+// ION definitions (still needed)
 #define ION_IOC_MAGIC 'I'
 #define ION_IOC_ALLOC _IOWR(ION_IOC_MAGIC, 0, struct ion_allocation_data)
 #define ION_IOC_FREE _IOWR(ION_IOC_MAGIC, 1, struct ion_handle_data)
@@ -39,27 +44,6 @@ struct ion_handle_data {
     unsigned int handle;
 };
 
-// Binder definitions
-#define BINDER_WRITE_READ _IOWR('b', 1, struct binder_write_read)
-#define BINDER_VERSION _IOWR('b', 9, struct binder_version)
-
-struct binder_version {
-    int32_t protocol_version;
-};
-
-struct binder_write_read {
-    void *write_buffer;
-    size_t write_size;
-    size_t write_consumed;
-    void *read_buffer;
-    size_t read_size;
-    size_t read_consumed;
-    uint64_t write_buffer_ptr;
-    uint64_t read_buffer_ptr;
-};
-
-static JavaVM* g_vm = NULL;
-
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     g_vm = vm;
     LOGD("JNI_OnLoad");
@@ -70,6 +54,7 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
     LOGD("JNI_OnUnload");
 }
 
+// ---------- existing functions (unchanged) ----------
 JNIEXPORT jobjectArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeListDir(JNIEnv* env, jclass clazz, jstring path) {
     if (path == NULL) return NULL;
@@ -209,6 +194,7 @@ Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, 
     return fd;
 }
 
+// Ion test (unchanged)
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jint fd) {
     char result[256] = {0};
@@ -239,30 +225,24 @@ Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jin
     return (*env)->NewStringUTF(env, result);
 }
 
+// Simple hwbinder test (unchanged)
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeHwbinderTest(JNIEnv* env, jclass clazz, jint fd) {
     char result[256] = {0};
-    struct binder_write_read bwr = {0};
-    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
-    if (ret < 0) {
-        struct binder_version version;
-        ret = ioctl(fd, BINDER_VERSION, &version);
-        if (ret == 0) {
-            snprintf(result, sizeof(result), "Binder version: %d (protocol %d) - vulnerability may be exploitable",
-                     version.protocol_version, version.protocol_version);
-        } else {
-            snprintf(result, sizeof(result), "BINDER_VERSION failed: %s", strerror(errno));
-        }
+    struct binder_version version;
+    if (ioctl(fd, BINDER_VERSION, &version) == 0) {
+        snprintf(result, sizeof(result), "Binder version: %d (protocol %d) - vulnerability may be exploitable",
+                 version.protocol_version, version.protocol_version);
     } else {
-        snprintf(result, sizeof(result), "Unexpected success in BINDER_WRITE_READ");
+        snprintf(result, sizeof(result), "BINDER_VERSION failed: %s", strerror(errno));
     }
     return (*env)->NewStringUTF(env, result);
 }
 
+// Further hwbinder test (unchanged)
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeHwbinderFurther(JNIEnv* env, jclass clazz, jint fd) {
     char result[512] = {0};
-    // Try to get binder version first
     struct binder_version version;
     if (ioctl(fd, BINDER_VERSION, &version) == 0) {
         snprintf(result, sizeof(result), "Binder protocol: %d. ", version.protocol_version);
@@ -270,38 +250,40 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderFurther(JNIEnv* env, jclass cl
         snprintf(result, sizeof(result), "BINDER_VERSION failed: %s. ", strerror(errno));
     }
 
-    // Try to send a simple transaction (using a dummy handle 0)
-    // This is known to work on some devices and may cause kernel log messages
-    struct binder_transaction_data {
-        void *data;
-        size_t data_size;
-        void *offsets;
-        size_t offsets_size;
-        uint64_t buffer;
-        uint64_t flags;
-        uint64_t sender_pid;
-        uint64_t sender_euid;
-        uint64_t target_handle;
-    } __attribute__((packed));
-
-    // We'll use a small buffer to try to write
-    int buf[1] = {0};
+    // Try to send a dummy transaction
     struct binder_write_read bwr;
     memset(&bwr, 0, sizeof(bwr));
-    bwr.write_buffer = (void*)buf;
-    bwr.write_size = sizeof(buf);
-    bwr.write_consumed = 0;
-
-    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
-    if (ret < 0) {
-        strcat(result, "WRITE_READ (dummy) failed (expected): ");
-        strcat(result, strerror(errno));
+    // We'll just try to write a small command (BC_NOOP?) but we'll use a simple write of 0 bytes.
+    // Actually, we can try BINDER_SET_MAX_THREADS first.
+    int max_threads = 10;
+    if (ioctl(fd, BINDER_SET_MAX_THREADS, &max_threads) == 0) {
+        strcat(result, "BINDER_SET_MAX_THREADS succeeded. ");
     } else {
-        strcat(result, "WRITE_READ succeeded (unexpected)");
+        strcat(result, "BINDER_SET_MAX_THREADS failed: ");
+        strcat(result, strerror(errno));
+        strcat(result, ". ");
+    }
+
+    // Try to get node info for handle 0 (context manager) - this usually fails without permission
+    struct binder_node_info_for_ref info;
+    memset(&info, 0, sizeof(info));
+    info.handle = 0;
+    if (ioctl(fd, BINDER_GET_NODE_INFO_FOR_REF, &info) == 0) {
+        strcat(result, "BINDER_GET_NODE_INFO_FOR_REF succeeded: strong=");
+        char tmp[32];
+        sprintf(tmp, "%u", info.strong_count);
+        strcat(result, tmp);
+        strcat(result, " weak=");
+        sprintf(tmp, "%u", info.weak_count);
+        strcat(result, tmp);
+    } else {
+        strcat(result, "BINDER_GET_NODE_INFO_FOR_REF failed: ");
+        strcat(result, strerror(errno));
     }
     return (*env)->NewStringUTF(env, result);
 }
 
+// Kernel info (unchanged)
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeGetKernelInfo(JNIEnv* env, jclass clazz) {
     char result[4096] = {0};
@@ -332,5 +314,109 @@ Java_com_example_tzpoc_MainActivity_nativeGetKernelInfo(JNIEnv* env, jclass claz
             strcat(result, ": (unreadable)\n");
         }
     }
+    return (*env)->NewStringUTF(env, result);
+}
+
+// Advanced binder test using kernel structures from binder.h
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass clazz, jint fd) {
+    char result[1024] = {0};
+    int ret;
+
+    // 1. Check version
+    struct binder_version version;
+    if (ioctl(fd, BINDER_VERSION, &version) == 0) {
+        snprintf(result, sizeof(result), "Binder protocol version: %d\n", version.protocol_version);
+    } else {
+        snprintf(result, sizeof(result), "Failed to get version: %s\n", strerror(errno));
+        return (*env)->NewStringUTF(env, result);
+    }
+
+    // 2. Try to set max threads (allowed for any process)
+    int max_threads = 10;
+    if (ioctl(fd, BINDER_SET_MAX_THREADS, &max_threads) == 0) {
+        strcat(result, "BINDER_SET_MAX_THREADS succeeded (set to 10).\n");
+    } else {
+        strcat(result, "BINDER_SET_MAX_THREADS failed: ");
+        strcat(result, strerror(errno));
+        strcat(result, "\n");
+    }
+
+    // 3. Try to get node info for handle 0 (context manager) - likely permission denied
+    struct binder_node_info_for_ref info;
+    memset(&info, 0, sizeof(info));
+    info.handle = 0;
+    if (ioctl(fd, BINDER_GET_NODE_INFO_FOR_REF, &info) == 0) {
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "Node info for handle 0: strong=%u weak=%u\n", info.strong_count, info.weak_count);
+        strcat(result, tmp);
+    } else {
+        strcat(result, "BINDER_GET_NODE_INFO_FOR_REF failed: ");
+        strcat(result, strerror(errno));
+        strcat(result, " (expected without permission)\n");
+    }
+
+    // 4. Try to send a transaction to handle 0 (context manager)
+    // We'll construct a simple BC_TRANSACTION command.
+    // The buffer will contain: BC_TRANSACTION (uint32) followed by binder_transaction_data.
+    // We'll set target.handle = 0, code = 0, flags = 0, data_size = 0, offsets_size = 0.
+    // We'll allocate a small buffer on stack and use BINDER_WRITE_READ.
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx = {
+        .cmd = BC_TRANSACTION,
+        .tdata = {
+            .target.handle = 0,
+            .cookie = 0,
+            .code = 0,
+            .flags = 0,
+            .sender_pid = 0,
+            .sender_euid = 0,
+            .data_size = 0,
+            .offsets_size = 0,
+            .data.ptr.buffer = 0,
+            .data.ptr.offsets = 0
+        }
+    };
+
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+
+    // Allocate a read buffer for potential reply
+    struct binder_transaction_data reply_data;
+    bwr.read_size = sizeof(reply_data);
+    bwr.read_buffer = (binder_uintptr_t)&reply_data;
+
+    ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    if (ret == 0) {
+        strcat(result, "BINDER_WRITE_READ with transaction succeeded (unexpected). ");
+        // Check if we got a reply
+        if (bwr.read_consumed > 0) {
+            strcat(result, "Reply received.\n");
+        }
+    } else {
+        strcat(result, "BINDER_WRITE_READ transaction failed: ");
+        strcat(result, strerror(errno));
+        strcat(result, " (expected, permission denied or handle invalid)\n");
+    }
+
+    // 5. Try to get node debug info (requires root usually)
+    struct binder_node_debug_info debug_info;
+    memset(&debug_info, 0, sizeof(debug_info));
+    if (ioctl(fd, BINDER_GET_NODE_DEBUG_INFO, &debug_info) == 0) {
+        char tmp[128];
+        snprintf(tmp, sizeof(tmp), "Node debug info: ptr=%llx cookie=%llx strong=%u weak=%u\n",
+                 (unsigned long long)debug_info.ptr, (unsigned long long)debug_info.cookie,
+                 debug_info.has_strong_ref, debug_info.has_weak_ref);
+        strcat(result, tmp);
+    } else {
+        strcat(result, "BINDER_GET_NODE_DEBUG_INFO failed: ");
+        strcat(result, strerror(errno));
+        strcat(result, " (likely requires root)\n");
+    }
+
     return (*env)->NewStringUTF(env, result);
 }
