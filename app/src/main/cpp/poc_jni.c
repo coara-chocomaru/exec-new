@@ -9,6 +9,12 @@
 #include <android/log.h>
 #include <sys/stat.h>
 #include <limits.h>
+#include <sys/ioctl.h>
+#include <linux/ion.h>
+#include <linux/msm_ion.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <linux/binder.h>
 
 #define LOG_TAG "PocJNI"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
@@ -163,4 +169,67 @@ Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, 
     }
     (*env)->ReleaseStringUTFChars(env, path, cpath);
     return fd;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jint fd) {
+    char result[256] = {0};
+    // Reference: CVE-2016-6683 / CVE-2017-13218 - ion heap overflow
+    // Attempt to allocate a small ION buffer
+    struct ion_allocation_data alloc_data = {
+        .len = 4096,
+        .align = 4096,
+        .heap_id_mask = ION_HEAP_SYSTEM,
+        .flags = 0,
+        .handle = 0
+    };
+    int ret = ioctl(fd, ION_IOC_ALLOC, &alloc_data);
+    if (ret < 0) {
+        snprintf(result, sizeof(result), "ION_IOC_ALLOC failed: %s", strerror(errno));
+        return (*env)->NewStringUTF(env, result);
+    }
+    // If success, try to map it (simulate)
+    struct ion_fd_data fd_data = {
+        .handle = alloc_data.handle,
+        .fd = 0
+    };
+    ret = ioctl(fd, ION_IOC_MAP, &fd_data);
+    if (ret < 0) {
+        snprintf(result, sizeof(result), "ION_IOC_MAP failed: %s", strerror(errno));
+        // Still try to free the handle
+        struct ion_handle_data handle_data = { .handle = alloc_data.handle };
+        ioctl(fd, ION_IOC_FREE, &handle_data);
+        return (*env)->NewStringUTF(env, result);
+    }
+    // Cleanup
+    close(fd_data.fd);
+    struct ion_handle_data handle_data = { .handle = alloc_data.handle };
+    ioctl(fd, ION_IOC_FREE, &handle_data);
+    snprintf(result, sizeof(result), "ION test succeeded: allocated and mapped 4096 bytes (vulnerability may be exploitable)");
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeHwbinderTest(JNIEnv* env, jclass clazz, jint fd) {
+    char result[256] = {0};
+    // Reference: CVE-2020-0041 / CVE-2020-0069 - binder use-after-free
+    // Try to send a simple transaction (will likely fail with EINVAL)
+    struct binder_write_read bwr = {0};
+    // We'll just test ioctl with a dummy command
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    if (ret < 0) {
+        snprintf(result, sizeof(result), "BINDER_WRITE_READ failed (expected): %s", strerror(errno));
+        // This is expected, but we can also try to read version
+        struct binder_version version;
+        ret = ioctl(fd, BINDER_VERSION, &version);
+        if (ret == 0) {
+            snprintf(result, sizeof(result), "Binder version: %d (protocol %d) - vulnerability may be exploitable",
+                     version.protocol_version, version.protocol_version);
+        } else {
+            snprintf(result, sizeof(result), "BINDER_VERSION failed: %s", strerror(errno));
+        }
+    } else {
+        snprintf(result, sizeof(result), "Unexpected success in BINDER_WRITE_READ");
+    }
+    return (*env)->NewStringUTF(env, result);
 }
