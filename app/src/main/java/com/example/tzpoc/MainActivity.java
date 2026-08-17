@@ -811,6 +811,11 @@ public class MainActivity extends AppCompatActivity {
         }
         String result = nativeBinderAdvancedTest(fd);
         appendLog("[BINDER] Advanced test result: " + result);
+        if (fd >= 0) {
+            try {
+                ParcelFileDescriptor.adoptFd(fd).close();
+            } catch (Exception ignored) {}
+        }
     }
 
     private void testIonAndHwbinder() {
@@ -821,6 +826,9 @@ public class MainActivity extends AppCompatActivity {
             appendLog("[DEV] /dev/ion fd info: " + info);
             String ionResult = nativeIonTest(ionFd);
             appendLog("[DEV] ion test result: " + ionResult);
+            try {
+                ParcelFileDescriptor.adoptFd(ionFd).close();
+            } catch (Exception ignored) {}
         }
 
         int hwbinderFd = nativeOpenDevice("/dev/hwbinder");
@@ -830,6 +838,9 @@ public class MainActivity extends AppCompatActivity {
             appendLog("[DEV] /dev/hwbinder fd info: " + info);
             String hwbinderResult = nativeHwbinderTest(hwbinderFd);
             appendLog("[DEV] hwbinder test result: " + hwbinderResult);
+            try {
+                ParcelFileDescriptor.adoptFd(hwbinderFd).close();
+            } catch (Exception ignored) {}
         }
     }
 
@@ -853,7 +864,7 @@ public class MainActivity extends AppCompatActivity {
         } finally {
             if (fd >= 0) {
                 try {
-                    android.system.Os.close(fd);
+                    ParcelFileDescriptor.adoptFd(fd).close();
                 } catch (Exception ignored) {}
             }
         }
@@ -908,7 +919,7 @@ public class MainActivity extends AppCompatActivity {
         } finally {
             if (fd >= 0) {
                 try {
-                    android.system.Os.close(fd);
+                    ParcelFileDescriptor.adoptFd(fd).close();
                 } catch (Exception ignored) {}
             }
         }
