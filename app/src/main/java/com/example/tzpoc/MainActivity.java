@@ -1045,7 +1045,7 @@ public class MainActivity extends AppCompatActivity {
                 "/proc/kpageflags", "/proc/partitions", "/proc/execdomains", "/proc/sched_debug",
                 "/proc/vmallocinfo", "/proc/pagetypeinfo", "/proc/sysrq-trigger",
                 "/proc/uid_time_in_state", "/proc/self/root/init", "/proc/self/exe",
-                "/proc/uid/0", "/proc/uid/1000", "/proc/1/exe"
+                "/proc/sys/fs/selinux/status", "/proc/config.gz", "/proc/buddyinfo"
         };
 
         for (String path : procPaths) {
@@ -1076,7 +1076,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void testIdCommand() {
         appendLog("[ID] === ID command capture ===");
-        String exePath = nativeReadLink("/proc/1/exe");
+        String exePath = nativeReadLink("/vendor/bin/sh");
         if (exePath != null) {
             appendLog("[ID] exe path: " + exePath);
         } else {
