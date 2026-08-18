@@ -19,21 +19,6 @@
 
 #define BINDER_PING_TRANSACTION 0xFFFFFFFE
 
-JNIEXPORT jint JNICALL
-Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, jstring path) {
-    if (path == NULL) return -1;
-    const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
-    if (cpath == NULL) return -1;
-    int fd = open(cpath, O_RDWR);
-    if (fd < 0) {
-        LOGE("open(%s) failed: %s", cpath, strerror(errno));
-        (*env)->ReleaseStringUTFChars(env, path, cpath);
-        return -errno;
-    }
-    (*env)->ReleaseStringUTFChars(env, path, cpath);
-    return fd;
-}
-
 // バージョン取得
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeGetBinderVersion(JNIEnv* env, jclass clazz, jint fd) {
@@ -136,4 +121,50 @@ Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass 
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderPing(JNIEnv* env, jclass clazz, jint fd) {
     return Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, 0, BINDER_PING_TRANSACTION, 0, NULL);
+}
+
+// サービス取得（単一サービス、文字列をデータとして送信）
+JNIEXPORT jbyteArray JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderGetService(JNIEnv* env, jclass clazz, jint fd, jstring serviceName) {
+    if (serviceName == NULL) return NULL;
+    const char* name = (*env)->GetStringUTFChars(env, serviceName, NULL);
+    if (name == NULL) return NULL;
+    size_t len = strlen(name) + 1;
+    jbyteArray data = (*env)->NewByteArray(env, len);
+    (*env)->SetByteArrayRegion(env, data, 0, len, (jbyte*)name);
+    (*env)->ReleaseStringUTFChars(env, serviceName, name);
+
+    jbyteArray reply = Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, 0, 1, 0, data);
+    (*env)->DeleteLocalRef(env, data);
+    return reply;
+}
+
+// トランザクション送信 + 応答の16進ダンプ付き（Javaから呼び出しやすいように）
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderTransactionWithDump(JNIEnv* env, jclass clazz,
+                                                                     jint fd, jint handle, jint code, jint flags, jbyteArray data) {
+    jbyteArray reply = Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, handle, code, flags, data);
+    char result[512] = {0};
+    if (reply != NULL) {
+        jsize len = (*env)->GetArrayLength(env, reply);
+        uint8_t* buf = malloc(len + 1);
+        if (buf) {
+            (*env)->GetByteArrayRegion(env, reply, 0, len, (jbyte*)buf);
+            buf[len] = '\0';
+            // 最初の32バイトを16進で表示
+            char hex[256] = {0};
+            int hexlen = 0;
+            for (int i = 0; i < len && i < 32; i++) {
+                hexlen += snprintf(hex + hexlen, sizeof(hex) - hexlen, "%02x ", buf[i]);
+            }
+            snprintf(result, sizeof(result), "reply len=%d, hex: %s", len, hex);
+            free(buf);
+        } else {
+            snprintf(result, sizeof(result), "reply len=%d", len);
+        }
+        (*env)->DeleteLocalRef(env, reply);
+    } else {
+        snprintf(result, sizeof(result), "no reply or error");
+    }
+    return (*env)->NewStringUTF(env, result);
 }
