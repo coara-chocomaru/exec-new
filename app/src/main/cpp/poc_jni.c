@@ -19,10 +19,7 @@
 
 #define BINDER_PING_TRANSACTION 0xFFFFFFFE
 
-// ====== プロトタイプ宣言 ======
 jbyteArray Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv*, jclass, jint, jint, jint, jint, jbyteArray);
-
-// ====== JNI 関数実装 ======
 
 JNIEXPORT jint JNICALL
 Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, jstring path) {
@@ -39,23 +36,6 @@ Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, 
     return fd;
 }
 
-// サービス取得 (handle=0, code=1)
-JNIEXPORT jbyteArray JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBinderGetService(JNIEnv* env, jclass clazz, jint fd, jstring serviceName) {
-    if (serviceName == NULL) return NULL;
-    const char* name = (*env)->GetStringUTFChars(env, serviceName, NULL);
-    if (name == NULL) return NULL;
-    size_t len = strlen(name) + 1;
-    jbyteArray data = (*env)->NewByteArray(env, len);
-    (*env)->SetByteArrayRegion(env, data, 0, len, (jbyte*)name);
-    (*env)->ReleaseStringUTFChars(env, serviceName, name);
-
-    jbyteArray reply = Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, 0, 1, 0, data);
-    (*env)->DeleteLocalRef(env, data);
-    return reply;
-}
-
-// 汎用トランザクション（データ付き・空データ可）
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass clazz,
                                                              jint fd, jint handle, jint code, jint flags, jbyteArray data) {
@@ -124,7 +104,42 @@ Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass 
     return result;
 }
 
-// ダンプ付きトランザクション（応答を文字列化して返す）
+JNIEXPORT jbyteArray JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderGetService(JNIEnv* env, jclass clazz,
+                                                             jint fd, jstring serviceName, jstring descriptor) {
+    if (serviceName == NULL || descriptor == NULL) return NULL;
+
+    const char* desc = (*env)->GetStringUTFChars(env, descriptor, NULL);
+    if (desc == NULL) return NULL;
+
+    size_t len = strlen(desc) + 1;
+    size_t total_len = 4 + len;
+
+    uint8_t* data = malloc(total_len);
+    if (data == NULL) {
+        (*env)->ReleaseStringUTFChars(env, descriptor, desc);
+        LOGE("malloc failed");
+        return NULL;
+    }
+
+    data[0] = (uint8_t)(len & 0xFF);
+    data[1] = (uint8_t)((len >> 8) & 0xFF);
+    data[2] = (uint8_t)((len >> 16) & 0xFF);
+    data[3] = (uint8_t)((len >> 24) & 0xFF);
+    memcpy(data + 4, desc, len);
+
+    (*env)->ReleaseStringUTFChars(env, descriptor, desc);
+
+    jbyteArray jdata = (*env)->NewByteArray(env, total_len);
+    (*env)->SetByteArrayRegion(env, jdata, 0, total_len, (jbyte*)data);
+    free(data);
+
+    jbyteArray reply = Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(
+            env, clazz, fd, 0, 1, 0, jdata);
+    (*env)->DeleteLocalRef(env, jdata);
+    return reply;
+}
+
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderDumpReply(JNIEnv* env, jclass clazz,
                                                            jint fd, jint handle, jint code, jint flags, jbyteArray data) {
@@ -145,7 +160,7 @@ Java_com_example_tzpoc_MainActivity_nativeBinderDumpReply(JNIEnv* env, jclass cl
                 }
                 snprintf(result, sizeof(result), "len=%d hex: %s", len, hex);
             } else {
-                snprintf(result, sizeof(result), "len=%d (data too large to dump)", len);
+                snprintf(result, sizeof(result), "len=%d", len);
             }
             free(buf);
         } else {
@@ -158,7 +173,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderDumpReply(JNIEnv* env, jclass cl
     return (*env)->NewStringUTF(env, result);
 }
 
-// 書き込み専用（応答を無視して書き込んだサイズを返す） - 今回は未使用だが残す
 JNIEXPORT jint JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderWriteToService(JNIEnv* env, jclass clazz,
                                                                 jint fd, jint handle, jint code, jint flags, jbyteArray data) {
@@ -216,4 +230,33 @@ Java_com_example_tzpoc_MainActivity_nativeBinderWriteToService(JNIEnv* env, jcla
         return -errno;
     }
     return bwr.write_consumed;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBuildGetServiceParcel(JNIEnv* env, jclass clazz, jstring descriptor) {
+    if (descriptor == NULL) return NULL;
+    const char* desc = (*env)->GetStringUTFChars(env, descriptor, NULL);
+    if (desc == NULL) return NULL;
+
+    size_t len = strlen(desc) + 1;
+    size_t total_len = 4 + len;
+
+    uint8_t* data = malloc(total_len);
+    if (data == NULL) {
+        (*env)->ReleaseStringUTFChars(env, descriptor, desc);
+        return NULL;
+    }
+
+    data[0] = (uint8_t)(len & 0xFF);
+    data[1] = (uint8_t)((len >> 8) & 0xFF);
+    data[2] = (uint8_t)((len >> 16) & 0xFF);
+    data[3] = (uint8_t)((len >> 24) & 0xFF);
+    memcpy(data + 4, desc, len);
+
+    (*env)->ReleaseStringUTFChars(env, descriptor, desc);
+
+    jbyteArray result = (*env)->NewByteArray(env, total_len);
+    (*env)->SetByteArrayRegion(env, result, 0, total_len, (jbyte*)data);
+    free(data);
+    return result;
 }
