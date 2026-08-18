@@ -17,8 +17,6 @@
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-#define BINDER_PING_TRANSACTION 0xFFFFFFFE
-
 jbyteArray Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv*, jclass, jint, jint, jint, jint, jbyteArray);
 
 JNIEXPORT jint JNICALL
@@ -233,30 +231,49 @@ Java_com_example_tzpoc_MainActivity_nativeBinderWriteToService(JNIEnv* env, jcla
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBuildGetServiceParcel(JNIEnv* env, jclass clazz, jstring descriptor) {
-    if (descriptor == NULL) return NULL;
-    const char* desc = (*env)->GetStringUTFChars(env, descriptor, NULL);
-    if (desc == NULL) return NULL;
+Java_com_example_tzpoc_MainActivity_nativeBuildSurfaceFlingerParcel(JNIEnv* env, jclass clazz,
+                                                                     jint displayId, jint layerId, jint what,
+                                                                     jint x, jint y, jint w, jint h) {
+    uint8_t* data = malloc(32);
+    if (data == NULL) return NULL;
 
-    size_t len = strlen(desc) + 1;
-    size_t total_len = 4 + len;
+    memset(data, 0, 32);
+    memcpy(data, &displayId, 4);
+    memcpy(data + 4, &layerId, 4);
+    memcpy(data + 8, &what, 4);
+    memcpy(data + 12, &x, 4);
+    memcpy(data + 16, &y, 4);
+    memcpy(data + 20, &w, 4);
+    memcpy(data + 24, &h, 4);
 
-    uint8_t* data = malloc(total_len);
-    if (data == NULL) {
-        (*env)->ReleaseStringUTFChars(env, descriptor, desc);
-        return NULL;
+    jbyteArray result = (*env)->NewByteArray(env, 32);
+    (*env)->SetByteArrayRegion(env, result, 0, 32, (jbyte*)data);
+    free(data);
+    return result;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBuildMalformedParcel(JNIEnv* env, jclass clazz, jint size, jint offsetCount) {
+    if (size <= 0) size = 128;
+    if (offsetCount <= 0) offsetCount = 1;
+
+    int total = size + (offsetCount * 4);
+    uint8_t* data = malloc(total);
+    if (data == NULL) return NULL;
+
+    memset(data, 0, total);
+    for (int i = 0; i < size && i < total; i++) {
+        data[i] = (uint8_t)(i & 0xFF);
     }
 
-    data[0] = (uint8_t)(len & 0xFF);
-    data[1] = (uint8_t)((len >> 8) & 0xFF);
-    data[2] = (uint8_t)((len >> 16) & 0xFF);
-    data[3] = (uint8_t)((len >> 24) & 0xFF);
-    memcpy(data + 4, desc, len);
+    for (int i = 0; i < offsetCount; i++) {
+        int off = size + (i * 4);
+        int val = (i * 8) % size;
+        memcpy(data + off, &val, 4);
+    }
 
-    (*env)->ReleaseStringUTFChars(env, descriptor, desc);
-
-    jbyteArray result = (*env)->NewByteArray(env, total_len);
-    (*env)->SetByteArrayRegion(env, result, 0, total_len, (jbyte*)data);
+    jbyteArray result = (*env)->NewByteArray(env, total);
+    (*env)->SetByteArrayRegion(env, result, 0, total, (jbyte*)data);
     free(data);
     return result;
 }
