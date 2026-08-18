@@ -52,7 +52,7 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
     LOGD("JNI_OnUnload");
 }
 
-// ---------- 原有方法 ----------
+// ---------- Utility methods ----------
 JNIEXPORT jobjectArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeListDir(JNIEnv* env, jclass clazz, jstring path) {
     if (path == NULL) return NULL;
@@ -218,7 +218,7 @@ Java_com_example_tzpoc_MainActivity_nativeIonTest(JNIEnv* env, jclass clazz, jin
     close(fd_data.fd);
     struct ion_handle_data handle_data = { .handle = alloc_data.handle };
     ioctl(fd, ION_IOC_FREE, &handle_data);
-    snprintf(result, sizeof(result), "ION test succeeded: allocated and mapped 4096 bytes (vulnerability may be exploitable)");
+    snprintf(result, sizeof(result), "ION test succeeded: allocated and mapped 4096 bytes");
     return (*env)->NewStringUTF(env, result);
 }
 
@@ -227,8 +227,7 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderTest(JNIEnv* env, jclass clazz
     char result[256] = {0};
     struct binder_version version;
     if (ioctl(fd, BINDER_VERSION, &version) == 0) {
-        snprintf(result, sizeof(result), "Binder version: %d (protocol %d) - vulnerability may be exploitable",
-                 version.protocol_version, version.protocol_version);
+        snprintf(result, sizeof(result), "Binder version: %d (protocol %d)", version.protocol_version, version.protocol_version);
     } else {
         snprintf(result, sizeof(result), "BINDER_VERSION failed: %s", strerror(errno));
     }
@@ -244,7 +243,6 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderFurther(JNIEnv* env, jclass cl
     } else {
         snprintf(result, sizeof(result), "BINDER_VERSION failed: %s. ", strerror(errno));
     }
-
     int max_threads = 10;
     if (ioctl(fd, BINDER_SET_MAX_THREADS, &max_threads) == 0) {
         strcat(result, "BINDER_SET_MAX_THREADS succeeded. ");
@@ -253,7 +251,6 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderFurther(JNIEnv* env, jclass cl
         strcat(result, strerror(errno));
         strcat(result, ". ");
     }
-
     struct binder_node_info_for_ref info;
     memset(&info, 0, sizeof(info));
     info.handle = 0;
@@ -370,14 +367,14 @@ Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass
 
     ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
     if (ret == 0) {
-        strcat(result, "BINDER_WRITE_READ with transaction succeeded (unexpected). ");
+        strcat(result, "BINDER_WRITE_READ with transaction succeeded. ");
         if (bwr.read_consumed > 0) {
             strcat(result, "Reply received.\n");
         }
     } else {
         strcat(result, "BINDER_WRITE_READ transaction failed: ");
         strcat(result, strerror(errno));
-        strcat(result, " (expected, permission denied or handle invalid)\n");
+        strcat(result, "\n");
     }
 
     struct binder_node_debug_info debug_info;
@@ -391,7 +388,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderAdvancedTest(JNIEnv* env, jclass
     } else {
         strcat(result, "BINDER_GET_NODE_DEBUG_INFO failed: ");
         strcat(result, strerror(errno));
-        strcat(result, " (likely requires root)\n");
     }
 
     return (*env)->NewStringUTF(env, result);
@@ -416,9 +412,9 @@ Java_com_example_tzpoc_MainActivity_nativeHwbinderOverflowTest(JNIEnv* env, jcla
     int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
     free(huge_buf);
     if (ret == 0) {
-        snprintf(result, sizeof(result), "Overflow test: BINDER_WRITE_READ with huge buffer succeeded (unexpected)");
+        snprintf(result, sizeof(result), "Overflow test: BINDER_WRITE_READ with huge buffer succeeded");
     } else {
-        snprintf(result, sizeof(result), "Overflow test: BINDER_WRITE_READ with huge buffer failed: %s (expected error)", strerror(errno));
+        snprintf(result, sizeof(result), "Overflow test: BINDER_WRITE_READ with huge buffer failed: %s", strerror(errno));
     }
     return (*env)->NewStringUTF(env, result);
 }
@@ -582,7 +578,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderIoctlTest(JNIEnv* env, jclass cl
     return (*env)->NewStringUTF(env, result);
 }
 
-// ---------- 新增：可指定 handle、code、flags 的 binder 事务 ----------
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderSendTransaction(JNIEnv* env, jclass clazz, jint fd, jint handle, jint code, jint flags) {
     char result[512] = {0};
@@ -626,6 +621,155 @@ Java_com_example_tzpoc_MainActivity_nativeBinderSendTransaction(JNIEnv* env, jcl
         }
     } else {
         snprintf(result, sizeof(result), "ioctl(BINDER_WRITE_READ) failed: %s", strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+// ---------- New final verification methods ----------
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderWriteMemory(JNIEnv* env, jclass clazz, jint fd, jint handle, jint code, jlong address, jlong value) {
+    char result[256] = {0};
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+
+    // Craft a transaction with a buffer containing address and value
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+        uint64_t data[2];
+    } __attribute__((packed)) tx;
+    tx.cmd = BC_TRANSACTION;
+    memset(&tx.tdata, 0, sizeof(tx.tdata));
+    tx.tdata.target.handle = (uint32_t)handle;
+    tx.tdata.code = (uint32_t)code;
+    tx.tdata.flags = 0;
+    tx.tdata.data_size = 16; // 8 bytes address + 8 bytes value
+    tx.tdata.offsets_size = 0;
+    tx.tdata.data.ptr.buffer = (binder_uintptr_t)tx.data;
+    tx.tdata.data.ptr.offsets = 0;
+    tx.data[0] = (uint64_t)address;
+    tx.data[1] = (uint64_t)value;
+
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+
+    struct binder_transaction_data reply;
+    bwr.read_size = sizeof(reply);
+    bwr.read_buffer = (binder_uintptr_t)&reply;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    if (ret == 0) {
+        snprintf(result, sizeof(result), "WriteMemory: ioctl succeeded, read_consumed=%llu",
+                 (unsigned long long)bwr.read_consumed);
+    } else {
+        snprintf(result, sizeof(result), "WriteMemory: ioctl failed: %s", strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderReadReply(JNIEnv* env, jclass clazz, jint fd, jint handle, jint code, jint flags) {
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx = {
+        .cmd = BC_TRANSACTION,
+        .tdata = {
+            .target.handle = (uint32_t)handle,
+            .cookie = 0,
+            .code = (uint32_t)code,
+            .flags = (uint32_t)flags,
+            .sender_pid = 0,
+            .sender_euid = 0,
+            .data_size = 0,
+            .offsets_size = 0,
+            .data.ptr.buffer = 0,
+            .data.ptr.offsets = 0
+        }
+    };
+
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+
+    // Read up to 4096 bytes of reply
+    uint8_t reply_buf[4096];
+    bwr.read_size = sizeof(reply_buf);
+    bwr.read_buffer = (binder_uintptr_t)reply_buf;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    if (ret == 0 && bwr.read_consumed > 0) {
+        jbyteArray arr = (*env)->NewByteArray(env, (jsize)bwr.read_consumed);
+        (*env)->SetByteArrayRegion(env, arr, 0, (jsize)bwr.read_consumed, (jbyte*)reply_buf);
+        return arr;
+    }
+    return NULL;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderExecCommand(JNIEnv* env, jclass clazz, jint fd, jint handle, jint code, jstring cmd) {
+    char result[512] = {0};
+    if (cmd == NULL) {
+        snprintf(result, sizeof(result), "ExecCommand: command is null");
+        return (*env)->NewStringUTF(env, result);
+    }
+    const char* command = (*env)->GetStringUTFChars(env, cmd, NULL);
+    if (command == NULL) {
+        snprintf(result, sizeof(result), "ExecCommand: failed to get command string");
+        return (*env)->NewStringUTF(env, result);
+    }
+
+    size_t cmd_len = strlen(command) + 1;
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+
+    // Allocate a buffer for the transaction data containing the command
+    size_t data_size = cmd_len;
+    void* data_buf = malloc(data_size);
+    if (!data_buf) {
+        (*env)->ReleaseStringUTFChars(env, cmd, command);
+        snprintf(result, sizeof(result), "ExecCommand: malloc failed");
+        return (*env)->NewStringUTF(env, result);
+    }
+    memcpy(data_buf, command, cmd_len);
+
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx;
+    tx.cmd = BC_TRANSACTION;
+    memset(&tx.tdata, 0, sizeof(tx.tdata));
+    tx.tdata.target.handle = (uint32_t)handle;
+    tx.tdata.code = (uint32_t)code;
+    tx.tdata.flags = 0;
+    tx.tdata.data_size = data_size;
+    tx.tdata.offsets_size = 0;
+    tx.tdata.data.ptr.buffer = (binder_uintptr_t)data_buf;
+    tx.tdata.data.ptr.offsets = 0;
+
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+
+    // Read reply
+    uint8_t reply_buf[512];
+    bwr.read_size = sizeof(reply_buf);
+    bwr.read_buffer = (binder_uintptr_t)reply_buf;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    free(data_buf);
+    (*env)->ReleaseStringUTFChars(env, cmd, command);
+
+    if (ret == 0) {
+        if (bwr.read_consumed > 0) {
+            snprintf(result, sizeof(result), "ExecCommand: succeeded, reply (%llu bytes): %s",
+                     (unsigned long long)bwr.read_consumed, (char*)reply_buf);
+        } else {
+            snprintf(result, sizeof(result), "ExecCommand: succeeded, no reply");
+        }
+    } else {
+        snprintf(result, sizeof(result), "ExecCommand: ioctl failed: %s", strerror(errno));
     }
     return (*env)->NewStringUTF(env, result);
 }
