@@ -180,7 +180,6 @@ public class MainActivity extends AppCompatActivity {
         }
         appendLog("[+] Using fd=" + fd);
 
-        // サービス名候補（WiFi関連）
         String[] wifiServices = {
             "wifi",
             "wifiscanner",
@@ -211,7 +210,6 @@ public class MainActivity extends AppCompatActivity {
             try { Thread.sleep(50); } catch (Exception e) {}
         }
 
-        // 別の方法でも試す（getService2 は異なるプロトコル）
         if (wifiHandle < 0) {
             appendLog("[GETSVC] Trying alternative method...");
             for (String name : wifiServices) {
@@ -231,7 +229,6 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // WiFi ハンドルが見つからなければ、既存のハンドル 1〜5 をテスト
         if (wifiHandle < 0) {
             appendLog("[!] WiFi service not found, using handles 1-5");
             for (int h = 1; h <= 5; h++) {
@@ -242,7 +239,6 @@ public class MainActivity extends AppCompatActivity {
             testWriteAndCrash(fd, wifiHandle, "wifi");
         }
 
-        // 念のため handle=0 にも書き込みテスト（危険度低）
         appendLog("[*] Testing handle=0 with large buffer");
         byte[] largeData = new byte[65536];
         for (int i = 0; i < largeData.length; i++) largeData[i] = (byte)(i & 0xFF);
@@ -265,7 +261,6 @@ public class MainActivity extends AppCompatActivity {
     private void testWriteAndCrash(int fd, int handle, String label) {
         appendLog("[CRASH] Testing " + label + " handle=" + handle);
 
-        // 1. 巨大バッファ（クラッシュ狙い）
         for (int size : new int[]{1024, 4096, 16384, 65536, 131072}) {
             if (stopRequested.get()) break;
             byte[] data = new byte[size];
@@ -276,7 +271,6 @@ public class MainActivity extends AppCompatActivity {
             try { Thread.sleep(50); } catch (Exception e) {}
         }
 
-        // 2. WiFi 既知メソッドコード
         int[] wifiCodes = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
                            11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
                            21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
@@ -313,7 +307,6 @@ public class MainActivity extends AppCompatActivity {
             try { Thread.sleep(20); } catch (Exception e) {}
         }
 
-        // 3. ワンウェイフラグ付き（応答なしを期待）
         appendLog("[CRASH] Testing oneway transactions");
         for (int code : new int[]{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) {
             if (stopRequested.get()) break;
@@ -324,12 +317,7 @@ public class MainActivity extends AppCompatActivity {
             try { Thread.sleep(10); } catch (Exception e) {}
         }
 
-        // 4. 不正なオフセット（offset_size != 0 で不正なポインタ）
         appendLog("[CRASH] Testing invalid offset data");
-        byte[] invalidData = new byte[128];
-        for (int i = 0; i < invalidData.length; i++) invalidData[i] = (byte)(i);
-        // 実際には offset を含むデータを構築する必要があるが、C 側でオフセットを 0 に固定
-        // 代わりにデータサイズを変えてみる
         for (int size : new int[]{16, 32, 64, 128, 256, 512, 1024, 2048, 4096}) {
             byte[] d = new byte[size];
             for (int i = 0; i < d.length; i++) d[i] = (byte)((i * 7) & 0xFF);
