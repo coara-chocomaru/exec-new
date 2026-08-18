@@ -19,7 +19,21 @@
 
 #define BINDER_PING_TRANSACTION 0xFFFFFFFE
 
-// バージョン取得
+JNIEXPORT jint JNICALL
+Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, jstring path) {
+    if (path == NULL) return -1;
+    const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
+    if (cpath == NULL) return -1;
+    int fd = open(cpath, O_RDWR);
+    if (fd < 0) {
+        LOGE("open(%s) failed: %s", cpath, strerror(errno));
+        (*env)->ReleaseStringUTFChars(env, path, cpath);
+        return -errno;
+    }
+    (*env)->ReleaseStringUTFChars(env, path, cpath);
+    return fd;
+}
+
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeGetBinderVersion(JNIEnv* env, jclass clazz, jint fd) {
     struct binder_version ver;
@@ -32,7 +46,6 @@ Java_com_example_tzpoc_MainActivity_nativeGetBinderVersion(JNIEnv* env, jclass c
     return (*env)->NewStringUTF(env, result);
 }
 
-// ノードデバッグ情報取得（先頭ポインタを渡すと次の情報が取得できる）
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeGetNodeDebugInfo(JNIEnv* env, jclass clazz, jint fd, jlong ptr) {
     struct binder_node_debug_info info;
@@ -40,16 +53,18 @@ Java_com_example_tzpoc_MainActivity_nativeGetNodeDebugInfo(JNIEnv* env, jclass c
     info.ptr = (binder_uintptr_t)ptr;
     char result[256] = {0};
     if (ioctl(fd, BINDER_GET_NODE_DEBUG_INFO, &info) == 0) {
-        snprintf(result, sizeof(result), "Node: ptr=%llx cookie=%llx strong=%u weak=%u",
+        snprintf(result, sizeof(result), "ptr=%llx cookie=%llx strong=%u weak=%u",
                  (unsigned long long)info.ptr, (unsigned long long)info.cookie,
                  info.has_strong_ref, info.has_weak_ref);
+        // 次のノードへ進むため、ポインタを更新（実際には応答から次のポインタを取得する必要あり）
+        // この簡易版では、次の呼び出しで info.ptr を指定できるが、正しくは応答で返されるべき
+        // ここでは常に同じポインタで呼ばれるが、実質的なデモとして動作
     } else {
-        snprintf(result, sizeof(result), "BINDER_GET_NODE_DEBUG_INFO failed: %s", strerror(errno));
+        snprintf(result, sizeof(result), "failed: %s", strerror(errno));
     }
     return (*env)->NewStringUTF(env, result);
 }
 
-// 汎用トランザクション（データなし版）
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass clazz,
                                                              jint fd, jint handle, jint code, jint flags, jbyteArray data) {
@@ -117,13 +132,11 @@ Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass 
     return result;
 }
 
-// PING トランザクション (code=0xFFFFFFFE)
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderPing(JNIEnv* env, jclass clazz, jint fd) {
     return Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, 0, BINDER_PING_TRANSACTION, 0, NULL);
 }
 
-// サービス取得（単一サービス、文字列をデータとして送信）
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderGetService(JNIEnv* env, jclass clazz, jint fd, jstring serviceName) {
     if (serviceName == NULL) return NULL;
@@ -139,22 +152,20 @@ Java_com_example_tzpoc_MainActivity_nativeBinderGetService(JNIEnv* env, jclass c
     return reply;
 }
 
-// トランザクション送信 + 応答の16進ダンプ付き（Javaから呼び出しやすいように）
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderTransactionWithDump(JNIEnv* env, jclass clazz,
                                                                      jint fd, jint handle, jint code, jint flags, jbyteArray data) {
     jbyteArray reply = Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, handle, code, flags, data);
-    char result[512] = {0};
+    char result[1024] = {0};
     if (reply != NULL) {
         jsize len = (*env)->GetArrayLength(env, reply);
         uint8_t* buf = malloc(len + 1);
         if (buf) {
             (*env)->GetByteArrayRegion(env, reply, 0, len, (jbyte*)buf);
             buf[len] = '\0';
-            // 最初の32バイトを16進で表示
-            char hex[256] = {0};
+            char hex[512] = {0};
             int hexlen = 0;
-            for (int i = 0; i < len && i < 32; i++) {
+            for (int i = 0; i < len && i < 64; i++) {
                 hexlen += snprintf(hex + hexlen, sizeof(hex) - hexlen, "%02x ", buf[i]);
             }
             snprintf(result, sizeof(result), "reply len=%d, hex: %s", len, hex);
