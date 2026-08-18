@@ -19,6 +19,27 @@
 
 #define BINDER_PING_TRANSACTION 0xFFFFFFFE
 
+// ====== プロトタイプ宣言 ======
+// nativeBinderTransaction は後で定義するが、他の関数から呼ばれるため事前に宣言する
+jbyteArray Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv*, jclass, jint, jint, jint, jint, jbyteArray);
+
+// ====== JNI 関数実装 ======
+
+JNIEXPORT jint JNICALL
+Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, jstring path) {
+    if (path == NULL) return -1;
+    const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
+    if (cpath == NULL) return -1;
+    int fd = open(cpath, O_RDWR);
+    if (fd < 0) {
+        LOGE("open(%s) failed: %s", cpath, strerror(errno));
+        (*env)->ReleaseStringUTFChars(env, path, cpath);
+        return -errno;
+    }
+    (*env)->ReleaseStringUTFChars(env, path, cpath);
+    return fd;
+}
+
 // サービス取得 (handle=0, code=1)
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderGetService(JNIEnv* env, jclass clazz, jint fd, jstring serviceName) {
@@ -51,21 +72,7 @@ Java_com_example_tzpoc_MainActivity_nativeBinderGetService2(JNIEnv* env, jclass 
     return reply;
 }
 
-JNIEXPORT jint JNICALL
-Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, jstring path) {
-    if (path == NULL) return -1;
-    const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
-    if (cpath == NULL) return -1;
-    int fd = open(cpath, O_RDWR);
-    if (fd < 0) {
-        LOGE("open(%s) failed: %s", cpath, strerror(errno));
-        (*env)->ReleaseStringUTFChars(env, path, cpath);
-        return -errno;
-    }
-    (*env)->ReleaseStringUTFChars(env, path, cpath);
-    return fd;
-}
-
+// 汎用トランザクション（データ付き・空データ可）
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass clazz,
                                                              jint fd, jint handle, jint code, jint flags, jbyteArray data) {
@@ -134,7 +141,7 @@ Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass 
     return result;
 }
 
-// ダンプ付きトランザクション（C 側で応答を文字列化）
+// ダンプ付きトランザクション（応答を文字列化して返す）
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderDumpReply(JNIEnv* env, jclass clazz,
                                                            jint fd, jint handle, jint code, jint flags, jbyteArray data) {
@@ -168,7 +175,7 @@ Java_com_example_tzpoc_MainActivity_nativeBinderDumpReply(JNIEnv* env, jclass cl
     return (*env)->NewStringUTF(env, result);
 }
 
-// 書き込み専用（応答を無視）
+// 書き込み専用（応答を無視して書き込んだサイズを返す）
 JNIEXPORT jint JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderWriteToService(JNIEnv* env, jclass clazz,
                                                                 jint fd, jint handle, jint code, jint flags, jbyteArray data) {
