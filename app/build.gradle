@@ -86,5 +86,6 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 dependencies {
+    implementation 'com.github.c-rack:android-cbor:1.0.0'
     implementation 'com.android.support:appcompat-v7:28.0.0'
 }
