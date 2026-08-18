@@ -52,7 +52,7 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
     LOGD("JNI_OnUnload");
 }
 
-// ---------- 原有方法（完整保留） ----------
+// ---------- 原有方法 ----------
 JNIEXPORT jobjectArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeListDir(JNIEnv* env, jclass clazz, jstring path) {
     if (path == NULL) return NULL;
@@ -182,7 +182,7 @@ Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, 
     if (path == NULL) return -1;
     const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
     if (cpath == NULL) return -1;
-    int fd = open(cpath, O_RDWR);  // 使用 RDWR 以便能执行写操作
+    int fd = open(cpath, O_RDWR);
     if (fd < 0) {
         LOGE("open(%s) failed: %s", cpath, strerror(errno));
         (*env)->ReleaseStringUTFChars(env, path, cpath);
@@ -582,6 +582,7 @@ Java_com_example_tzpoc_MainActivity_nativeBinderIoctlTest(JNIEnv* env, jclass cl
     return (*env)->NewStringUTF(env, result);
 }
 
+// ---------- 新增：可指定 handle、code、flags 的 binder 事务 ----------
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderSendTransaction(JNIEnv* env, jclass clazz, jint fd, jint handle, jint code, jint flags) {
     char result[512] = {0};
