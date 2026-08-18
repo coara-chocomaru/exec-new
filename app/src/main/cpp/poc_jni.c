@@ -102,42 +102,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass 
     return result;
 }
 
-JNIEXPORT jbyteArray JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBinderGetService(JNIEnv* env, jclass clazz,
-                                                             jint fd, jstring serviceName, jstring descriptor) {
-    if (serviceName == NULL || descriptor == NULL) return NULL;
-
-    const char* desc = (*env)->GetStringUTFChars(env, descriptor, NULL);
-    if (desc == NULL) return NULL;
-
-    size_t len = strlen(desc) + 1;
-    size_t total_len = 4 + len;
-
-    uint8_t* data = malloc(total_len);
-    if (data == NULL) {
-        (*env)->ReleaseStringUTFChars(env, descriptor, desc);
-        LOGE("malloc failed");
-        return NULL;
-    }
-
-    data[0] = (uint8_t)(len & 0xFF);
-    data[1] = (uint8_t)((len >> 8) & 0xFF);
-    data[2] = (uint8_t)((len >> 16) & 0xFF);
-    data[3] = (uint8_t)((len >> 24) & 0xFF);
-    memcpy(data + 4, desc, len);
-
-    (*env)->ReleaseStringUTFChars(env, descriptor, desc);
-
-    jbyteArray jdata = (*env)->NewByteArray(env, total_len);
-    (*env)->SetByteArrayRegion(env, jdata, 0, total_len, (jbyte*)data);
-    free(data);
-
-    jbyteArray reply = Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(
-            env, clazz, fd, 0, 1, 0, jdata);
-    (*env)->DeleteLocalRef(env, jdata);
-    return reply;
-}
-
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderDumpReply(JNIEnv* env, jclass clazz,
                                                            jint fd, jint handle, jint code, jint flags, jbyteArray data) {
@@ -171,109 +135,89 @@ Java_com_example_tzpoc_MainActivity_nativeBinderDumpReply(JNIEnv* env, jclass cl
     return (*env)->NewStringUTF(env, result);
 }
 
-JNIEXPORT jint JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBinderWriteToService(JNIEnv* env, jclass clazz,
-                                                                jint fd, jint handle, jint code, jint flags, jbyteArray data) {
-    uint8_t* tx_data = NULL;
-    size_t tx_data_size = 0;
-    if (data != NULL) {
-        tx_data_size = (*env)->GetArrayLength(env, data);
-        tx_data = malloc(tx_data_size);
-        if (tx_data == NULL) {
-            LOGE("malloc failed");
-            return -ENOMEM;
-        }
-        (*env)->GetByteArrayRegion(env, data, 0, tx_data_size, (jbyte*)tx_data);
-    }
-
-    size_t cmd_size = sizeof(uint32_t) + sizeof(struct binder_transaction_data);
-    size_t total_size = cmd_size + tx_data_size;
-    uint8_t* buf = malloc(total_size);
-    if (buf == NULL) {
-        if (tx_data) free(tx_data);
-        LOGE("malloc for buffer failed");
-        return -ENOMEM;
-    }
-
-    uint32_t* cmd = (uint32_t*)buf;
-    *cmd = BC_TRANSACTION;
-    struct binder_transaction_data* tdata = (struct binder_transaction_data*)(buf + sizeof(uint32_t));
-    memset(tdata, 0, sizeof(struct binder_transaction_data));
-    tdata->target.handle = (uint32_t)handle;
-    tdata->code = (uint32_t)code;
-    tdata->flags = (uint32_t)flags;
-    tdata->data_size = tx_data_size;
-    tdata->offsets_size = 0;
-    tdata->data.ptr.buffer = (binder_uintptr_t)(buf + cmd_size);
-    tdata->data.ptr.offsets = 0;
-
-    if (tx_data_size > 0 && tx_data != NULL) {
-        memcpy(buf + cmd_size, tx_data, tx_data_size);
-    }
-
-    struct binder_write_read bwr;
-    memset(&bwr, 0, sizeof(bwr));
-    bwr.write_size = total_size;
-    bwr.write_buffer = (binder_uintptr_t)buf;
-    bwr.read_size = 0;
-    bwr.read_buffer = 0;
-
-    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
-
-    if (tx_data) free(tx_data);
-    free(buf);
-
-    if (ret < 0) {
-        LOGE("ioctl write failed: %s", strerror(errno));
-        return -errno;
-    }
-    return bwr.write_consumed;
-}
-
 JNIEXPORT jbyteArray JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBuildSurfaceFlingerParcel(JNIEnv* env, jclass clazz,
-                                                                     jint displayId, jint layerId, jint what,
-                                                                     jint x, jint y, jint w, jint h) {
-    uint8_t* data = malloc(32);
-    if (data == NULL) return NULL;
+Java_com_example_tzpoc_MainActivity_nativeBuildMalformedParcel(JNIEnv* env, jclass clazz, jint type, jint extra) {
+    uint8_t* data = NULL;
+    int len = 0;
 
-    memset(data, 0, 32);
-    memcpy(data, &displayId, 4);
-    memcpy(data + 4, &layerId, 4);
-    memcpy(data + 8, &what, 4);
-    memcpy(data + 12, &x, 4);
-    memcpy(data + 16, &y, 4);
-    memcpy(data + 20, &w, 4);
-    memcpy(data + 24, &h, 4);
+    switch (type) {
+        case 0: // empty data (no parcel)
+            return NULL;
 
-    jbyteArray result = (*env)->NewByteArray(env, 32);
-    (*env)->SetByteArrayRegion(env, result, 0, 32, (jbyte*)data);
-    free(data);
-    return result;
-}
+        case 1: // length field only (no string)
+            len = 4;
+            data = malloc(len);
+            if (data == NULL) return NULL;
+            memset(data, 0, len);
+            data[0] = 0x01;
+            data[1] = 0x00;
+            data[2] = 0x00;
+            data[3] = 0x00;
+            break;
 
-JNIEXPORT jbyteArray JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBuildMalformedParcel(JNIEnv* env, jclass clazz, jint size, jint offsetCount) {
-    if (size <= 0) size = 128;
-    if (offsetCount <= 0) offsetCount = 1;
+        case 2: // length > actual data (len=100, data="a")
+            len = 4 + 2;
+            data = malloc(len);
+            if (data == NULL) return NULL;
+            memset(data, 0, len);
+            data[0] = 100;
+            data[1] = 0;
+            data[2] = 0;
+            data[3] = 0;
+            data[4] = 'a';
+            data[5] = 0;
+            break;
 
-    int total = size + (offsetCount * 4);
-    uint8_t* data = malloc(total);
-    if (data == NULL) return NULL;
+        case 3: // length < actual data (len=1, data="test\0")
+            len = 4 + 5;
+            data = malloc(len);
+            if (data == NULL) return NULL;
+            memset(data, 0, len);
+            data[0] = 1;
+            data[1] = 0;
+            data[2] = 0;
+            data[3] = 0;
+            memcpy(data + 4, "test", 4);
+            data[8] = 0;
+            break;
 
-    memset(data, 0, total);
-    for (int i = 0; i < size && i < total; i++) {
-        data[i] = (uint8_t)(i & 0xFF);
+        case 4: // data with null bytes inside (invalid string)
+            len = 4 + 10;
+            data = malloc(len);
+            if (data == NULL) return NULL;
+            memset(data, 0, len);
+            data[0] = 10;
+            data[1] = 0;
+            data[2] = 0;
+            data[3] = 0;
+            memcpy(data + 4, "a\0b\0c\0d\0", 8);
+            break;
+
+        case 5: // length with negative value (0xFFFFFFFF)
+            len = 4;
+            data = malloc(len);
+            if (data == NULL) return NULL;
+            memset(data, 0xFF, len);
+            break;
+
+        case 6: // extra large length (0x7FFFFFFF)
+            len = 4;
+            data = malloc(len);
+            if (data == NULL) return NULL;
+            data[0] = 0xFF;
+            data[1] = 0xFF;
+            data[2] = 0xFF;
+            data[3] = 0x7F;
+            break;
+
+        default:
+            return NULL;
     }
 
-    for (int i = 0; i < offsetCount; i++) {
-        int off = size + (i * 4);
-        int val = (i * 8) % size;
-        memcpy(data + off, &val, 4);
+    jbyteArray result = (*env)->NewByteArray(env, len);
+    if (result != NULL) {
+        (*env)->SetByteArrayRegion(env, result, 0, len, (jbyte*)data);
     }
-
-    jbyteArray result = (*env)->NewByteArray(env, total);
-    (*env)->SetByteArrayRegion(env, result, 0, total, (jbyte*)data);
     free(data);
     return result;
 }
