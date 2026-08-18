@@ -18,7 +18,6 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 #define BINDER_PING_TRANSACTION 0xFFFFFFFE
-#define BINDER_SERVICE_MANAGER_GET_SERVICE 1
 
 JNIEXPORT jint JNICALL
 Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, jstring path) {
@@ -35,7 +34,37 @@ Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, 
     return fd;
 }
 
-// 汎用トランザクション送信（データ付き・空データ可）
+// バージョン取得
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeGetBinderVersion(JNIEnv* env, jclass clazz, jint fd) {
+    struct binder_version ver;
+    char result[128] = {0};
+    if (ioctl(fd, BINDER_VERSION, &ver) == 0) {
+        snprintf(result, sizeof(result), "Protocol version: %d", ver.protocol_version);
+    } else {
+        snprintf(result, sizeof(result), "BINDER_VERSION failed: %s", strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+// ノードデバッグ情報取得（先頭ポインタを渡すと次の情報が取得できる）
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeGetNodeDebugInfo(JNIEnv* env, jclass clazz, jint fd, jlong ptr) {
+    struct binder_node_debug_info info;
+    memset(&info, 0, sizeof(info));
+    info.ptr = (binder_uintptr_t)ptr;
+    char result[256] = {0};
+    if (ioctl(fd, BINDER_GET_NODE_DEBUG_INFO, &info) == 0) {
+        snprintf(result, sizeof(result), "Node: ptr=%llx cookie=%llx strong=%u weak=%u",
+                 (unsigned long long)info.ptr, (unsigned long long)info.cookie,
+                 info.has_strong_ref, info.has_weak_ref);
+    } else {
+        snprintf(result, sizeof(result), "BINDER_GET_NODE_DEBUG_INFO failed: %s", strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+// 汎用トランザクション（データなし版）
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass clazz,
                                                              jint fd, jint handle, jint code, jint flags, jbyteArray data) {
@@ -51,7 +80,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass 
         (*env)->GetByteArrayRegion(env, data, 0, tx_data_size, (jbyte*)tx_data);
     }
 
-    // コマンド + binder_transaction_data + データ の連続領域
     size_t cmd_size = sizeof(uint32_t) + sizeof(struct binder_transaction_data);
     size_t total_size = cmd_size + tx_data_size;
     uint8_t* buf = malloc(total_size);
@@ -108,38 +136,4 @@ Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass 
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderPing(JNIEnv* env, jclass clazz, jint fd) {
     return Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, 0, BINDER_PING_TRANSACTION, 0, NULL);
-}
-
-// サービス取得 (handle=0, code=1, サービス名をデータとして送信)
-JNIEXPORT jbyteArray JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBinderGetService(JNIEnv* env, jclass clazz, jint fd, jstring serviceName) {
-    if (serviceName == NULL) return NULL;
-    const char* name = (*env)->GetStringUTFChars(env, serviceName, NULL);
-    if (name == NULL) return NULL;
-    size_t len = strlen(name) + 1;
-    jbyteArray data = (*env)->NewByteArray(env, len);
-    (*env)->SetByteArrayRegion(env, data, 0, len, (jbyte*)name);
-    (*env)->ReleaseStringUTFChars(env, serviceName, name);
-
-    jbyteArray reply = Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, 0, BINDER_SERVICE_MANAGER_GET_SERVICE, 0, data);
-    (*env)->DeleteLocalRef(env, data);
-    return reply;
-}
-
-// ダンプ用：空トランザクションを送り、応答をファイルに保存（Java 側でファイル名を指定）
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBinderDumpReply(JNIEnv* env, jclass clazz,
-                                                           jint fd, jint handle, jint code, jint flags, jstring filename) {
-    char result[256] = {0};
-    jbyteArray reply = Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, handle, code, flags, NULL);
-    if (reply != NULL) {
-        jsize len = (*env)->GetArrayLength(env, reply);
-        snprintf(result, sizeof(result), "reply len=%d", len);
-        // ファイル保存は Java 側で行うため、ここでは応答をそのまま返す
-        // Java 側で dumpToFile を呼び出す
-        (*env)->DeleteLocalRef(env, reply);
-    } else {
-        snprintf(result, sizeof(result), "no reply or error");
-    }
-    return (*env)->NewStringUTF(env, result);
 }
