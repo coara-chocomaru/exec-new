@@ -163,7 +163,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("========== CVE-2019-2215 AUTO EXPLOIT ==========");
+        appendLog("========== CVE-2019-2215 FINAL EXPLOIT ==========");
 
         appendLog("[*] Triggering Bad Binder exploit with auto offset detection...");
         appendLog("[!] WARNING: This may crash the device");
