@@ -20,7 +20,6 @@
 #define BINDER_PING_TRANSACTION 0xFFFFFFFE
 
 // ====== プロトタイプ宣言 ======
-// nativeBinderTransaction は後で定義するが、他の関数から呼ばれるため事前に宣言する
 jbyteArray Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv*, jclass, jint, jint, jint, jint, jbyteArray);
 
 // ====== JNI 関数実装 ======
@@ -52,22 +51,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderGetService(JNIEnv* env, jclass c
     (*env)->ReleaseStringUTFChars(env, serviceName, name);
 
     jbyteArray reply = Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, 0, 1, 0, data);
-    (*env)->DeleteLocalRef(env, data);
-    return reply;
-}
-
-// 別方式のサービス取得 (handle=0, code=0xFFFFFFFE + サービス名)
-JNIEXPORT jbyteArray JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBinderGetService2(JNIEnv* env, jclass clazz, jint fd, jstring serviceName) {
-    if (serviceName == NULL) return NULL;
-    const char* name = (*env)->GetStringUTFChars(env, serviceName, NULL);
-    if (name == NULL) return NULL;
-    size_t len = strlen(name) + 1;
-    jbyteArray data = (*env)->NewByteArray(env, len);
-    (*env)->SetByteArrayRegion(env, data, 0, len, (jbyte*)name);
-    (*env)->ReleaseStringUTFChars(env, serviceName, name);
-
-    jbyteArray reply = Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, 0, 0xFFFFFFFE, 0, data);
     (*env)->DeleteLocalRef(env, data);
     return reply;
 }
@@ -175,7 +158,7 @@ Java_com_example_tzpoc_MainActivity_nativeBinderDumpReply(JNIEnv* env, jclass cl
     return (*env)->NewStringUTF(env, result);
 }
 
-// 書き込み専用（応答を無視して書き込んだサイズを返す）
+// 書き込み専用（応答を無視して書き込んだサイズを返す） - 今回は未使用だが残す
 JNIEXPORT jint JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderWriteToService(JNIEnv* env, jclass clazz,
                                                                 jint fd, jint handle, jint code, jint flags, jbyteArray data) {
