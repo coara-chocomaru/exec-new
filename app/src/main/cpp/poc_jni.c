@@ -52,6 +52,7 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
     LOGD("JNI_OnUnload");
 }
 
+// ---------- 原有方法（完整保留） ----------
 JNIEXPORT jobjectArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeListDir(JNIEnv* env, jclass clazz, jstring path) {
     if (path == NULL) return NULL;
@@ -181,7 +182,7 @@ Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, 
     if (path == NULL) return -1;
     const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
     if (cpath == NULL) return -1;
-    int fd = open(cpath, O_RDONLY);
+    int fd = open(cpath, O_RDWR);  // 使用 RDWR 以便能执行写操作
     if (fd < 0) {
         LOGE("open(%s) failed: %s", cpath, strerror(errno));
         (*env)->ReleaseStringUTFChars(env, path, cpath);
@@ -577,6 +578,53 @@ Java_com_example_tzpoc_MainActivity_nativeBinderIoctlTest(JNIEnv* env, jclass cl
         snprintf(result, sizeof(result), "ioctl(0x%x) succeeded", cmd);
     } else {
         snprintf(result, sizeof(result), "ioctl(0x%x) failed: %s", cmd, strerror(errno));
+    }
+    return (*env)->NewStringUTF(env, result);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderSendTransaction(JNIEnv* env, jclass clazz, jint fd, jint handle, jint code, jint flags) {
+    char result[512] = {0};
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx = {
+        .cmd = BC_TRANSACTION,
+        .tdata = {
+            .target.handle = (uint32_t)handle,
+            .cookie = 0,
+            .code = (uint32_t)code,
+            .flags = (uint32_t)flags,
+            .sender_pid = 0,
+            .sender_euid = 0,
+            .data_size = 0,
+            .offsets_size = 0,
+            .data.ptr.buffer = 0,
+            .data.ptr.offsets = 0
+        }
+    };
+
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+
+    struct binder_transaction_data reply;
+    bwr.read_size = sizeof(reply);
+    bwr.read_buffer = (binder_uintptr_t)&reply;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    if (ret == 0) {
+        snprintf(result, sizeof(result), "ioctl(BINDER_WRITE_READ) succeeded, read_consumed=%llu",
+                 (unsigned long long)bwr.read_consumed);
+        if (bwr.read_consumed > 0) {
+            strcat(result, " (reply received)");
+        } else {
+            strcat(result, " (no reply)");
+        }
+    } else {
+        snprintf(result, sizeof(result), "ioctl(BINDER_WRITE_READ) failed: %s", strerror(errno));
     }
     return (*env)->NewStringUTF(env, result);
 }
