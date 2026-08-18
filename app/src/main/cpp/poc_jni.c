@@ -17,8 +17,6 @@
 #include <sched.h>
 #include <signal.h>
 #include <pthread.h>
-
-// カーネルヘッダの代わりに提供された binder.h を使用
 #include "binder.h"
 
 #define LOG_TAG "CVE-2019-2215"
