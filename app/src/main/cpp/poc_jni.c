@@ -35,52 +35,7 @@ Java_com_example_tzpoc_MainActivity_nativeOpenDevice(JNIEnv* env, jclass clazz, 
     return fd;
 }
 
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeTestFd(JNIEnv* env, jclass clazz, jint fd) {
-    char buf[256] = {0};
-    int flags = fcntl(fd, F_GETFL);
-    if (flags < 0) {
-        snprintf(buf, sizeof(buf), "fcntl failed: %s", strerror(errno));
-        return (*env)->NewStringUTF(env, buf);
-    }
-    int type = flags & O_ACCMODE;
-    const char* type_str;
-    switch(type) {
-        case O_RDONLY: type_str = "RDONLY"; break;
-        case O_WRONLY: type_str = "WRONLY"; break;
-        case O_RDWR: type_str = "RDWR"; break;
-        default: type_str = "UNKNOWN";
-    }
-    snprintf(buf, sizeof(buf), "flags=0x%x (%s), nonblock=%d", flags, type_str, (flags & O_NONBLOCK)?1:0);
-    return (*env)->NewStringUTF(env, buf);
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeWriteFile(JNIEnv* env, jclass clazz, jstring path, jstring content) {
-    if (path == NULL || content == NULL) return NULL;
-    const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
-    const char* ccontent = (*env)->GetStringUTFChars(env, content, NULL);
-    if (cpath == NULL || ccontent == NULL) {
-        if (cpath) (*env)->ReleaseStringUTFChars(env, path, cpath);
-        if (ccontent) (*env)->ReleaseStringUTFChars(env, content, ccontent);
-        return NULL;
-    }
-    int fd = open(cpath, O_WRONLY);
-    if (fd < 0) {
-        LOGE("open(%s) for write failed: %s", cpath, strerror(errno));
-        (*env)->ReleaseStringUTFChars(env, path, cpath);
-        (*env)->ReleaseStringUTFChars(env, content, ccontent);
-        return (*env)->NewStringUTF(env, strerror(errno));
-    }
-    ssize_t written = write(fd, ccontent, strlen(ccontent));
-    close(fd);
-    (*env)->ReleaseStringUTFChars(env, path, cpath);
-    (*env)->ReleaseStringUTFChars(env, content, ccontent);
-    if (written < 0) return (*env)->NewStringUTF(env, strerror(errno));
-    return (*env)->NewStringUTF(env, "OK");
-}
-
-// 汎用トランザクション送信
+// 汎用トランザクション送信（データ付き・空データ可）
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass clazz,
                                                              jint fd, jint handle, jint code, jint flags, jbyteArray data) {
@@ -96,6 +51,7 @@ Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass 
         (*env)->GetByteArrayRegion(env, data, 0, tx_data_size, (jbyte*)tx_data);
     }
 
+    // コマンド + binder_transaction_data + データ の連続領域
     size_t cmd_size = sizeof(uint32_t) + sizeof(struct binder_transaction_data);
     size_t total_size = cmd_size + tx_data_size;
     uint8_t* buf = malloc(total_size);
@@ -148,11 +104,13 @@ Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(JNIEnv* env, jclass 
     return result;
 }
 
+// PING トランザクション (code=0xFFFFFFFE)
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderPing(JNIEnv* env, jclass clazz, jint fd) {
     return Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, 0, BINDER_PING_TRANSACTION, 0, NULL);
 }
 
+// サービス取得 (handle=0, code=1, サービス名をデータとして送信)
 JNIEXPORT jbyteArray JNICALL
 Java_com_example_tzpoc_MainActivity_nativeBinderGetService(JNIEnv* env, jclass clazz, jint fd, jstring serviceName) {
     if (serviceName == NULL) return NULL;
@@ -168,68 +126,20 @@ Java_com_example_tzpoc_MainActivity_nativeBinderGetService(JNIEnv* env, jclass c
     return reply;
 }
 
-JNIEXPORT jbyteArray JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBinderReadReply(JNIEnv* env, jclass clazz, jint fd, jint handle, jint code, jint flags) {
-    return Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, handle, code, flags, NULL);
-}
-
+// ダンプ用：空トランザクションを送り、応答をファイルに保存（Java 側でファイル名を指定）
 JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBinderWriteMemory(JNIEnv* env, jclass clazz, jint fd, jint handle, jint code, jlong address, jlong value) {
+Java_com_example_tzpoc_MainActivity_nativeBinderDumpReply(JNIEnv* env, jclass clazz,
+                                                           jint fd, jint handle, jint code, jint flags, jstring filename) {
     char result[256] = {0};
-    uint8_t data[16];
-    memcpy(data, &address, 8);
-    memcpy(data + 8, &value, 8);
-    jbyteArray jdata = (*env)->NewByteArray(env, 16);
-    (*env)->SetByteArrayRegion(env, jdata, 0, 16, (jbyte*)data);
-    jbyteArray reply = Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, handle, code, 0, jdata);
-    (*env)->DeleteLocalRef(env, jdata);
+    jbyteArray reply = Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, handle, code, flags, NULL);
     if (reply != NULL) {
-        snprintf(result, sizeof(result), "WriteMemory: succeeded, reply len=%d", (int)(*env)->GetArrayLength(env, reply));
+        jsize len = (*env)->GetArrayLength(env, reply);
+        snprintf(result, sizeof(result), "reply len=%d", len);
+        // ファイル保存は Java 側で行うため、ここでは応答をそのまま返す
+        // Java 側で dumpToFile を呼び出す
         (*env)->DeleteLocalRef(env, reply);
     } else {
-        snprintf(result, sizeof(result), "WriteMemory: failed (no reply or error)");
-    }
-    return (*env)->NewStringUTF(env, result);
-}
-
-// コマンド実行テスト：コマンド文字列をデータとして送信
-JNIEXPORT jstring JNICALL
-Java_com_example_tzpoc_MainActivity_nativeBinderExecCommand(JNIEnv* env, jclass clazz, jint fd, jint handle, jint code, jstring command) {
-    char result[512] = {0};
-    if (command == NULL) {
-        snprintf(result, sizeof(result), "ExecCommand: command is null");
-        return (*env)->NewStringUTF(env, result);
-    }
-    const char* cmd = (*env)->GetStringUTFChars(env, command, NULL);
-    if (cmd == NULL) {
-        snprintf(result, sizeof(result), "ExecCommand: failed to get command string");
-        return (*env)->NewStringUTF(env, result);
-    }
-    size_t len = strlen(cmd) + 1;
-    jbyteArray jdata = (*env)->NewByteArray(env, len);
-    (*env)->SetByteArrayRegion(env, jdata, 0, len, (jbyte*)cmd);
-    (*env)->ReleaseStringUTFChars(env, command, cmd);
-
-    jbyteArray reply = Java_com_example_tzpoc_MainActivity_nativeBinderTransaction(env, clazz, fd, handle, code, 0, jdata);
-    (*env)->DeleteLocalRef(env, jdata);
-    if (reply != NULL) {
-        jsize rlen = (*env)->GetArrayLength(env, reply);
-        if (rlen > 0) {
-            uint8_t* rbuf = malloc(rlen + 1);
-            if (rbuf) {
-                (*env)->GetByteArrayRegion(env, reply, 0, rlen, (jbyte*)rbuf);
-                rbuf[rlen] = '\0';
-                snprintf(result, sizeof(result), "ExecCommand: succeeded, reply (%d bytes): %s", rlen, (char*)rbuf);
-                free(rbuf);
-            } else {
-                snprintf(result, sizeof(result), "ExecCommand: succeeded, reply len=%d", rlen);
-            }
-        } else {
-            snprintf(result, sizeof(result), "ExecCommand: succeeded, empty reply");
-        }
-        (*env)->DeleteLocalRef(env, reply);
-    } else {
-        snprintf(result, sizeof(result), "ExecCommand: failed (no reply or error)");
+        snprintf(result, sizeof(result), "no reply or error");
     }
     return (*env)->NewStringUTF(env, result);
 }
