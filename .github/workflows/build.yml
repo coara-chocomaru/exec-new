@@ -2,10 +2,10 @@ name: Build
 on:
   push:
     branches:
-      - testF
+      - testG
   pull_request:
     branches:
-      - testF
+      - testG
 jobs:
   build:
     name: Build
