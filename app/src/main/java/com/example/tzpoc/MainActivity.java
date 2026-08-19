@@ -22,7 +22,6 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import androidx.core.content.FileProvider;
 
 import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
 
@@ -57,7 +56,6 @@ public class MainActivity extends AppCompatActivity {
         System.loadLibrary("pocjni");
     }
 
-    // JNIネイティブメソッド
     public static native int nativeGetHwServicemanagerPid();
     public static native int nativeExploit(String outputPath, String logPath);
     public static native int nativeAddServiceOnly(String serviceName);
