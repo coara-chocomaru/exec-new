@@ -138,10 +138,10 @@ public class MainActivity extends AppCompatActivity {
             int[] handle = new int[1];
             ParcelFileDescriptor pfd = minkService.a(socketPath, handle);
             if (pfd != null) {
-                int fd = pfd.getFileDescriptor();
+                int fd = pfd.getFd();  // 修正: getFileDescriptor() → getFd()
                 appendLog("取得 fd: " + fd + " (handle=" + handle[0] + ") for " + socketPath);
                 // 必要に応じて JNI に fd を渡す（例：nativeUseFd(fd)）
-                // nativeUseFd(fd);
+                // nativeUseFd(fd); // 未実装の場合はコメントアウト
             } else {
                 appendLog("fd 取得失敗: " + socketPath);
             }
