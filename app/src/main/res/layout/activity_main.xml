@@ -6,57 +6,70 @@
     android:padding="16dp">
 
     <TextView
-        android:layout_width="wrap_content"
+        android:id="@+id/tv_status"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="TZ JNI PoC"
-        android:textSize="20sp"
-        android:textStyle="bold"
-        android:layout_gravity="center" />
+        android:text="Ready"
+        android:textSize="18sp"
+        android:textStyle="bold" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:layout_marginTop="16dp">
+        android:layout_marginTop="8dp">
 
         <Button
             android:id="@+id/btn_start"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="開始" />
+            android:text="Start Full Exploit" />
 
         <Button
             android:id="@+id/btn_stop"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="終了"
+            android:text="Stop"
             android:enabled="false" />
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/tv_status"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="準備完了"
-        android:textSize="14sp"
-        android:layout_marginTop="8dp" />
+        android:orientation="horizontal"
+        android:layout_marginTop="8dp">
+
+        <Button
+            android:id="@+id/btn_add_only"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Add Service" />
+
+        <Button
+            android:id="@+id/btn_start_server"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Start Server" />
+    </LinearLayout>
 
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="8dp">
+        android:layout_marginTop="8dp"
+        android:background="#1a1a1a">
 
         <TextView
             android:id="@+id/tv_log"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:fontFamily="monospace"
+            android:textColor="#00ff00"
             android:textSize="12sp"
-            android:background="#f0f0f0"
-            android:padding="8dp"
-            android:text="ログがここに表示されます" />
+            android:fontFamily="monospace"
+            android:padding="8dp" />
     </ScrollView>
 </LinearLayout>
