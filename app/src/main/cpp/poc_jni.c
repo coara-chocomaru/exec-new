@@ -480,7 +480,6 @@ Java_com_example_tzpoc_MainActivity_nativeCrashVectors(JNIEnv* env, jclass clazz
 
 JNIEXPORT jstring JNICALL
 Java_com_example_tzpoc_MainActivity_nativeGetKernelInfo(JNIEnv* env, jclass clazz) {
-    // 簡易的な情報収集（オフセット確認用）
     char result[512] = {0};
     int fd = open("/proc/version", O_RDONLY);
     if (fd >= 0) {
