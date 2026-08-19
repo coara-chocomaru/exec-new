@@ -5,6 +5,7 @@
     android:orientation="vertical"
     android:padding="16dp">
 
+    <!-- ステータス表示 -->
     <TextView
         android:id="@+id/tv_status"
         android:layout_width="match_parent"
@@ -13,6 +14,7 @@
         android:textSize="18sp"
         android:textStyle="bold" />
 
+    <!-- ボタン行1: Start / Stop -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -35,6 +37,7 @@
             android:text="Stop" />
     </LinearLayout>
 
+    <!-- ボタン行2: Add Service / Start Server -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -56,13 +59,37 @@
             android:text="Start Server" />
     </LinearLayout>
 
+    <!-- ボタン行3: Send Transaction / Crash Vectors -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="8dp">
+
+        <Button
+            android:id="@+id/btn_send_txn"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Send Transaction" />
+
+        <Button
+            android:id="@+id/btn_crash"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Crash Vectors" />
+    </LinearLayout>
+
+    <!-- ボタン行4: Auto Serve -->
     <Button
-        android:id="@+id/btn_kernel_exploit"
+        android:id="@+id/btn_auto_serve"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="Kernel Exploit (UAF)" />
+        android:text="Auto Serve (Register + Start)" />
 
+    <!-- ログ表示領域（スクロール可能） -->
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -78,4 +105,5 @@
             android:textSize="12sp"
             android:typeface="monospace" />
     </ScrollView>
+
 </LinearLayout>
