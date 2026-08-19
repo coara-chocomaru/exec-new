@@ -9,7 +9,7 @@
         android:id="@+id/tv_status"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Ready"
+        android:text="Status: Idle"
         android:textSize="18sp"
         android:textStyle="bold" />
 
@@ -17,7 +17,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:layout_marginTop="8dp">
+        android:layout_marginTop="16dp">
 
         <Button
             android:id="@+id/btn_start"
@@ -31,8 +31,8 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Stop"
-            android:enabled="false" />
+            android:enabled="false"
+            android:text="Stop" />
     </LinearLayout>
 
     <LinearLayout
@@ -56,20 +56,26 @@
             android:text="Start Server" />
     </LinearLayout>
 
+    <Button
+        android:id="@+id/btn_kernel_exploit"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Kernel Exploit (UAF)" />
+
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="8dp"
-        android:background="#1a1a1a">
+        android:layout_marginTop="16dp">
 
         <TextView
             android:id="@+id/tv_log"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textColor="#00ff00"
+            android:background="#f0f0f0"
+            android:padding="8dp"
             android:textSize="12sp"
-            android:fontFamily="monospace"
-            android:padding="8dp" />
+            android:typeface="monospace" />
     </ScrollView>
 </LinearLayout>
