@@ -6,48 +6,16 @@
     android:padding="16dp">
 
     <TextView
-        android:id="@+id/tv_status"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Ready"
-        android:textSize="18sp"
-        android:textStyle="bold" />
+        android:text="BadParcel + SecureUI PoC"
+        android:textSize="20sp"
+        android:gravity="center" />
 
-    <ScrollView
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:background="#f0f0f0"
-        android:padding="8dp">
-
-        <TextView
-            android:id="@+id/tv_log"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:fontFamily="monospace"
-            android:textSize="11sp"
-            android:text="[Logs]\n" />
-    </ScrollView>
-
-    <LinearLayout
+    <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="8dp">
+        android:text="Check logcat and /sdcard/Download/ for results"
+        android:gravity="center" />
 
-        <Button
-            android:id="@+id/btn_start"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Start" />
-
-        <Button
-            android:id="@+id/btn_stop"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Stop"
-            android:enabled="false" />
-    </LinearLayout>
 </LinearLayout>
