@@ -4,41 +4,41 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:padding="16dp"
-    android:background="#121212">
+    android:background="#0D0D0D">
 
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="⚡ DPM Service Exploit PoC"
-        android:textSize="22sp"
+        android:text="🔓 DPM Service Exploit PoC v3"
+        android:textSize="20sp"
         android:textStyle="bold"
         android:textColor="#FFFFFF"
         android:gravity="center"
-        android:layout_marginBottom="20dp" />
+        android:layout_marginBottom="16dp" />
 
     <Button
         android:id="@+id/btnExploit"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="🚀 実行 (AIDLバインド → 総当たり)"
-        android:background="#E53935"
+        android:text="⚡ 全層攻撃開始 (AIDL→総当たり→リフレクション)"
+        android:background="#D32F2F"
         android:textColor="#FFFFFF"
-        android:textSize="16sp"
+        android:textSize="14sp"
         android:padding="14dp" />
 
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_marginTop="16dp"
-        android:background="#1E1E1E"
+        android:background="#1A1A1A"
         android:padding="8dp">
 
         <TextView
             android:id="@+id/tvResult"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="[システムログ]\n"
-            android:textColor="#00E676"
+            android:text="[Log]\n"
+            android:textColor="#00FF00"
             android:typeface="monospace"
             android:textSize="11sp" />
     </ScrollView>
