@@ -12,6 +12,15 @@ android {
         versionCode 1
         versionName "1.0"
         multiDexEnabled false
+
+        externalNativeBuild {
+            ndkBuild {
+            }
+        }
+
+        ndk {
+            abiFilters 'armeabi-v7a', 'arm64-v8a'
+        }
     }
 
     compileOptions {
@@ -22,6 +31,13 @@ android {
     buildFeatures {
         aidl true
     }
+
+    externalNativeBuild {
+        ndkBuild {
+            path file("src/main/cpp/Android.mk")
+        }
+    }
+
 
     signingConfigs {
         release {
