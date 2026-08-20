@@ -9,20 +9,22 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="DPM 多角攻撃 PoC (BadParcel含む)"
+        android:text="DPM 完全 PoC (全手法)"
         android:textSize="18sp"
         android:textStyle="bold"
-        android:textColor="#fff"
-        android:gravity="center" />
+        android:textColor="#ffffff"
+        android:gravity="center"
+        android:layout_marginBottom="8dp" />
 
     <Button
         android:id="@+id/btnExploit"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="実行"
+        android:text="全手法実行"
         android:background="#d32f2f"
-        android:textColor="#fff"
-        android:padding="14dp" />
+        android:textColor="#ffffff"
+        android:padding="14dp"
+        android:textSize="16sp" />
 
     <ScrollView
         android:layout_width="match_parent"
