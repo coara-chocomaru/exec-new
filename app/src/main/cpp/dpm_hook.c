@@ -9,14 +9,9 @@ Java_com_example_dpmpoc_NativeHelper_execCommand(JNIEnv *env, jclass clazz, jstr
     if (cmd_str == NULL) {
         return (*env)->NewStringUTF(env, "Error: cannot get cmd");
     }
-
-    // ここで uid を確認 (実際はシステム権限で実行)
     uid_t uid = getuid();
     char buf[256];
     snprintf(buf, sizeof(buf), "Executing: %s, uid=%d", cmd_str, uid);
-
-    // 実際には exec はしない (デモ)
-    // もし exec するなら popen などを使うが、ここではダミー
     FILE *fp = popen(cmd_str, "r");
     if (fp == NULL) {
         (*env)->ReleaseStringUTFChars(env, cmd, cmd_str);
