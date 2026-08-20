@@ -9,11 +9,11 @@
         android:id="@+id/tv_status"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Starting..."
         android:textSize="22sp"
         android:textStyle="bold"
         android:gravity="center"
-        android:paddingBottom="16dp" />
+        android:paddingBottom="16dp"
+        android:text="Starting..." />
 
     <ScrollView
         android:layout_width="match_parent"
@@ -28,7 +28,6 @@
             android:layout_height="wrap_content"
             android:fontFamily="monospace"
             android:textSize="12sp"
-            android:text="[Log will appear here]\n" />
+            android:text="[Log]\n" />
     </ScrollView>
-
 </LinearLayout>
