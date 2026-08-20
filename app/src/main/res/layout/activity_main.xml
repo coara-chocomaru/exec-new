@@ -25,8 +25,8 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:fontFamily="monospace"
-            android:textSize="12sp"
-            android:text="[Log will appear here]\n" />
+            android:textSize="11sp"
+            android:text="[Logs]\n" />
     </ScrollView>
 
     <LinearLayout
@@ -40,8 +40,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Start"
-            android:textSize="16sp" />
+            android:text="Start" />
 
         <Button
             android:id="@+id/btn_stop"
@@ -49,7 +48,6 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="Stop"
-            android:textSize="16sp"
             android:enabled="false" />
     </LinearLayout>
 </LinearLayout>
