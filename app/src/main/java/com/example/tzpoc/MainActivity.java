@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import java.io.File;
@@ -53,7 +54,7 @@ public class MainActivity extends Activity {
         appendLog("[+] AddAccountSettings launched with malicious payload.");
 
         // 3. 延迟退出，等待 ProofActivity 被启动
-        new Handler().postDelayed(() -> {
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
             appendLog("[*] PoC finished. Check logcat and /sdcard/Download/ for proof.");
             saveLog();
             finish();
