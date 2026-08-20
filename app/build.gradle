@@ -4,7 +4,7 @@ plugins {
 
 android {
     compileSdk 35
-    namespace 'com.example.tzpoc'
+    namespace 'com.wigig.poc'
 
     defaultConfig {
         minSdk 26
