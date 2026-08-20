@@ -7,12 +7,17 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="BadParcel + SecureUI PoC"
+        android:text="CVE-2023-20963 + CVE-2024-31317 PoC"
         android:textSize="20sp"
         android:gravity="center" />
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Check logcat and /sdcard/Download/ for results"
+        android:text="Two-Stage Privilege Escalation"
+        android:gravity="center" />
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Check /sdcard/Download/ for results"
         android:gravity="center" />
 </LinearLayout>
