@@ -14,8 +14,11 @@ import android.util.Log;
 
 public class MyAuthenticator extends AbstractAccountAuthenticator {
 
+    private final Context mContext; // 明示的に保持
+
     public MyAuthenticator(Context context) {
         super(context);
+        this.mContext = context; // ここで保持
     }
 
     @Override
@@ -34,7 +37,7 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         receiverIntent.setComponent(new ComponentName("com.example.tzpoc",
                 "com.example.tzpoc.SystemCommandReceiver"));
         PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                this.mContext,
+                this.mContext,  // 保持したContextを使用
                 0,
                 receiverIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
