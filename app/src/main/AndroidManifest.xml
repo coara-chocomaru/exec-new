@@ -55,8 +55,8 @@
             <meta-data
                 android:name="android.accounts.AccountAuthenticator"
                 android:resource="@xml/authenticator" />
-        </service>
-
+       </service>
+        <meta-data android:name="android.app.lib_name" android:value="dpm_hook" />
     </application>
 
 </manifest>
