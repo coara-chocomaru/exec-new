@@ -4,32 +4,31 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:padding="16dp"
-    android:background="#0A0A0A">
+    android:background="#0a0a0a">
 
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="DPM 多角攻撃 PoC"
+        android:text="DPM 多角攻撃 PoC (BadParcel含む)"
         android:textSize="18sp"
         android:textStyle="bold"
-        android:textColor="#FFF"
-        android:gravity="center"
-        android:layout_marginBottom="12dp" />
+        android:textColor="#fff"
+        android:gravity="center" />
 
     <Button
         android:id="@+id/btnExploit"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="全ベクトル実行 (AIDL/生Binder/リフレクション/ソケット)"
-        android:background="#D32F2F"
-        android:textColor="#FFF"
+        android:text="実行"
+        android:background="#d32f2f"
+        android:textColor="#fff"
         android:padding="14dp" />
 
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_marginTop="12dp"
-        android:background="#1A1A1A"
+        android:background="#1a1a1a"
         android:padding="8dp">
 
         <TextView
@@ -37,7 +36,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="[Log]\n"
-            android:textColor="#00FF66"
+            android:textColor="#00ff66"
             android:typeface="monospace"
             android:textSize="10sp" />
     </ScrollView>
