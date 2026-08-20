@@ -52,7 +52,13 @@
                 android:name="android.accounts.AccountAuthenticator"
                 android:resource="@xml/authenticator" />
         </service>
-        
+
+        <activity
+            android:name=".ProofActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.NoDisplay" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true">
