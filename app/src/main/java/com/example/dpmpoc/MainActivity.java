@@ -1,6 +1,8 @@
 package com.example.dpmpoc;
 
 import android.app.Activity;
+import android.net.LocalSocket;
+import android.net.LocalSocketAddress;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.Parcel;
@@ -15,8 +17,6 @@ import com.qti.dpm.IDpmService;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
-import java.net.LocalSocket;
-import java.net.LocalSocketAddress;
 
 public class MainActivity extends Activity {
 
