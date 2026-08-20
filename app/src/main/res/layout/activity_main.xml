@@ -3,25 +3,28 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="16dp">
+    android:padding="16dp"
+    android:background="#121212">
 
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="DPM Service Exploit PoC"
-        android:textSize="20sp"
+        android:text="⚡ DPM Service Exploit PoC"
+        android:textSize="22sp"
         android:textStyle="bold"
+        android:textColor="#FFFFFF"
         android:gravity="center"
-        android:layout_marginBottom="16dp" />
+        android:layout_marginBottom="20dp" />
 
     <Button
         android:id="@+id/btnExploit"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="🔥 Execute as UID 1000 (Multi-Stage)"
-        android:background="#D32F2F"
+        android:text="🚀 実行 (AIDLバインド → 総当たり)"
+        android:background="#E53935"
         android:textColor="#FFFFFF"
-        android:padding="12dp" />
+        android:textSize="16sp"
+        android:padding="14dp" />
 
     <ScrollView
         android:layout_width="match_parent"
@@ -34,9 +37,9 @@
             android:id="@+id/tvResult"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="[Log]\n"
-            android:textColor="#00FF00"
+            android:text="[システムログ]\n"
+            android:textColor="#00E676"
             android:typeface="monospace"
-            android:textSize="12sp" />
+            android:textSize="11sp" />
     </ScrollView>
 </LinearLayout>
