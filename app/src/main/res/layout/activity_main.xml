@@ -5,105 +5,38 @@
     android:orientation="vertical"
     android:padding="16dp">
 
-    <!-- ステータス表示 -->
     <TextView
-        android:id="@+id/tv_status"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Status: Idle"
-        android:textSize="18sp"
-        android:textStyle="bold" />
+        android:text="DPM Service Exploit PoC"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:layout_marginBottom="16dp" />
 
-    <!-- ボタン行1: Start / Stop -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="16dp">
-
-        <Button
-            android:id="@+id/btn_start"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Start Full Exploit" />
-
-        <Button
-            android:id="@+id/btn_stop"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:enabled="false"
-            android:text="Stop" />
-    </LinearLayout>
-
-    <!-- ボタン行2: Add Service / Start Server -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="8dp">
-
-        <Button
-            android:id="@+id/btn_add_only"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Add Service" />
-
-        <Button
-            android:id="@+id/btn_start_server"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Start Server" />
-    </LinearLayout>
-
-    <!-- ボタン行3: Send Transaction / Crash Vectors -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="8dp">
-
-        <Button
-            android:id="@+id/btn_send_txn"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Send Transaction" />
-
-        <Button
-            android:id="@+id/btn_crash"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Crash Vectors" />
-    </LinearLayout>
-
-    <!-- ボタン行4: Auto Serve -->
     <Button
-        android:id="@+id/btn_auto_serve"
+        android:id="@+id/btnExploit"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="Auto Serve (Register + Start)" />
+        android:text="🔥 Execute as UID 1000 (Multi-Stage)"
+        android:background="#D32F2F"
+        android:textColor="#FFFFFF"
+        android:padding="12dp" />
 
-    <!-- ログ表示領域（スクロール可能） -->
     <ScrollView
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layout_marginTop="16dp">
+        android:layout_height="match_parent"
+        android:layout_marginTop="16dp"
+        android:background="#1E1E1E"
+        android:padding="8dp">
 
         <TextView
-            android:id="@+id/tv_log"
+            android:id="@+id/tvResult"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="#f0f0f0"
-            android:padding="8dp"
-            android:textSize="12sp"
-            android:typeface="monospace" />
+            android:text="[Log]\n"
+            android:textColor="#00FF00"
+            android:typeface="monospace"
+            android:textSize="12sp" />
     </ScrollView>
-
 </LinearLayout>
