@@ -4,17 +4,54 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:padding="16dp">
-    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-        android:text="WiGig wiburn 多角的脆弱性検証 (非システム)" android:textSize="18sp"/>
-    <Button android:id="@+id/btn_cmd_inj" android:text="1. コマンドインジェクション" android:layout_width="match_parent" android:layout_height="wrap_content"/>
-    <Button android:id="@+id/btn_overflow" android:text="2. バッファオーバーフロー (長大引数)" android:layout_width="match_parent" android:layout_height="wrap_content"/>
-    <Button android:id="@+id/btn_int_overflow" android:text="3. 整数オーバーフロー" android:layout_width="match_parent" android:layout_height="wrap_content"/>
-    <Button android:id="@+id/btn_path_traversal" android:text="4. パストラバーサル" android:layout_width="match_parent" android:layout_height="wrap_content"/>
-    <Button android:id="@+id/btn_hidl_cmd" android:text="5. HIDLコマンド埋め込み (wpa_cli系)" android:layout_width="match_parent" android:layout_height="wrap_content"/>
-    <Button android:id="@+id/btn_null_byte" android:text="6. Nullバイトインジェクション" android:layout_width="match_parent" android:layout_height="wrap_content"/>
-    <Button android:id="@+id/btn_native" android:text="7. JNIスタックオーバーフロー実演" android:layout_width="match_parent" android:layout_height="wrap_content"/>
-    <ScrollView android:layout_width="match_parent" android:layout_height="match_parent">
-        <TextView android:id="@+id/tv_output" android:padding="8dp" android:background="#f0f0f0"
-            android:textSize="12sp" android:typeface="monospace" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="WiGig wiburn 脆弱性検証 (詳細版)"
+        android:textSize="18sp"
+        android:layout_gravity="center" />
+
+    <Button
+        android:id="@+id/btn_null_test"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="1. NULLポインタ参照 (必須引数欠落)" />
+
+    <Button
+        android:id="@+id/btn_overflow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="2. 長大引数 (バッファオーバーフロー誘発)" />
+
+    <Button
+        android:id="@+id/btn_injection"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="3. コマンドインジェクション (メタ文字埋め込み)" />
+
+    <Button
+        android:id="@+id/btn_path_traversal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="4. パストラバーサル (ファイル読み出し)" />
+
+    <Button
+        android:id="@+id/btn_int_overflow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="5. 整数オーバーフロー (offset/length)" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+        <TextView
+            android:id="@+id/tv_output"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="8dp"
+            android:background="#f0f0f0"
+            android:textSize="12sp"
+            android:typeface="monospace" />
     </ScrollView>
 </LinearLayout>
