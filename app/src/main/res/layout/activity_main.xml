@@ -4,107 +4,17 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:padding="16dp">
-
-    <!-- ステータス表示 -->
-    <TextView
-        android:id="@+id/tv_status"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Status: Idle"
-        android:textSize="18sp"
-        android:textStyle="bold" />
-
-    <!-- ボタン行1: Start / Stop -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="16dp">
-
-        <Button
-            android:id="@+id/btn_start"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Start Full Exploit" />
-
-        <Button
-            android:id="@+id/btn_stop"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:enabled="false"
-            android:text="Stop" />
-    </LinearLayout>
-
-    <!-- ボタン行2: Add Service / Start Server -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="8dp">
-
-        <Button
-            android:id="@+id/btn_add_only"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Add Service" />
-
-        <Button
-            android:id="@+id/btn_start_server"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Start Server" />
-    </LinearLayout>
-
-    <!-- ボタン行3: Send Transaction / Crash Vectors -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="8dp">
-
-        <Button
-            android:id="@+id/btn_send_txn"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Send Transaction" />
-
-        <Button
-            android:id="@+id/btn_crash"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Crash Vectors" />
-    </LinearLayout>
-
-    <!-- ボタン行4: Auto Serve -->
-    <Button
-        android:id="@+id/btn_auto_serve"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="Auto Serve (Register + Start)" />
-
-    <!-- ログ表示領域（スクロール可能） -->
-    <ScrollView
-        android:id="@+id/scrollView"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layout_marginTop="16dp">
-
-        <TextView
-            android:id="@+id/tv_log"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="#f0f0f0"
-            android:padding="8dp"
-            android:textSize="12sp"
-            android:typeface="monospace" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:text="WiGig wiburn 多角的脆弱性検証 (非システム)" android:textSize="18sp"/>
+    <Button android:id="@+id/btn_cmd_inj" android:text="1. コマンドインジェクション" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+    <Button android:id="@+id/btn_overflow" android:text="2. バッファオーバーフロー (長大引数)" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+    <Button android:id="@+id/btn_int_overflow" android:text="3. 整数オーバーフロー" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+    <Button android:id="@+id/btn_path_traversal" android:text="4. パストラバーサル" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+    <Button android:id="@+id/btn_hidl_cmd" android:text="5. HIDLコマンド埋め込み (wpa_cli系)" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+    <Button android:id="@+id/btn_null_byte" android:text="6. Nullバイトインジェクション" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+    <Button android:id="@+id/btn_native" android:text="7. JNIスタックオーバーフロー実演" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+    <ScrollView android:layout_width="match_parent" android:layout_height="match_parent">
+        <TextView android:id="@+id/tv_output" android:padding="8dp" android:background="#f0f0f0"
+            android:textSize="12sp" android:typeface="monospace" android:layout_width="match_parent" android:layout_height="wrap_content"/>
     </ScrollView>
-
 </LinearLayout>
