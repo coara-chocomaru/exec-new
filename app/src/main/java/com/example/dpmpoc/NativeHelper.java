@@ -1,5 +1,7 @@
 package com.example.dpmpoc;
 
+import android.util.Log;
+
 public class NativeHelper {
 
     static {
@@ -10,10 +12,8 @@ public class NativeHelper {
         }
     }
 
-    // ネイティブメソッド宣言 (実際には .so に実装が必要)
     public static native String execCommand(String cmd);
 
-    // フォールバック: Java で代替 (実際には exec できないが、デモ)
     public static String execCommandFallback(String cmd) {
         return "Fallback: cannot execute " + cmd;
     }
