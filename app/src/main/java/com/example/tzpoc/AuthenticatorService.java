@@ -5,9 +5,17 @@ import android.content.Intent;
 import android.os.IBinder;
 
 public class AuthenticatorService extends Service {
+    private MyAuthenticator mAuthenticator;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        mAuthenticator = new MyAuthenticator(this);
+        MainActivity.appendLog("[+] AuthenticatorService created.");
+    }
+
     @Override
     public IBinder onBind(Intent intent) {
-        MyAuthenticator authenticator = new MyAuthenticator(this);
-        return authenticator.getIBinder();
+        return mAuthenticator.getIBinder();
     }
 }
