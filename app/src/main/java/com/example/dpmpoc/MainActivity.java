@@ -7,7 +7,6 @@ import android.content.Intent;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
 import android.os.Bundle;
-import android.os.FileDescriptor;
 import android.os.IBinder;
 import android.os.IInterface;
 import android.os.Parcel;
@@ -19,6 +18,7 @@ import android.widget.TextView;
 
 import com.qti.dpm.IDpmService;
 
+import java.io.FileDescriptor;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
