@@ -11,6 +11,12 @@
         android:layout_height="wrap_content"
         android:text="1. Bind to ProxyService &amp; Get Port" />
 
+    <Button
+        android:id="@+id/btn_auth"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="0. Generate ADB Key Pair" />
+
     <TextView
         android:id="@+id/tv_port"
         android:layout_width="match_parent"
