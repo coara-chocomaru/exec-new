@@ -9,7 +9,7 @@
         android:id="@+id/btn_genkey"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="0. Generate ADB Key Pair" />
+        android:text="0. Generate Fallback Key" />
 
     <Button
         android:id="@+id/btn_bind"
