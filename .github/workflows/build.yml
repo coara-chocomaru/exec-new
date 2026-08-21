@@ -2,10 +2,10 @@ name: Build
 on:
   push:
     branches:
-      - testr
+      - testo
   pull_request:
     branches:
-      - testr
+      - testo
 jobs:
   build:
     name: Build
