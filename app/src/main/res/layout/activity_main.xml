@@ -6,12 +6,6 @@
     android:padding="16dp">
 
     <Button
-        android:id="@+id/btn_genkey"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="0. Generate Fallback Key" />
-
-    <Button
         android:id="@+id/btn_bind"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -29,13 +23,13 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="127.0.0.1:5555"
-        android:hint="Target Host:Port (e.g., 127.0.0.1:4444)" />
+        android:hint="Target Host:Port (e.g., 127.0.0.1:5555)" />
 
     <Button
-        android:id="@+id/btn_tunnel"
+        android:id="@+id/btn_connect"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="2. Establish Tunnel &amp; Authenticate"
+        android:text="2. Connect ADB Server (LADB方式)"
         android:enabled="false" />
 
     <Button
