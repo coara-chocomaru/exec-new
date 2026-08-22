@@ -2,10 +2,10 @@ name: Build
 on:
   push:
     branches:
-      - testr
+      - zygote
   pull_request:
     branches:
-      - testr
+      - zygote
 jobs:
   build:
     name: Build
