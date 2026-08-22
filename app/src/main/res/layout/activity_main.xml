@@ -5,47 +5,88 @@
     android:orientation="vertical"
     android:padding="16dp">
 
-    <Button
-        android:id="@+id/btn_bind"
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Zygote Exploit (uid=1000)"
+        android:textSize="18sp"
+        android:textStyle="bold" />
+
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="1. Bind to ProxyService" />
+        android:orientation="horizontal"
+        android:layout_marginTop="12dp">
+
+        <Button
+            android:id="@+id/btn_setup"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="1. Setup" />
+
+        <Button
+            android:id="@+id/btn_bind_proxy"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="2. Bind Proxy" />
+
+        <Button
+            android:id="@+id/btn_scan"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Scan Port" />
+    </LinearLayout>
 
     <TextView
-        android:id="@+id/tv_port"
+        android:id="@+id/tv_status"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Proxy Port: N/A"
-        android:paddingTop="8dp" />
+        android:layout_marginTop="12dp"
+        android:text="Status: Ready"
+        android:textColor="#0000FF" />
+
+    <TextView
+        android:id="@+id/tv_proxy_port"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Proxy Port: Not obtained" />
 
     <EditText
-        android:id="@+id/et_target"
+        android:id="@+id/et_command"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="127.0.0.1:5555"
-        android:hint="Target Host:Port (e.g., 127.0.0.1:5555)" />
+        android:layout_marginTop="12dp"
+        android:hint="Enter command (e.g., id)"
+        android:text="id" />
 
     <Button
-        android:id="@+id/btn_connect"
+        android:id="@+id/btn_send"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="2. Connect ADB Server (LADB方式)"
-        android:enabled="false" />
+        android:layout_marginTop="8dp"
+        android:text="Send Command (uid=1000)" />
 
-    <Button
-        android:id="@+id/btn_scan"
-        android:layout_width="match_parent"
+    <TextView
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="3. Scan Internal Ports" />
+        android:layout_marginTop="12dp"
+        android:text="--- Output ---" />
 
     <ScrollView
         android:layout_width="match_parent"
-        android:layout_height="match_parent">
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#F5F5F5"
+        android:padding="8dp">
+
         <TextView
-            android:id="@+id/tv_log"
+            android:id="@+id/tv_output"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Logs will appear here..."
+            android:text="[Output will appear here]"
             android:textSize="12sp"
             android:typeface="monospace" />
     </ScrollView>
