@@ -4,10 +4,10 @@ plugins {
 
 android {
     compileSdk 35
-    namespace 'com.example.tzpoc'
+    namespace 'com.example.dumppoc'
 
     defaultConfig {
-        minSdk 26
+        minSdk 28
         targetSdk 28
         versionCode 1
         versionName "1.0"
@@ -29,7 +29,7 @@ android {
     }
     
     buildFeatures {
-        aidl true
+        aidl false
     }
 
     externalNativeBuild {
@@ -86,5 +86,4 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 dependencies {
-    implementation 'androidx.appcompat:appcompat:1.6.1'
 }
