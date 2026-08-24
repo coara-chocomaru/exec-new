@@ -37,6 +37,6 @@
         android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
-            android:exported="false">
-  </application>
+            android:exported="false" />
+    </application>
 </manifest>
