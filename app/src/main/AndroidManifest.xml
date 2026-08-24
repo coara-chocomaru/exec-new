@@ -34,10 +34,9 @@
         android:allowBackup="false"
         android:extractNativeLibs="true"
         android:label="DumpPOC"
-        android:supportsRtl="true"
         android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="false">
   </application>
 </manifest>
