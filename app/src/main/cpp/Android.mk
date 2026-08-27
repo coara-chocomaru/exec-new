@@ -5,6 +5,5 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := exploit
 LOCAL_SRC_FILES := exploit.c
 LOCAL_LDLIBS := -llog
-LOCAL_CFLAGS := -Wall -O2
-
+LOCAL_CFLAGS := -std=c99
 include $(BUILD_SHARED_LIBRARY)
