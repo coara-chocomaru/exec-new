@@ -6,7 +6,7 @@ import java.nio.file.attribute.*;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
-import android.util.Log;  // dalvikvmでもLogは使用可能（android.jarが必要だが、コンパイル時には依存しない）
+import android.util.Log;
 
 public class DumpExplorer {
     private static final String TAG = "DumpExplorer";
