@@ -74,6 +74,7 @@ android {
 
     packagingOptions {
         resources {
+            doNotStrip '**/*.so'
             excludes += ['META-INF/LICENSE', 'META-INF/LICENSE.txt', 'META-INF/NOTICE']
         }
     }
