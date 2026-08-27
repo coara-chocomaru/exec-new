@@ -2,9 +2,9 @@ LOCAL_PATH := $(call my-dir)
 
 include $(CLEAR_VARS)
 
-LOCAL_MODULE    := pocjni
-LOCAL_SRC_FILES := poc_jni.c
-LOCAL_LDLIBS    := -llog
-LOCAL_CFLAGS    := -std=c99
+LOCAL_MODULE := exploit
+LOCAL_SRC_FILES := exploit.c
+LOCAL_LDLIBS := -llog
+LOCAL_CFLAGS := -Wall -O2
 
 include $(BUILD_SHARED_LIBRARY)
