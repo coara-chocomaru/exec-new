@@ -23,13 +23,6 @@ android {
         aidl false
     }
 
-    externalNativeBuild {
-        ndkBuild {
-            path file("src/main/cpp/Android.mk")
-        }
-    }
-
-
     signingConfigs {
         release {
             storeFile file('test.jks')
