@@ -20,7 +20,7 @@ android {
     }
     
     buildFeatures {
-        aidl true
+        aidl false
     }
 
     signingConfigs {
