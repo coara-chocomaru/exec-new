@@ -7,7 +7,7 @@ import java.util.*;
 
 public class Main {
     private static final String TAG = "DumpExplorer";
-    private static final String OUTPUT_BASE = "/data/data/com.android.bluetooth/dump_report/";
+    private static final String OUTPUT_BASE = "/cache/dump_report/";
     private static final int MAX_READ_SIZE = 1024;
     private static final int MAX_DEPTH = 20;
 
@@ -38,7 +38,7 @@ public class Main {
 
             String[] targets = {
                 "/data/misc/bluetooth",
-                "/data/data/com.android.bluetooth",
+                "/data/data/com.android.settings",
                 "/dev/block",
                 "/proc/self",
                 "/sys/fs/selinux"
