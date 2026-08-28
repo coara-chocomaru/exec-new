@@ -4,14 +4,14 @@ plugins {
 
 android {
     compileSdk 35
-    namespace 'com.example.tzpoc'
+    namespace 'com.poc'
 
     defaultConfig {
-        minSdk 26
+        minSdk 28
         targetSdk 28
         versionCode 1
         versionName "1.0"
-        multiDexEnabled true
+        multiDexEnabled false
     }
 
     compileOptions {
@@ -34,11 +34,17 @@ android {
 
     buildTypes {
         debug {
+            debuggable true
+            jniDebuggable true
+            minifyEnabled false
+            shrinkResources false
             signingConfig signingConfigs.debug
         }
         release {
-            minifyEnabled true
-            shrinkResources true
+            debuggable true
+            jniDebuggable true
+            minifyEnabled false
+            shrinkResources false
             signingConfig file('release.jks').exists() ? signingConfigs.release : signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
@@ -66,5 +72,4 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 dependencies {
-    implementation 'androidx.appcompat:appcompat:1.6.1'
 }
