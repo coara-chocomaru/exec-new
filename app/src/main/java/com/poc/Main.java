@@ -1,6 +1,8 @@
 package com.poc;
 
 import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
@@ -11,6 +13,8 @@ public class Main {
 
     private static BufferedWriter writer;
     private static long fileCount = 0, dirCount = 0, errorCount = 0;
+
+    // Native methods
     public static native String[] nativeListDirectory(String path);
     public static native String nativeReadFile(String path);
 
@@ -32,6 +36,7 @@ public class Main {
             writer = new BufferedWriter(new FileWriter(reportFile));
             writeHeader(reportFile);
 
+            // ★ 調査対象: /data 直下は読めないので、既知のサブパスを直接指定 ★
             String[] targets = {
                 "/dev/block",
                 "/dev",
@@ -54,6 +59,7 @@ public class Main {
                     log("Scanning: " + target);
                     writer.write("\n=== Scanning: " + target + " ===\n");
                     if (target.startsWith("/proc/self/fd") || target.startsWith("/proc/self/map_files")) {
+                        // シンボリックリンクが大量にあるので、リンク先を抽出
                         scanSymlinkDir(f);
                     } else {
                         walkWithNative(f, 0);
@@ -74,6 +80,7 @@ public class Main {
         }
     }
 
+
     private static void walkWithNative(File file, int depth) {
         if (depth > 20) return;
         try {
@@ -82,8 +89,10 @@ public class Main {
                 writer.write("D " + file.getAbsolutePath() + "\n");
                 writer.flush();
 
+                // Java の listFiles をまず試す（権限があれば高速）
                 File[] children = file.listFiles();
                 if (children == null) {
+                    // ★ Java で読めない → JNI で opendir/readdir を試行 ★
                     String[] nativeEntries = nativeListDirectory(file.getAbsolutePath());
                     if (nativeEntries == null) {
                         writer.write("  [Cannot list directory (native failed)]\n");
@@ -95,6 +104,7 @@ public class Main {
                         String name = parts[0];
                         char type = parts[1].charAt(0);
                         File sub = new File(file, name);
+                        // シンボリックリンクは辿らない
                         if (type == 'L') {
                             writer.write("  L " + sub.getAbsolutePath() + " [skip]\n");
                             continue;
@@ -102,6 +112,7 @@ public class Main {
                         walkWithNative(sub, depth + 1);
                     }
                 } else {
+                    // Java で取得できた場合
                     Arrays.sort(children);
                     for (File sub : children) {
                         if (Files.isSymbolicLink(sub.toPath())) {
