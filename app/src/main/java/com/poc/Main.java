@@ -11,22 +11,15 @@ public class Main {
 
     private static BufferedWriter writer;
     private static long fileCount = 0, dirCount = 0, errorCount = 0;
-
     public static native String[] nativeListDirectory(String path);
     public static native String nativeReadFile(String path);
 
     static {
-        String libPath = "/data/misc/bluetooth/libnative-inspector.so";
         try {
-            System.load(libPath);
-            System.err.println("[" + TAG + "] Loaded library from: " + libPath);
+            System.loadLibrary("native-inspector");
+            System.err.println("[" + TAG + "] Loaded native-inspector via System.loadLibrary");
         } catch (UnsatisfiedLinkError e) {
-            System.err.println("[" + TAG + "] Failed to load library: " + e);
-            try {
-                System.loadLibrary("native-inspector");
-            } catch (UnsatisfiedLinkError e2) {
-                System.err.println("[" + TAG + "] System.loadLibrary also failed.");
-            }
+            System.err.println("[" + TAG + "] System.loadLibrary failed: " + e);
         }
     }
 
@@ -58,20 +51,14 @@ public class Main {
             writer = new BufferedWriter(new FileWriter(reportFile));
             writeHeader(reportFile);
 
+
             String[] targets = {
                 "/dev/block",
                 "/dev",
-                "/data/misc",
-                "/data/data",
-                "/data/system",
-                "/data/local",
-                "/data/media",
-                "/data/user",
-                "/data/app",
-                "/proc/self/fd",
-                "/proc/self/map_files",
-                "/proc/self/root/data/misc",
-                "/proc/self/root/data/data"
+                "/data/misc/bluetooth",
+                "/data/data/com.android.bluetooth",
+                "/proc/self",
+                "/sys/fs/selinux"
             };
 
             for (String target : targets) {
@@ -188,7 +175,7 @@ public class Main {
     }
 
     private static void writeHeader(String reportFile) {
-        safeWrite("Comprehensive Inspector Report\n");
+        safeWrite("Inspector Report (with native JNI)\n");
         safeWrite("Generated: " + new Date() + "\n");
         safeWrite("UID: " + android.os.Process.myUid() + "\n");
         safeWrite("------------------------------------------------------------\n\n");
