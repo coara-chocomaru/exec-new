@@ -22,7 +22,7 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-public class PrivilegeEscalation {
+public class Main {
 
     private static final String REPORT_PATH = "/cache/exploit_report.txt";
 
