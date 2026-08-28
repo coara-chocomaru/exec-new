@@ -1,11 +1,11 @@
-// PrivilegeEscalation.java (リフレクション版)
 package com.poc;
 
 import android.os.IBinder;
 import android.os.Process;
 import android.system.ErrnoException;
 import android.system.Os;
-import android.system.OsConstants;
+import android.system.StructCapUserData;
+import android.system.StructCapUserHeader;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -19,6 +19,7 @@ import java.util.Locale;
 public class Main {
 
     private static final String REPORT_PATH = "/cache/exploit_report.txt";
+    private static final int LINUX_CAPABILITY_VERSION_3 = 0x20080500;
 
     public static void main(String[] args) {
         StringBuilder report = new StringBuilder();
@@ -33,10 +34,11 @@ public class Main {
             // --- [1] Basic Process Identity ---
             report.append("--- [1] Basic Process Identity ---\n");
             int uid = Process.myUid();
-            int gid = Process.myGid(); // Android 9 では myGid() が存在しない場合は、Process.myUid() で代用?
             int pid = Process.myPid();
+            // Android 9 には Process.myGid() がないため、myUid を GID として代用
+            int gid = uid;
             report.append("UID: ").append(uid).append("\n");
-            report.append("GID: ").append(gid).append("\n");
+            report.append("GID (approximated): ").append(gid).append("\n");
             report.append("PID: ").append(pid).append("\n");
 
             // パッケージ名の取得 (リフレクション)
@@ -119,9 +121,7 @@ public class Main {
             report.append("[setuid(0)]: ");
             try { Os.setuid(0); report.append("SUCCESS (Root!)\n"); } catch (ErrnoException e) { report.append("FAILED (EPERM)\n"); }
 
-            // setresuid(0,0,0)
-            report.append("[setresuid(0,0,0)]: ");
-            try { Os.setresuid(0, 0, 0); report.append("SUCCESS\n"); } catch (ErrnoException e) { report.append("FAILED\n"); }
+            // setresuid は Android 9 の Os にないのでスキップ
 
             // /proc/self/oom_score_adj
             report.append("[write /proc/self/oom_score_adj]: ");
@@ -206,7 +206,7 @@ public class Main {
         File reportFile = new File(REPORT_PATH);
         if (!reportFile.getParentFile().exists()) reportFile.getParentFile().mkdirs();
         try (BufferedWriter w = new BufferedWriter(new FileWriter(reportFile))) { w.write(content); }
-        try { Os.chmod(REPORT_PATH, OsConstants.S_IRUSR | OsConstants.S_IWUSR | OsConstants.S_IRGRP | OsConstants.S_IROTH); } catch (ErrnoException ignored) {}
+        try { Os.chmod(REPORT_PATH, 0644); } catch (ErrnoException ignored) {}
     }
 
     private static String readFile(String path) {
@@ -216,38 +216,19 @@ public class Main {
 
     private static String dumpCapabilities() {
         try {
-            // Use reflection for StructCapUserHeader and StructCapUserData if needed, but Os.capget is available.
-            // Actually, Os.capget and StructCapUserHeader are in android.system package, which is in android.jar.
-            // But to avoid import errors, we can do it with direct call (they exist in runtime).
-            // However, compiling will fail if imports are missing. So we use reflection for capget as well.
-            // But for simplicity, we assume Os.capget is available. If not, we catch and return error.
-            // Since Os is in android.jar, we keep direct usage.
-            // But StructCapUserHeader might be missing in compile-time if SDK version low.
-            // We'll catch and return error.
-            try {
-                Class<?> capHeaderClass = Class.forName("android.system.StructCapUserHeader");
-                Object header = capHeaderClass.getConstructor(int.class, int.class).newInstance(OsConstants._LINUX_CAPABILITY_VERSION_3, 0);
-                Method capget = Os.class.getMethod("capget", capHeaderClass);
-                Object[] data = (Object[]) capget.invoke(null, header);
-                // data[0] and data[1] are StructCapUserData
-                // Extract fields via reflection
-                Method getEffective = data[0].getClass().getMethod("effective");
-                Method getPermitted = data[0].getClass().getMethod("permitted");
-                Method getInheritable = data[0].getClass().getMethod("inheritable");
-                long eff0 = (int) getEffective.invoke(data[0]);
-                long perm0 = (int) getPermitted.invoke(data[0]);
-                long inh0 = (int) getInheritable.invoke(data[0]);
-                long eff1 = (int) getEffective.invoke(data[1]);
-                long perm1 = (int) getPermitted.invoke(data[1]);
-                long inh1 = (int) getInheritable.invoke(data[1]);
-                return "Effective: " + Long.toHexString(eff0 | (eff1 << 32)) + "\n" +
-                       "Permitted: " + Long.toHexString(perm0 | (perm1 << 32)) + "\n" +
-                       "Inheritable: " + Long.toHexString(inh0 | (inh1 << 32));
-            } catch (Exception e) {
-                return "Failed to get capabilities: " + e.getMessage();
-            }
-        } catch (Exception e) {
-            return "Capability dump error: " + e.getMessage();
+            StructCapUserHeader header = new StructCapUserHeader(LINUX_CAPABILITY_VERSION_3, 0);
+            StructCapUserData[] data = Os.capget(header);
+            long eff0 = data[0].effective & 0xffffffffL;
+            long perm0 = data[0].permitted & 0xffffffffL;
+            long inh0 = data[0].inheritable & 0xffffffffL;
+            long eff1 = data[1].effective & 0xffffffffL;
+            long perm1 = data[1].permitted & 0xffffffffL;
+            long inh1 = data[1].inheritable & 0xffffffffL;
+            return "Effective: " + Long.toHexString(eff0 | (eff1 << 32)) + "\n" +
+                   "Permitted: " + Long.toHexString(perm0 | (perm1 << 32)) + "\n" +
+                   "Inheritable: " + Long.toHexString(inh0 | (inh1 << 32));
+        } catch (ErrnoException e) {
+            return "Failed to get capabilities: " + e.getMessage();
         }
     }
 
