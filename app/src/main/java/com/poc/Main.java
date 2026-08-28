@@ -8,37 +8,48 @@ import java.util.*;
 public class Main {
     private static final String TAG = "Inspector";
     private static final String OUTPUT_BASE = "/data/data/com.android.bluetooth/inspect_report/";
+    private static final int MAX_READ_SIZE = 1024;
 
     private static BufferedWriter writer;
     private static long fileCount = 0, dirCount = 0, errorCount = 0;
+
     public static native String[] nativeListDirectory(String path);
     public static native String nativeReadFile(String path);
 
     static {
         try {
-            System.loadLibrary("native-inspector");
-            System.err.println("[" + TAG + "] Loaded native-inspector via System.loadLibrary");
-        } catch (UnsatisfiedLinkError e) {
-            System.err.println("[" + TAG + "] System.loadLibrary failed: " + e);
+            String apkPath = Main.class.getProtectionDomain().getCodeSource().getLocation().getPath();
+            File apkFile = new File(apkPath);
+            File libBase = new File(apkFile.getParentFile(), "lib");
+            String abi;
+            String arch = System.getProperty("os.arch");
+            if (arch != null && arch.contains("v7a")) {
+                abi = "armeabi-v7a";
+            } else {
+                abi = "arm64-v8a";
+            }
+
+            File libFile = new File(new File(libBase, abi), "libnative-inspector.so");
+            if (libFile.exists()) {
+                System.load(libFile.getAbsolutePath());
+                System.err.println("[" + TAG + "] Loaded library from: " + libFile.getAbsolutePath());
+            } else {
+                System.loadLibrary("native-inspector");
+                System.err.println("[" + TAG + "] Loaded library via System.loadLibrary");
+            }
+        } catch (Throwable t) {
+            System.err.println("[" + TAG + "] Failed to load native library: " + t);
+            t.printStackTrace();
+            System.exit(1);
         }
     }
 
     private static void safeWrite(String s) {
-        if (writer == null) return;
-        try {
-            writer.write(s);
-        } catch (IOException e) {
-            System.err.println("[" + TAG + "] Write error: " + e);
-        }
+        try { if (writer != null) writer.write(s); } catch (IOException ignored) {}
     }
 
     private static void safeFlush() {
-        if (writer == null) return;
-        try {
-            writer.flush();
-        } catch (IOException e) {
-            System.err.println("[" + TAG + "] Flush error: " + e);
-        }
+        try { if (writer != null) writer.flush(); } catch (IOException ignored) {}
     }
 
     public static void main(String[] args) {
@@ -51,14 +62,20 @@ public class Main {
             writer = new BufferedWriter(new FileWriter(reportFile));
             writeHeader(reportFile);
 
-
             String[] targets = {
                 "/dev/block",
                 "/dev",
-                "/data/misc/bluetooth",
-                "/data/data/com.android.bluetooth",
-                "/proc/self",
-                "/sys/fs/selinux"
+                "/data/misc",
+                "/data/data",
+                "/data/system",
+                "/data/local",
+                "/data/media",
+                "/data/user",
+                "/data/app",
+                "/proc/self/fd",
+                "/proc/self/map_files",
+                "/proc/self/root/data/misc",
+                "/proc/self/root/data/data"
             };
 
             for (String target : targets) {
@@ -175,7 +192,7 @@ public class Main {
     }
 
     private static void writeHeader(String reportFile) {
-        safeWrite("Inspector Report (with native JNI)\n");
+        safeWrite("Comprehensive Inspector Report\n");
         safeWrite("Generated: " + new Date() + "\n");
         safeWrite("UID: " + android.os.Process.myUid() + "\n");
         safeWrite("------------------------------------------------------------\n\n");
