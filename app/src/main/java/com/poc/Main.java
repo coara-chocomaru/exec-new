@@ -1,7 +1,6 @@
 package com.poc;
 
 import java.io.*;
-import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
@@ -19,29 +18,23 @@ public class Main {
     private static final String PACKAGES_XML = "/data/system/packages.xml";
 
     public static void main(String[] args) throws Exception {
-        
         int uid = android.os.Process.myUid();
         System.out.println("=== uid=" + uid + " ===");
         System.out.println("SELinux context: " + getSelinuxContext());
 
-    
-        testUidChange();
-
-    
-        testWriteToData();
-
-
-        dumpPackagesXml();
-
-        
+        testUidChange(); 
+        testWriteToData(); 
+        dumpPackagesXml();  
         printProcessGroups();
     }
 
 
     private static void testUidChange() {
-        System.out.println("\n[Mission1] Attempting to change UID/GID of installed apps");
+        System.out.println("\n[Mission1] Attempting to change UID/GID (via shell commands only)");
+
+        
         try {
-            java.lang.Process p = Runtime.getRuntime().exec("pm list packages");
+            Process p = Runtime.getRuntime().exec("pm list packages");
             BufferedReader in = new BufferedReader(new InputStreamReader(p.getInputStream()));
             String line;
             System.out.println("--- pm list packages (sample) ---");
@@ -56,27 +49,10 @@ public class Main {
         }
 
         try {
-            Class<?> cls = Class.forName("android.os.ServiceManager");
-            Method getService = cls.getMethod("getService", String.class);
-            Object pmBinder = getService.invoke(null, "package");
-            if (pmBinder != null) {
-                Method[] methods = pmBinder.getClass().getDeclaredMethods();
-                System.out.println("Found " + methods.length + " methods in PackageManagerService");
-                for (Method m : methods) {
-                    if (m.getName().toLowerCase().contains("uid") || m.getName().toLowerCase().contains("gid")) {
-                        System.out.println("  " + m.getName());
-                    }
-                }
-            }
-        } catch (Exception e) {
-            System.out.println("PackageManager reflection error: " + e);
-        }
-
-        try {
-            java.lang.Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "settings list global"});
+            Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "settings list global"});
             p.waitFor();
             if (p.exitValue() == 0) {
-                System.out.println("[OK] development_settings_enabled set to 1");
+                System.out.println("[OK] settings");
             } else {
                 System.out.println("[FAIL] settings command failed");
             }
@@ -90,7 +66,7 @@ public class Main {
     private static void testWriteToData() {
         System.out.println("\n[Mission2] Writing test files to /data/ subdirectories");
         String[] dirs = {
-            "/data/",
+            "/data",
             "/data/misc",
             "/data/system",
             "/data/app",
@@ -101,80 +77,52 @@ public class Main {
             "/data/dalvik-cache",
             "/data/resource-cache",
             "/data/property",
-            "/data"
+            "/data/"
         };
 
         List<WriteMethod> methods = new ArrayList<>();
         methods.add(new WriteMethod("FileOutputStream", (path, name) -> {
-            File f = new File(path, name);
-            try (FileOutputStream fos = new FileOutputStream(f)) {
-                fos.write("test".getBytes());
-                return true;
+            try (FileOutputStream fos = new FileOutputStream(new File(path, name))) {
+                fos.write("test".getBytes()); return true;
             } catch (Exception e) { return false; }
         }));
         methods.add(new WriteMethod("BufferedWriter", (path, name) -> {
             try (BufferedWriter w = new BufferedWriter(new FileWriter(new File(path, name)))) {
-                w.write("test");
-                return true;
+                w.write("test"); return true;
             } catch (Exception e) { return false; }
         }));
         methods.add(new WriteMethod("FileChannel", (path, name) -> {
             try (FileChannel ch = new FileOutputStream(new File(path, name)).getChannel()) {
-                ch.write(ByteBuffer.wrap("test".getBytes()));
-                return true;
+                ch.write(ByteBuffer.wrap("test".getBytes())); return true;
             } catch (Exception e) { return false; }
         }));
         methods.add(new WriteMethod("RandomAccessFile", (path, name) -> {
             try (RandomAccessFile raf = new RandomAccessFile(new File(path, name), "rw")) {
-                raf.write("test".getBytes());
-                return true;
+                raf.write("test".getBytes()); return true;
             } catch (Exception e) { return false; }
         }));
         methods.add(new WriteMethod("NIO Files.write", (path, name) -> {
-            try {
-                Files.write(Paths.get(path, name), "test".getBytes());
-                return true;
-            } catch (Exception e) { return false; }
+            try { Files.write(Paths.get(path, name), "test".getBytes()); return true; } catch (Exception e) { return false; }
         }));
         methods.add(new WriteMethod("Files.createFile+write", (path, name) -> {
-            try {
-                java.nio.file.Path p = Paths.get(path, name);
-                Files.createFile(p);
-                Files.write(p, "test".getBytes());
-                return true;
-            } catch (Exception e) { return false; }
+            try { java.nio.file.Path p = Paths.get(path, name); Files.createFile(p); Files.write(p, "test".getBytes()); return true; } catch (Exception e) { return false; }
         }));
         methods.add(new WriteMethod("MappedByteBuffer", (path, name) -> {
             try (RandomAccessFile raf = new RandomAccessFile(new File(path, name), "rw")) {
-                FileChannel ch = raf.getChannel();
-                MappedByteBuffer map = ch.map(FileChannel.MapMode.READ_WRITE, 0, 4);
-                map.put("test".getBytes());
-                return true;
+                MappedByteBuffer map = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, 4);
+                map.put("test".getBytes()); return true;
             } catch (Exception e) { return false; }
         }));
         methods.add(new WriteMethod("Process echo", (path, name) -> {
-            try {
-                java.lang.Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "echo test > " + path + "/" + name});
-                p.waitFor();
-                return p.exitValue() == 0;
-            } catch (Exception e) { return false; }
+            try { Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "echo test > " + path + "/" + name}); p.waitFor(); return p.exitValue() == 0; } catch (Exception e) { return false; }
         }));
         methods.add(new WriteMethod("Process cat", (path, name) -> {
-            try {
-                java.lang.Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "echo test | cat > " + path + "/" + name});
-                p.waitFor();
-                return p.exitValue() == 0;
-            } catch (Exception e) { return false; }
+            try { Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "echo test | cat > " + path + "/" + name}); p.waitFor(); return p.exitValue() == 0; } catch (Exception e) { return false; }
         }));
         methods.add(new WriteMethod("Process dd", (path, name) -> {
-            try {
-                java.lang.Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "echo test | dd of=" + path + "/" + name});
-                p.waitFor();
-                return p.exitValue() == 0;
-            } catch (Exception e) { return false; }
+            try { Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "echo test | dd of=" + path + "/" + name}); p.waitFor(); return p.exitValue() == 0; } catch (Exception e) { return false; }
         }));
 
-    
         AtomicInteger total = new AtomicInteger(0);
         AtomicInteger success = new AtomicInteger(0);
         for (WriteMethod m : methods) {
@@ -184,7 +132,6 @@ public class Main {
                 if (ok) {
                     success.incrementAndGet();
                     System.out.println("[OK] " + m.name + " -> " + dir + "/" + fileName);
-                
                     new File(dir, fileName).delete();
                 } else {
                     System.out.println("[FAIL] " + m.name + " -> " + dir);
@@ -194,9 +141,9 @@ public class Main {
         System.out.printf("Write test completed: %d/%d succeeded%n", success.get(), total.get());
     }
 
-    
+    // ========== ミッション3: packages.xml を /cache/ にダンプ ==========
     private static void dumpPackagesXml() {
-        System.out.println("\n[Mission3] Dumping /data/system/packages.xml to /cache/ using various methods");
+        System.out.println("\n[Mission3] Dumping /data/system/packages.xml to /cache/");
         String src = PACKAGES_XML;
         File srcFile = new File(src);
         if (!srcFile.exists() || !srcFile.canRead()) {
@@ -205,100 +152,57 @@ public class Main {
         }
         List<DumpMethod> methods = new ArrayList<>();
         methods.add(new DumpMethod("FileInputStream+FileOutputStream", () -> {
-            try (FileInputStream fis = new FileInputStream(src);
-                 FileOutputStream fos = new FileOutputStream(DUMP_DIR + "dump_fis_fos.xml")) {
-                byte[] buf = new byte[8192];
-                int len;
-                while ((len = fis.read(buf)) > 0) fos.write(buf, 0, len);
-                return true;
+            try (FileInputStream fis = new FileInputStream(src); FileOutputStream fos = new FileOutputStream(DUMP_DIR + "dump_fis_fos.xml")) {
+                byte[] buf = new byte[8192]; int len; while ((len = fis.read(buf)) > 0) fos.write(buf, 0, len); return true;
             } catch (Exception e) { return false; }
         }));
         methods.add(new DumpMethod("FileChannel.transferTo", () -> {
-            try (FileInputStream fis = new FileInputStream(src);
-                 FileOutputStream fos = new FileOutputStream(DUMP_DIR + "dump_transfer.xml")) {
-                fis.getChannel().transferTo(0, Long.MAX_VALUE, fos.getChannel());
-                return true;
+            try (FileInputStream fis = new FileInputStream(src); FileOutputStream fos = new FileOutputStream(DUMP_DIR + "dump_transfer.xml")) {
+                fis.getChannel().transferTo(0, Long.MAX_VALUE, fos.getChannel()); return true;
             } catch (Exception e) { return false; }
         }));
         methods.add(new DumpMethod("Files.copy", () -> {
-            try {
-                Files.copy(Paths.get(src), Paths.get(DUMP_DIR, "dump_files_copy.xml"), StandardCopyOption.REPLACE_EXISTING);
-                return true;
-            } catch (Exception e) { return false; }
+            try { Files.copy(Paths.get(src), Paths.get(DUMP_DIR, "dump_files_copy.xml"), StandardCopyOption.REPLACE_EXISTING); return true; } catch (Exception e) { return false; }
         }));
         methods.add(new DumpMethod("BufferedReader+BufferedWriter", () -> {
-            try (BufferedReader br = new BufferedReader(new FileReader(src));
-                 BufferedWriter bw = new BufferedWriter(new FileWriter(DUMP_DIR + "dump_br_bw.xml"))) {
-                String line;
-                while ((line = br.readLine()) != null) {
-                    bw.write(line);
-                    bw.newLine();
-                }
-                return true;
+            try (BufferedReader br = new BufferedReader(new FileReader(src)); BufferedWriter bw = new BufferedWriter(new FileWriter(DUMP_DIR + "dump_br_bw.xml"))) {
+                String line; while ((line = br.readLine()) != null) { bw.write(line); bw.newLine(); } return true;
             } catch (Exception e) { return false; }
         }));
         methods.add(new DumpMethod("Scanner+PrintWriter", () -> {
-            try (Scanner sc = new Scanner(new File(src));
-                 PrintWriter pw = new PrintWriter(DUMP_DIR + "dump_scanner.xml")) {
-                while (sc.hasNextLine()) pw.println(sc.nextLine());
-                return true;
+            try (Scanner sc = new Scanner(new File(src)); PrintWriter pw = new PrintWriter(DUMP_DIR + "dump_scanner.xml")) {
+                while (sc.hasNextLine()) pw.println(sc.nextLine()); return true;
             } catch (Exception e) { return false; }
         }));
         methods.add(new DumpMethod("Process cp", () -> {
-            try {
-                java.lang.Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/cp", src, DUMP_DIR + "dump_cp.xml"});
-                p.waitFor();
-                return p.exitValue() == 0;
-            } catch (Exception e) { return false; }
+            try { Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/cp", src, DUMP_DIR + "dump_cp.xml"}); p.waitFor(); return p.exitValue() == 0; } catch (Exception e) { return false; }
         }));
         methods.add(new DumpMethod("Process cat", () -> {
-            try {
-                java.lang.Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "cat " + src + " > " + DUMP_DIR + "dump_cat.xml"});
-                p.waitFor();
-                return p.exitValue() == 0;
-            } catch (Exception e) { return false; }
+            try { Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "cat " + src + " > " + DUMP_DIR + "dump_cat.xml"}); p.waitFor(); return p.exitValue() == 0; } catch (Exception e) { return false; }
         }));
         methods.add(new DumpMethod("Process dd", () -> {
-            try {
-                java.lang.Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "dd if=" + src + " of=" + DUMP_DIR + "dump_dd.xml"});
-                p.waitFor();
-                return p.exitValue() == 0;
-            } catch (Exception e) { return false; }
+            try { Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "dd if=" + src + " of=" + DUMP_DIR + "dump_dd.xml"}); p.waitFor(); return p.exitValue() == 0; } catch (Exception e) { return false; }
         }));
         methods.add(new DumpMethod("MappedByteBuffer read+write", () -> {
-            try (RandomAccessFile raf = new RandomAccessFile(src, "r");
-                 FileChannel in = raf.getChannel();
-                 RandomAccessFile outRaf = new RandomAccessFile(DUMP_DIR + "dump_mapped.xml", "rw");
-                 FileChannel out = outRaf.getChannel()) {
+            try (RandomAccessFile raf = new RandomAccessFile(src, "r"); FileChannel in = raf.getChannel();
+                 RandomAccessFile outRaf = new RandomAccessFile(DUMP_DIR + "dump_mapped.xml", "rw"); FileChannel out = outRaf.getChannel()) {
                 MappedByteBuffer map = in.map(FileChannel.MapMode.READ_ONLY, 0, in.size());
-                out.write(map);
-                return true;
+                out.write(map); return true;
             } catch (Exception e) { return false; }
         }));
         methods.add(new DumpMethod("ZipOutputStream (compress)", () -> {
             try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(DUMP_DIR + "dump_packages.zip"))) {
                 zos.putNextEntry(new ZipEntry("packages.xml"));
                 try (FileInputStream fis = new FileInputStream(src)) {
-                    byte[] buf = new byte[8192];
-                    int len;
-                    while ((len = fis.read(buf)) > 0) zos.write(buf, 0, len);
+                    byte[] buf = new byte[8192]; int len; while ((len = fis.read(buf)) > 0) zos.write(buf, 0, len);
                 }
-                zos.closeEntry();
-                return true;
+                zos.closeEntry(); return true;
             } catch (Exception e) { return false; }
         }));
 
-
-        int total = methods.size();
-        int ok = 0;
+        int total = methods.size(), ok = 0;
         for (DumpMethod m : methods) {
-            boolean result = m.method.run();
-            if (result) {
-                ok++;
-                System.out.println("[OK] " + m.name);
-            } else {
-                System.out.println("[FAIL] " + m.name);
-            }
+            if (m.method.run()) { ok++; System.out.println("[OK] " + m.name); } else { System.out.println("[FAIL] " + m.name); }
         }
         System.out.printf("Dump test completed: %d/%d succeeded%n", ok, total);
     }
@@ -306,46 +210,27 @@ public class Main {
     private static String getSelinuxContext() {
         try {
             byte[] bytes = new byte[1024];
-            FileInputStream fis = new FileInputStream("/proc/self/attr/current");
-            int len = fis.read(bytes);
-            fis.close();
-            if (len > 0) return new String(bytes, 0, len).trim();
+            try (FileInputStream fis = new FileInputStream("/proc/self/attr/current")) {
+                int len = fis.read(bytes);
+                if (len > 0) return new String(bytes, 0, len).trim();
+            }
         } catch (Exception ignored) {}
         return "unknown";
     }
 
     private static void printProcessGroups() {
-        try {
-            BufferedReader r = new BufferedReader(new FileReader("/proc/self/status"));
+        try (BufferedReader r = new BufferedReader(new FileReader("/proc/self/status"))) {
             String line;
             while ((line = r.readLine()) != null) {
-                if (line.startsWith("Gid:")) {
-                    System.out.println("GID info: " + line);
-                }
-                if (line.startsWith("Groups:")) {
-                    System.out.println("Groups: " + line);
+                if (line.startsWith("Gid:") || line.startsWith("Groups:")) {
+                    System.out.println(line);
                 }
             }
-            r.close();
         } catch (Exception ignored) {}
     }
 
-
-    static class WriteMethod {
-        String name;
-        WriteFunction method;
-        WriteMethod(String n, WriteFunction f) { name = n; method = f; }
-    }
-    interface WriteFunction {
-        boolean apply(String path, String filename);
-    }
-
-    static class DumpMethod {
-        String name;
-        DumpFunction method;
-        DumpMethod(String n, DumpFunction f) { name = n; method = f; }
-    }
-    interface DumpFunction {
-        boolean run();
-    }
+    static class WriteMethod { String name; WriteFunction method; WriteMethod(String n, WriteFunction f) { name=n; method=f; } }
+    interface WriteFunction { boolean apply(String path, String filename); }
+    static class DumpMethod { String name; DumpFunction method; DumpMethod(String n, DumpFunction f) { name=n; method=f; } }
+    interface DumpFunction { boolean run(); }
 }
