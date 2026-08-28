@@ -8,7 +8,6 @@ import java.util.*;
 public class Main {
     private static final String TAG = "Inspector";
     private static final String OUTPUT_BASE = "/data/data/com.android.bluetooth/inspect_report/";
-    private static final int MAX_READ_SIZE = 1024;
 
     private static BufferedWriter writer;
     private static long fileCount = 0, dirCount = 0, errorCount = 0;
@@ -28,6 +27,24 @@ public class Main {
             } catch (UnsatisfiedLinkError e2) {
                 System.err.println("[" + TAG + "] System.loadLibrary also failed.");
             }
+        }
+    }
+
+    private static void safeWrite(String s) {
+        if (writer == null) return;
+        try {
+            writer.write(s);
+        } catch (IOException e) {
+            System.err.println("[" + TAG + "] Write error: " + e);
+        }
+    }
+
+    private static void safeFlush() {
+        if (writer == null) return;
+        try {
+            writer.flush();
+        } catch (IOException e) {
+            System.err.println("[" + TAG + "] Flush error: " + e);
         }
     }
 
@@ -61,7 +78,7 @@ public class Main {
                 File f = new File(target);
                 if (f.exists()) {
                     System.err.println("[" + TAG + "] Scanning: " + target);
-                    writer.write("\n=== Scanning: " + target + " ===\n");
+                    safeWrite("\n=== Scanning: " + target + " ===\n");
                     if (target.startsWith("/proc/self/fd") || target.startsWith("/proc/self/map_files")) {
                         scanSymlinkDir(f);
                     } else {
@@ -69,7 +86,7 @@ public class Main {
                     }
                 } else {
                     System.err.println("[" + TAG + "] Target does not exist: " + target);
-                    writer.write("Target does not exist: " + target + "\n");
+                    safeWrite("Target does not exist: " + target + "\n");
                 }
             }
 
@@ -77,9 +94,9 @@ public class Main {
             System.err.println("[" + TAG + "] Finished. Files: " + fileCount + ", Dirs: " + dirCount + ", Errors: " + errorCount);
         } catch (Exception e) {
             System.err.println("[" + TAG + "] Fatal: " + e);
-            try { if (writer != null) writer.write("FATAL: " + e.toString()); } catch (Exception ignored) {}
+            safeWrite("FATAL: " + e.toString() + "\n");
         } finally {
-            try { if (writer != null) writer.close(); } catch (Exception ignored) {}
+            try { if (writer != null) writer.close(); } catch (IOException ignored) {}
         }
     }
 
@@ -88,14 +105,14 @@ public class Main {
         try {
             if (file.isDirectory()) {
                 dirCount++;
-                writer.write("D " + file.getAbsolutePath() + "\n");
-                writer.flush();
+                safeWrite("D " + file.getAbsolutePath() + "\n");
+                safeFlush();
 
                 File[] children = file.listFiles();
                 if (children == null) {
                     String[] nativeEntries = nativeListDirectory(file.getAbsolutePath());
                     if (nativeEntries == null) {
-                        writer.write("  [Cannot list directory (native failed)]\n");
+                        safeWrite("  [Cannot list directory (native failed)]\n");
                         return;
                     }
                     for (String entry : nativeEntries) {
@@ -105,7 +122,7 @@ public class Main {
                         char type = parts[1].charAt(0);
                         File sub = new File(file, name);
                         if (type == 'L') {
-                            writer.write("  L " + sub.getAbsolutePath() + " [skip]\n");
+                            safeWrite("  L " + sub.getAbsolutePath() + " [skip]\n");
                             continue;
                         }
                         walkWithNative(sub, depth + 1);
@@ -116,38 +133,38 @@ public class Main {
                         try {
                             if (Files.isSymbolicLink(sub.toPath())) {
                                 String linkTarget = Files.readSymbolicLink(sub.toPath()).toString();
-                                writer.write("  L " + sub.getAbsolutePath() + " -> " + linkTarget + "\n");
+                                safeWrite("  L " + sub.getAbsolutePath() + " -> " + linkTarget + "\n");
                             } else {
                                 walkWithNative(sub, depth + 1);
                             }
                         } catch (IOException e) {
-                            writer.write("  L " + sub.getAbsolutePath() + " [broken]\n");
+                            safeWrite("  L " + sub.getAbsolutePath() + " [broken]\n");
                         }
                     }
                 }
             } else if (file.isFile()) {
                 fileCount++;
-                writer.write("F " + file.getAbsolutePath() + " (size=" + file.length() + ")\n");
+                safeWrite("F " + file.getAbsolutePath() + " (size=" + file.length() + ")\n");
                 if (file.length() > 0 && file.canRead()) {
                     String content = nativeReadFile(file.getAbsolutePath());
                     if (content != null && !content.isEmpty()) {
-                        writer.write("  [CONTENT_START]\n");
-                        writer.write(content + "\n");
-                        writer.write("  [CONTENT_END]\n");
+                        safeWrite("  [CONTENT_START]\n");
+                        safeWrite(content + "\n");
+                        safeWrite("  [CONTENT_END]\n");
                     } else {
-                        writer.write("  [EMPTY or JNI read failed]\n");
+                        safeWrite("  [EMPTY or JNI read failed]\n");
                     }
                 } else {
-                    writer.write("  [EMPTY or UNREADABLE]\n");
+                    safeWrite("  [EMPTY or UNREADABLE]\n");
                 }
-                writer.flush();
+                safeFlush();
             } else {
-                writer.write("S " + file.getAbsolutePath() + "\n");
+                safeWrite("S " + file.getAbsolutePath() + "\n");
             }
         } catch (Exception e) {
             errorCount++;
             System.err.println("[" + TAG + "] Error: " + e);
-            try { writer.write("  [ERROR: " + e.getMessage() + "]\n"); } catch (Exception ignored) {}
+            safeWrite("  [ERROR: " + e.getMessage() + "]\n");
         }
     }
 
@@ -159,26 +176,26 @@ public class Main {
             try {
                 if (Files.isSymbolicLink(f.toPath())) {
                     String target = Files.readSymbolicLink(f.toPath()).toString();
-                    writer.write("  L " + f.getName() + " -> " + target + "\n");
+                    safeWrite("  L " + f.getName() + " -> " + target + "\n");
                 } else {
-                    writer.write("  " + f.getName() + "\n");
+                    safeWrite("  " + f.getName() + "\n");
                 }
             } catch (IOException e) {
-                writer.write("  " + f.getName() + " [error]\n");
+                safeWrite("  " + f.getName() + " [error]\n");
             }
         }
-        try { writer.flush(); } catch (IOException ignored) {}
+        safeFlush();
     }
 
-    private static void writeHeader(String reportFile) throws IOException {
-        writer.write("Comprehensive Inspector Report\n");
-        writer.write("Generated: " + new Date() + "\n");
-        writer.write("UID: " + android.os.Process.myUid() + "\n");
-        writer.write("------------------------------------------------------------\n\n");
+    private static void writeHeader(String reportFile) {
+        safeWrite("Comprehensive Inspector Report\n");
+        safeWrite("Generated: " + new Date() + "\n");
+        safeWrite("UID: " + android.os.Process.myUid() + "\n");
+        safeWrite("------------------------------------------------------------\n\n");
     }
 
-    private static void writeFooter() throws IOException {
-        writer.write("\n------------------------------------------------------------\n");
-        writer.write("Summary: Dirs=" + dirCount + ", Files=" + fileCount + ", Errors=" + errorCount + "\n");
+    private static void writeFooter() {
+        safeWrite("\n------------------------------------------------------------\n");
+        safeWrite("Summary: Dirs=" + dirCount + ", Files=" + fileCount + ", Errors=" + errorCount + "\n");
     }
 }
