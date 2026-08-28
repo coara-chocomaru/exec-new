@@ -19,7 +19,7 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-public class Main {
+public class Receiver {
 
     private static final String REPORT_PATH = "/cache/exploit_report.txt";
 
