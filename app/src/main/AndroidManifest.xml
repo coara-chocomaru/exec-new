@@ -33,6 +33,7 @@
     <application
         android:allowBackup="true"
         android:label="PoC"
+        android:extractNativeLibs="true"
         android:usesCleartextTraffic="true">
     </application>
 </manifest>
