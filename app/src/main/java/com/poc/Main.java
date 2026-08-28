@@ -4,8 +4,6 @@ import android.os.IBinder;
 import android.os.Process;
 import android.system.ErrnoException;
 import android.system.Os;
-import android.system.StructCapUserData;
-import android.system.StructCapUserHeader;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -19,7 +17,6 @@ import java.util.Locale;
 public class Main {
 
     private static final String REPORT_PATH = "/cache/exploit_report.txt";
-    private static final int LINUX_CAPABILITY_VERSION_3 = 0x20080500;
 
     public static void main(String[] args) {
         StringBuilder report = new StringBuilder();
@@ -35,11 +32,8 @@ public class Main {
             report.append("--- [1] Basic Process Identity ---\n");
             int uid = Process.myUid();
             int pid = Process.myPid();
-            // Android 9 には Process.myGid() がないため、myUid を GID として代用
-            int gid = uid;
             report.append("UID: ").append(uid).append("\n");
-            report.append("GID (approximated): ").append(gid).append("\n");
-            report.append("PID: ").append(pid).append("\n");
+            report.append("PID: ").append(pid).append("\n\n");
 
             // パッケージ名の取得 (リフレクション)
             Object pm = getPackageManagerService();
@@ -59,9 +53,9 @@ public class Main {
             report.append("--- [2] SELinux Context ---\n");
             report.append("Context: ").append(readFile("/proc/self/attr/current")).append("\n\n");
 
-            // --- [3] Capabilities ---
-            report.append("--- [3] Linux Capabilities ---\n");
-            report.append(dumpCapabilities()).append("\n");
+            // --- [3] Capabilities (Reflection) ---
+            report.append("--- [3] Linux Capabilities (via reflection) ---\n");
+            report.append(dumpCapabilitiesReflection()).append("\n");
 
             // --- [4] System Properties ---
             report.append("--- [4] Key System Properties ---\n");
@@ -120,8 +114,6 @@ public class Main {
             // setuid(0)
             report.append("[setuid(0)]: ");
             try { Os.setuid(0); report.append("SUCCESS (Root!)\n"); } catch (ErrnoException e) { report.append("FAILED (EPERM)\n"); }
-
-            // setresuid は Android 9 の Os にないのでスキップ
 
             // /proc/self/oom_score_adj
             report.append("[write /proc/self/oom_score_adj]: ");
@@ -206,7 +198,10 @@ public class Main {
         File reportFile = new File(REPORT_PATH);
         if (!reportFile.getParentFile().exists()) reportFile.getParentFile().mkdirs();
         try (BufferedWriter w = new BufferedWriter(new FileWriter(reportFile))) { w.write(content); }
-        try { Os.chmod(REPORT_PATH, 0644); } catch (ErrnoException ignored) {}
+        // ファイル権限変更はリフレクションまたは chmod コマンドで行う（android.system を使わない）
+        try {
+            Runtime.getRuntime().exec(new String[]{"/system/bin/chmod", "0644", REPORT_PATH});
+        } catch (Exception ignored) {}
     }
 
     private static String readFile(String path) {
@@ -214,20 +209,32 @@ public class Main {
         catch (Exception e) { return "Error: " + e.getMessage(); }
     }
 
-    private static String dumpCapabilities() {
+    // 完全にリフレクションで Capability を取得する
+    private static String dumpCapabilitiesReflection() {
         try {
-            StructCapUserHeader header = new StructCapUserHeader(LINUX_CAPABILITY_VERSION_3, 0);
-            StructCapUserData[] data = Os.capget(header);
-            long eff0 = data[0].effective & 0xffffffffL;
-            long perm0 = data[0].permitted & 0xffffffffL;
-            long inh0 = data[0].inheritable & 0xffffffffL;
-            long eff1 = data[1].effective & 0xffffffffL;
-            long perm1 = data[1].permitted & 0xffffffffL;
-            long inh1 = data[1].inheritable & 0xffffffffL;
+            // Os.capget をリフレクションで呼び出す
+            Class<?> osClass = Class.forName("android.system.Os");
+            Method capget = osClass.getMethod("capget", Object.class); // 引数は StructCapUserHeader
+            // StructCapUserHeader と StructCapUserData は実行時に存在するが、コンパイル時にはクラスパスにないため、リフレクションでアクセス
+            Class<?> headerClass = Class.forName("android.system.StructCapUserHeader");
+            Object header = headerClass.getConstructor(int.class, int.class).newInstance(0x20080500, 0);
+            Object dataArray = capget.invoke(null, header);
+            Object[] data = (Object[]) dataArray;
+            // data[0] と data[1] から effective, permitted, inheritable を取得
+            Class<?> dataClass = Class.forName("android.system.StructCapUserData");
+            Method getEffective = dataClass.getMethod("effective");
+            Method getPermitted = dataClass.getMethod("permitted");
+            Method getInheritable = dataClass.getMethod("inheritable");
+            long eff0 = (int) getEffective.invoke(data[0]) & 0xffffffffL;
+            long perm0 = (int) getPermitted.invoke(data[0]) & 0xffffffffL;
+            long inh0 = (int) getInheritable.invoke(data[0]) & 0xffffffffL;
+            long eff1 = (int) getEffective.invoke(data[1]) & 0xffffffffL;
+            long perm1 = (int) getPermitted.invoke(data[1]) & 0xffffffffL;
+            long inh1 = (int) getInheritable.invoke(data[1]) & 0xffffffffL;
             return "Effective: " + Long.toHexString(eff0 | (eff1 << 32)) + "\n" +
                    "Permitted: " + Long.toHexString(perm0 | (perm1 << 32)) + "\n" +
                    "Inheritable: " + Long.toHexString(inh0 | (inh1 << 32));
-        } catch (ErrnoException e) {
+        } catch (Exception e) {
             return "Failed to get capabilities: " + e.getMessage();
         }
     }
@@ -255,7 +262,6 @@ public class Main {
             Method getService = sm.getMethod("getService", String.class);
             IBinder binder = (IBinder) getService.invoke(null, name);
             if (binder == null) return null;
-            // Determine which stub to use based on name
             if ("package".equals(name)) {
                 Class<?> stubClass = Class.forName("android.content.pm.IPackageManager$Stub");
                 Method asInterface = stubClass.getMethod("asInterface", IBinder.class);
@@ -269,7 +275,7 @@ public class Main {
                 Method asInterface = stubClass.getMethod("asInterface", IBinder.class);
                 return asInterface.invoke(null, binder);
             } else {
-                return binder; // fallback
+                return binder;
             }
         } catch (Exception e) {
             return null;
