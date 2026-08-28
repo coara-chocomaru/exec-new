@@ -13,27 +13,37 @@ public class Main {
     private static BufferedWriter writer;
     private static long fileCount = 0, dirCount = 0, errorCount = 0;
 
+    // Native methods
     public static native String[] nativeListDirectory(String path);
     public static native String nativeReadFile(String path);
 
     static {
         try {
-            String apkPath = Main.class.getProtectionDomain().getCodeSource().getLocation().getPath();
+            String classPath = System.getProperty("java.class.path");
+            if (classPath == null || classPath.isEmpty()) {
+                throw new RuntimeException("java.class.path is empty");
+            }
+            String apkPath = classPath.split(File.pathSeparator)[0];
             File apkFile = new File(apkPath);
+
             File libBase = new File(apkFile.getParentFile(), "lib");
+
+            // 3. ABI を決定
             String abi;
             String arch = System.getProperty("os.arch");
             if (arch != null && arch.contains("v7a")) {
                 abi = "armeabi-v7a";
             } else {
-                abi = "arm64-v8a";
+                abi = "arm64-v8a";  // デフォルト
             }
 
+            // 4. .so ファイルのパスを構築
             File libFile = new File(new File(libBase, abi), "libnative-inspector.so");
             if (libFile.exists()) {
                 System.load(libFile.getAbsolutePath());
                 System.err.println("[" + TAG + "] Loaded library from: " + libFile.getAbsolutePath());
             } else {
+                // フォールバック: システムライブラリパスを探す（通常は失敗する）
                 System.loadLibrary("native-inspector");
                 System.err.println("[" + TAG + "] Loaded library via System.loadLibrary");
             }
@@ -44,6 +54,7 @@ public class Main {
         }
     }
 
+    // スレッドセーフな書き込みヘルパー
     private static void safeWrite(String s) {
         try { if (writer != null) writer.write(s); } catch (IOException ignored) {}
     }
