@@ -13,20 +13,26 @@ public class Main {
     private static BufferedWriter writer;
     private static long fileCount = 0, dirCount = 0, errorCount = 0;
 
-    
     public static native String[] nativeListDirectory(String path);
     public static native String nativeReadFile(String path);
 
     static {
-        System.loadLibrary("native-inspector");
-    }
-
-    private static void log(String msg) {
-        System.err.println("[" + TAG + "] " + msg);
+        String libPath = "/data/misc/bluetooth/libnative-inspector.so";
+        try {
+            System.load(libPath);
+            System.err.println("[" + TAG + "] Loaded library from: " + libPath);
+        } catch (UnsatisfiedLinkError e) {
+            System.err.println("[" + TAG + "] Failed to load library: " + e);
+            try {
+                System.loadLibrary("native-inspector");
+            } catch (UnsatisfiedLinkError e2) {
+                System.err.println("[" + TAG + "] System.loadLibrary also failed.");
+            }
+        }
     }
 
     public static void main(String[] args) {
-        log("=== Inspector started ===");
+        System.err.println("[" + TAG + "] === Inspector started ===");
         try {
             File outDir = new File(OUTPUT_BASE);
             if (!outDir.exists()) outDir.mkdirs();
@@ -35,7 +41,6 @@ public class Main {
             writer = new BufferedWriter(new FileWriter(reportFile));
             writeHeader(reportFile);
 
-            
             String[] targets = {
                 "/dev/block",
                 "/dev",
@@ -55,24 +60,23 @@ public class Main {
             for (String target : targets) {
                 File f = new File(target);
                 if (f.exists()) {
-                    log("Scanning: " + target);
+                    System.err.println("[" + TAG + "] Scanning: " + target);
                     writer.write("\n=== Scanning: " + target + " ===\n");
                     if (target.startsWith("/proc/self/fd") || target.startsWith("/proc/self/map_files")) {
-                    
                         scanSymlinkDir(f);
                     } else {
                         walkWithNative(f, 0);
                     }
                 } else {
-                    log("Target does not exist: " + target);
+                    System.err.println("[" + TAG + "] Target does not exist: " + target);
                     writer.write("Target does not exist: " + target + "\n");
                 }
             }
 
             writeFooter();
-            log("Finished. Files: " + fileCount + ", Dirs: " + dirCount + ", Errors: " + errorCount);
+            System.err.println("[" + TAG + "] Finished. Files: " + fileCount + ", Dirs: " + dirCount + ", Errors: " + errorCount);
         } catch (Exception e) {
-            log("Fatal: " + e);
+            System.err.println("[" + TAG + "] Fatal: " + e);
             try { if (writer != null) writer.write("FATAL: " + e.toString()); } catch (Exception ignored) {}
         } finally {
             try { if (writer != null) writer.close(); } catch (Exception ignored) {}
@@ -109,16 +113,16 @@ public class Main {
                 } else {
                     Arrays.sort(children);
                     for (File sub : children) {
-                        if (Files.isSymbolicLink(sub.toPath())) {
-                            try {
+                        try {
+                            if (Files.isSymbolicLink(sub.toPath())) {
                                 String linkTarget = Files.readSymbolicLink(sub.toPath()).toString();
                                 writer.write("  L " + sub.getAbsolutePath() + " -> " + linkTarget + "\n");
-                            } catch (IOException e) {
-                                writer.write("  L " + sub.getAbsolutePath() + " [broken]\n");
+                            } else {
+                                walkWithNative(sub, depth + 1);
                             }
-                            continue;
+                        } catch (IOException e) {
+                            writer.write("  L " + sub.getAbsolutePath() + " [broken]\n");
                         }
-                        walkWithNative(sub, depth + 1);
                     }
                 }
             } else if (file.isFile()) {
@@ -142,7 +146,7 @@ public class Main {
             }
         } catch (Exception e) {
             errorCount++;
-            log("Error: " + e);
+            System.err.println("[" + TAG + "] Error: " + e);
             try { writer.write("  [ERROR: " + e.getMessage() + "]\n"); } catch (Exception ignored) {}
         }
     }
@@ -159,17 +163,11 @@ public class Main {
                 } else {
                     writer.write("  " + f.getName() + "\n");
                 }
-            } catch (Exception e) {
-                try {
-                    writer.write("  " + f.getName() + " [error: " + e.getMessage() + "]\n");
-                } catch (IOException ignored) {}
+            } catch (IOException e) {
+                writer.write("  " + f.getName() + " [error]\n");
             }
         }
-        try {
-            writer.flush();
-        } catch (IOException e) {
-            log("Flush error: " + e);
-        }
+        try { writer.flush(); } catch (IOException ignored) {}
     }
 
     private static void writeHeader(String reportFile) throws IOException {
