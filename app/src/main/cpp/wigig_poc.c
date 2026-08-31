@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+
 JNIEXPORT jstring JNICALL
 Java_com_wigig_poc_MainActivity_runCommand(JNIEnv *env, jobject thiz, jstring cmd) {
     const char *cmd_str = (*env)->GetStringUTFChars(env, cmd, NULL);
