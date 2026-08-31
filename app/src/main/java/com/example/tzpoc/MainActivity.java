@@ -48,7 +48,6 @@ public class MainActivity extends AppCompatActivity {
     private static final int ERROR_UNAVAIL = -96;
     private static final int ERROR_BADOBJ = -92;
     private static final int ERROR_DEFUNCT = -90;
-
     private static final int PROP_SUCCESS = 0;
     private static final int PROP_ERROR_INVALID_NAME = 1;
     private static final int PROP_ERROR_INVALID_VALUE = 2;
