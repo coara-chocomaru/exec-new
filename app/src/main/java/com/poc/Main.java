@@ -2,7 +2,6 @@ package com.poc;
 
 import android.app.ActivityThread;
 import android.app.AppGlobals;
-import android.app.ContextImpl;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -14,7 +13,6 @@ import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.provider.Settings;
-import android.util.Log;
 
 import com.qualcomm.qti.qms.connectionsecuritysdk.IRticService;
 import com.qualcomm.qti.qms.connectionsecuritysdk.IServiceManager;
@@ -84,7 +82,7 @@ public class Main {
 
     public static void main(String[] args) {
         try {
-            Looper.prepareMainLooper();
+            Looper.prepare();
         } catch (Exception e) {
             appendLog("[!] Looper prep: " + e.getMessage());
         }
@@ -144,13 +142,14 @@ public class Main {
 
     private static Context getContext() {
         Context ctx = null;
+
         try {
             ActivityThread at = ActivityThread.currentActivityThread();
             if (at != null) {
                 Method getSystemContext = ActivityThread.class.getDeclaredMethod("getSystemContext");
                 getSystemContext.setAccessible(true);
                 ctx = (Context) getSystemContext.invoke(at);
-                appendLog("[CTX] Got via currentActivityThread.getSystemContext()");
+                appendLog("[CTX] Got via ActivityThread.currentActivityThread().getSystemContext()");
                 return ctx;
             }
         } catch (Exception e) {
@@ -175,7 +174,7 @@ public class Main {
             Method getSystemContext = activityThreadClass.getDeclaredMethod("getSystemContext");
             getSystemContext.setAccessible(true);
             ctx = (Context) getSystemContext.invoke(at);
-            appendLog("[CTX] Got via systemMain()");
+            appendLog("[CTX] Got via ActivityThread.systemMain()");
             return ctx;
         } catch (Exception e) {
             appendLog("[CTX] systemMain failed: " + e.getMessage());
@@ -197,19 +196,6 @@ public class Main {
             return ctx;
         } catch (Exception e) {
             appendLog("[CTX] ContextImpl.createSystemContext failed: " + e.getMessage());
-        }
-
-        try {
-            Class<?> contextImplClass = Class.forName("android.app.ContextImpl");
-            Field defaultContextField = contextImplClass.getDeclaredField("sSystemContext");
-            defaultContextField.setAccessible(true);
-            ctx = (Context) defaultContextField.get(null);
-            if (ctx != null) {
-                appendLog("[CTX] Got via ContextImpl.sSystemContext");
-                return ctx;
-            }
-        } catch (Exception e) {
-            appendLog("[CTX] sSystemContext failed: " + e.getMessage());
         }
 
         return null;
