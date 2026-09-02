@@ -24,12 +24,10 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class Main {
-    private static final String LOG_DIR = "/data/data/com.qualcomm.qti.qms.service.trustzoneaccess/";
+    private static final String LOG_DIR = "/data/data/com.android.settings/";
     private static Context sContext;
     private static StringBuilder logBuilder = new StringBuilder();
     private static AtomicBoolean stopRequested = new AtomicBoolean(false);
-
-    // SIGSYS ハンドラが正常に設定されたかどうかのフラグ
     private static volatile boolean sigSysHandlerInstalled = false;
 
     public static void main(String[] args) {
