@@ -440,8 +440,6 @@ public class Main {
                 {"ro.debuggable", "1"},
                 {"ro.adb.secure", "0"},
                 {"ro.kernel.qemu", "1"},
-                {"sys.usb.config", "adb"},
-                {"persist.sys.usb.config", "adb"},
                 {"vendor.usb.test", "1"},
                 {"vendor.mmi.test", "1"},
                 {"vendor.qcom.test", "1"},
