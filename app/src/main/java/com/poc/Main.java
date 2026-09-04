@@ -409,6 +409,23 @@ public class Main {
             getMethod.setAccessible(true);
 
             String[][] testCases = {
+                {"ctl.start", "diag_mdlog_start"},
+                {"ctl.start", "fastmmi"},
+                {"ctl.start", "vendor.mmid"},
+                {"ctl.start", "kc_fact_diag"},
+                {"ctl.start", "dnand_diag"},
+                {"ctl.start", "kc_fact_diag_common"},
+                {"ctl.start", "usbcc_diag"},
+                {"ctl.start", "kdiag_common_fact"},
+                {"ctl.start", "kdiag_common"},
+                {"ctl.start", "debugs_diag"},
+                {"ctl.start", "ktoolsdiag"},
+                {"ctl.start", "kdiag_shell"},
+                {"ctl.start", "fs_sys_call_diag"},
+                {"ctl.start", "khsdiag"},
+                {"ctl.start", "kdmd"},
+                {"ctl.start", "kc_diag"},
+                {"ctl.start", "led_diag"},
                 {"vendor.test.prop", "1"},
                 {"vendor.audio.test", "1"},
                 {"vendor.bt.test", "1"},
