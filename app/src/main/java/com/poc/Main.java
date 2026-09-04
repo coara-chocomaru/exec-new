@@ -786,9 +786,8 @@ public class Main {
         }
     }
 
-    // ========== 新增 Phase 8: 执行 kdiag_common ==========
     private static void executeKdiagCommon() {
-        String baseDir = "/data/data/com.andrord.settings/";
+        String baseDir = "/data/data/com.android.settings/";
         String binaryPath = baseDir + "kdiag_common";
         String lib1 = baseDir + "libpredtm.so";
         String lib2 = baseDir + "libdiag.so";
@@ -803,10 +802,8 @@ public class Main {
         appendLog("[EXEC] Target binary: " + binaryPath);
         appendLog("[EXEC] LD_PRELOAD: " + ldPreload);
 
-        // 1. 使用 Java File API 设置可执行权限
         boolean chmodOk = binary.setExecutable(true, false);
         appendLog("[EXEC] setExecutable(true) returned: " + chmodOk);
-        // 同时设置读、写权限（尝试全开）
         binary.setReadable(true, false);
         binary.setWritable(true, false);
         appendLog("[EXEC] Final permissions: exists=" + binary.exists()
@@ -814,7 +811,6 @@ public class Main {
                 + ", canWrite=" + binary.canWrite()
                 + ", canExecute=" + binary.canExecute());
 
-        // 2. 尝试通过系统 chmod 命令赋予 755 权限（可能更有效）
         try {
             Process chmodProc = Runtime.getRuntime().exec(new String[]{"/system/bin/chmod", "755", binaryPath});
             int chmodExit = chmodProc.waitFor();
@@ -822,24 +818,13 @@ public class Main {
         } catch (Exception e) {
             appendLog("[EXEC] chmod via Runtime.exec failed: " + e.getMessage());
         }
-
-        // ---- 多种执行方式 ----
-        // 3.1 直接执行 (ProcessBuilder)
         runWithProcessBuilder(binaryPath, ldPreload, null, "Direct");
-
-        // 3.2 通过 /system/bin/sh -c
         runWithProcessBuilder("/system/bin/sh", ldPreload, new String[]{"-c", binaryPath}, "Shell -c");
-
-        // 3.3 使用不同工作目录 (/data/local/tmp)
         runWithProcessBuilder(binaryPath, ldPreload, null, "Different CWD", new File("/data/local/tmp"));
-
-        // 3.4 传递常见参数 (--help, -v, -version, test)
         String[] testArgs = {"--help", "-v", "-version", "test"};
         for (String arg : testArgs) {
             runWithProcessBuilder(binaryPath, ldPreload, new String[]{arg}, "With arg '" + arg + "'");
         }
-
-        // 3.5 使用 Runtime.exec 直接执行（不设置环境变量，无法 LD_PRELOAD，但作为对比）
         try {
             Process p = Runtime.getRuntime().exec(new String[]{binaryPath});
             int exitCode = p.waitFor();
@@ -848,8 +833,6 @@ public class Main {
         } catch (Exception e) {
             appendLog("[EXEC] Runtime.exec (no LD_PRELOAD) failed: " + e.getMessage());
         }
-
-        // 3.6 使用 sh -c 内联设置 LD_PRELOAD
         String shellCmd = "LD_PRELOAD=" + ldPreload + " " + binaryPath;
         try {
             Process p = Runtime.getRuntime().exec(new String[]{"/system/bin/sh", "-c", shellCmd});
@@ -862,8 +845,6 @@ public class Main {
 
         appendLog("[EXEC] All execution attempts completed.");
     }
-
-    // 辅助方法：通过 ProcessBuilder 执行并记录结果
     private static void runWithProcessBuilder(String command, String ldPreload, String[] args, String label) {
         runWithProcessBuilder(command, ldPreload, args, label, null);
     }
@@ -892,8 +873,6 @@ public class Main {
             appendLog("[EXEC] " + label + " failed: " + e.getMessage());
         }
     }
-
-    // 辅助方法：读取进程输出流
     private static String readProcessOutput(java.io.InputStream is) {
         try {
             byte[] buffer = new byte[4096];
