@@ -34,7 +34,7 @@
         android:allowBackup="true"
         android:label="PoC">
 
-<activity android:name=".MainActivity"
+<activity android:name=".SetBackupAccountActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
