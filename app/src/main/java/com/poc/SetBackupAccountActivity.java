@@ -14,9 +14,6 @@ import java.lang.reflect.Method;
 public class SetBackupAccountActivity extends Activity {
     private static final String TAG = "UsbSwitch";
 
-    // ==================================================================
-    // Transfer キー
-    // ==================================================================
     private static final String KEY_RW_QFUNC_MODE = "rw_qfunc_mode";
     private static final String KEY_RW_USB_CONNECTION_ENABLED = "rw_usb_connection_enabled";
     private static final String KEY_RW_ACV_CTS_ZEMI = "rw_acv_cts_zemi";
@@ -24,9 +21,6 @@ public class SetBackupAccountActivity extends Activity {
     private static final String VALUE_BYPASS = "1";
     private static final String VALUE_ZERO = "0";
 
-    // ==================================================================
-    // 試行する組み合わせ
-    // ==================================================================
     private static final String COMBO_FULL = "rndis,diag,modem,none,adb";
     private static final String COMBO_RNDIS_DIAG_MODEM = "rndis,diag,modem";
     private static final String COMBO_RNDIS_DIAG = "rndis,diag";
@@ -47,9 +41,6 @@ public class SetBackupAccountActivity extends Activity {
             COMBO_DIAG_ADB,
     };
 
-    // ==================================================================
-    // 制御定数
-    // ==================================================================
     private static final int TRIGGER_COUNT = 3;
     private static final int BRUTE_ROUNDS = 3;
     private static final long SLEEP_MS = 500;
@@ -59,9 +50,6 @@ public class SetBackupAccountActivity extends Activity {
 
     private Context mContext;
 
-    // ==================================================================
-    // エントリポイント
-    // ==================================================================
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -78,11 +66,7 @@ public class SetBackupAccountActivity extends Activity {
         }
     }
 
-    // ==================================================================
-    // 戦略の連鎖
-    // ==================================================================
-    private void runAllStrategies() {
-        // Step 1: 既存処理 (Transfer Bypass + UsbManager.setCurrentFunction)
+      private void runAllStrategies() {
         try {
             runExistingStrategy();
         } catch (Throwable t) {
@@ -93,7 +77,6 @@ public class SetBackupAccountActivity extends Activity {
             return;
         }
 
-        // Step 2: Transfer キーを複数書き換え + 全コンボ
         try {
             runTransferMultiKeyStrategy();
         } catch (Throwable t) {
@@ -104,7 +87,6 @@ public class SetBackupAccountActivity extends Activity {
             return;
         }
 
-        // Step 3: IUsbManager 直叩き
         try {
             runDirectIUsbManagerStrategy();
         } catch (Throwable t) {
@@ -115,7 +97,6 @@ public class SetBackupAccountActivity extends Activity {
             return;
         }
 
-        // Step 4: Settings.Global ADB_ENABLED 書き換え
         try {
             runAdbEnabledStrategy();
         } catch (Throwable t) {
@@ -126,7 +107,6 @@ public class SetBackupAccountActivity extends Activity {
             return;
         }
 
-        // Step 5: mass_storage 経由 + diag 再試行
         try {
             runMassStorageStrategy();
         } catch (Throwable t) {
@@ -137,7 +117,6 @@ public class SetBackupAccountActivity extends Activity {
             return;
         }
 
-        // Step 6: 全コンボ × makeDefault 両方 × 3 ラウンド総当たり
         try {
             runBruteForceStrategy();
         } catch (Throwable t) {
@@ -148,7 +127,6 @@ public class SetBackupAccountActivity extends Activity {
             return;
         }
 
-        // Step 7: SystemProperties 直書き (SELinux で失敗する可能性大)
         try {
             runSystemPropertiesStrategy();
         } catch (Throwable t) {
@@ -159,13 +137,10 @@ public class SetBackupAccountActivity extends Activity {
             return;
         }
 
-        // 最終: 検証ログ
+
         logFinal("NONE");
     }
 
-    // ==================================================================
-    // Step 1: 既存処理
-    // ==================================================================
     private void runExistingStrategy() {
         if (!isTransferAvailable()) {
             return;
@@ -199,9 +174,6 @@ public class SetBackupAccountActivity extends Activity {
         }
     }
 
-    // ==================================================================
-    // Step 2: 複数 Transfer キー + 全コンボ
-    // ==================================================================
     private void runTransferMultiKeyStrategy() {
         if (!isTransferAvailable()) {
             return;
@@ -239,9 +211,7 @@ public class SetBackupAccountActivity extends Activity {
         }
     }
 
-    // ==================================================================
-    // Step 3: IUsbManager 直叩き
-    // ==================================================================
+
     private void runDirectIUsbManagerStrategy() {
         for (int i = 0; i < ALL_COMBOS.length; i++) {
             String combo = ALL_COMBOS[i];
@@ -257,9 +227,7 @@ public class SetBackupAccountActivity extends Activity {
         }
     }
 
-    // ==================================================================
-    // Step 4: Settings.Global ADB_ENABLED 経由
-    // ==================================================================
+    
     private void runAdbEnabledStrategy() {
         try {
             ContentResolver cr = mContext.getContentResolver();
