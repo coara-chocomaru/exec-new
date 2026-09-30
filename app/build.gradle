@@ -1,43 +1,24 @@
-plugins {
+plugins { 
     id 'com.android.application'
 }
 
 android {
-    compileSdk 35
-    namespace 'com.example.tzpoc'
+    compileSdk = 35
+    namespace = 'com.poc'
 
     defaultConfig {
-        minSdk 26
-        targetSdk 28
-        versionCode 1
-        versionName "1.0"
-        multiDexEnabled false
-
-        externalNativeBuild {
-            ndkBuild {
-            }
-        }
-
-        ndk {
-            abiFilters 'armeabi-v7a', 'arm64-v8a'
-        }
+        minSdk = 24
+        targetSdk = 26
+        versionCode = 1
+        versionName = "0.1"
+        multiDexEnabled = true
+        proguardFiles += 'proguard-rules.pro'
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
     }
-    
-    buildFeatures {
-        aidl true
-    }
-
-    externalNativeBuild {
-        ndkBuild {
-            path file("src/main/cpp/Android.mk")
-        }
-    }
-
 
     signingConfigs {
         release {
@@ -49,42 +30,35 @@ android {
     }
 
     buildTypes {
-        debug {
-            debuggable true
-            jniDebuggable true
-            signingConfig signingConfigs.debug
+        configureEach {
+            String variant = new File("release.jks").exists() ? "release" : "debug"
+            signingConfig = signingConfigs[variant]
         }
         release {
-            debuggable true
-            jniDebuggable true
-            minifyEnabled false
-            shrinkResources false
-            signingConfig file('release.jks').exists() ? signingConfigs.release : signingConfigs.debug
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-        }
-    }
-
-    sourceSets {
-        main {
-            aidl.srcDirs = ['src/main/aidl']
+            minifyEnabled = true
+            shrinkResources = true
         }
     }
 
     packagingOptions {
-        resources {
-            excludes += ['META-INF/LICENSE', 'META-INF/LICENSE.txt', 'META-INF/NOTICE']
-        }
+        exclude 'META-INF/LICENSE'
+        exclude 'META-INF/LICENSE.txt'
+        exclude 'META-INF/NOTICE'
     }
 
-    lint {
+    lintOptions {
         disable 'ExpiredTargetSdkVersion', 'NewApi', 'Range', 'SetTextI18n', 'ScopedStorage', 'FieldCanBeLocal', 'GradleDependency'
     }
 }
 
 tasks.withType(JavaCompile).configureEach {
-    options.compilerArgs += ['-Xlint:deprecation', '-Xlint:unchecked']
+    options.compilerArgs << "-Xlint:deprecation" << "-Xlint:unchecked"
 }
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.core:core:1.0.0'
+    implementation 'androidx.annotation:annotation:1.0.0'
+    implementation 'dev.rikka.shizuku:api:13.1.5'
+    implementation 'dev.rikka.shizuku:provider:13.1.5'
 }
